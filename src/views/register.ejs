@@ -23,10 +23,10 @@
           </div>
           <div class="captcha-row">
             <img id="captcha-img" src="/register/captcha" alt="Captcha image" class="captcha-img" width="160" height="56">
-            <input type="text" id="captcha-input" name="captcha" placeholder="Characters" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" required aria-label="Characters shown in the captcha image">
-            <button type="button" id="captcha-refresh" class="btn ghost captcha-refresh" title="Get new characters" aria-label="Get new characters"><%- include('partials/icon', { name: 'history', size: 16 }) %> New characters</button>
+            <button type="button" id="captcha-refresh" class="btn ghost captcha-refresh" title="Get new characters" aria-label="Get new characters"><%- include('partials/icon', { name: 'history', size: 16 }) %></button>
           </div>
-          <p class="muted captcha-note">Case doesn't matter. Can't read it? Press the refresh button.</p>
+          <input type="text" id="captcha-input" name="captcha" placeholder="Type the characters" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" required aria-label="Characters shown in the captcha image">
+          <p class="muted captcha-note">Case doesn't matter. Can't read it? Use the refresh button.</p>
         </div>
         <button class="btn full" style="margin-top:20px">Create account</button>
       </form>
