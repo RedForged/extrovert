@@ -29,6 +29,20 @@ below reconstruct the history behind each version.
     seeding, add-account preservation, switching, per-account logout/removal,
     OAuth account binding, tampered-`account_id` rejection, and legacy-session
     fallback.
+- **Register captcha (anti-bot)**: `/register` is now gated by a self-hosted,
+  self-created proof-of-work captcha — the client proves work by finding a
+  `number` such that `sha256(challenge + salt + number)` starts with 4 hex
+  zeroes (`EXTV_CAPTCHA_DIFFICULTY`, 1–5). No third-party service, no external
+  requests, no API keys. Challenges are random, session-bound, expire after
+  5 minutes, and are single-use (a solved proof cannot be replayed; every
+  username-enumeration attempt costs a fresh solve). The search range scales
+  with the difficulty so legit solves stay near-certain. Verification is a
+  single hash server-side, so it is not a DoS vector. The widget uses a pure-JS
+  SHA-256 and works on plain-HTTP instances; registration requires JS. Stops
+  scripted bots; documented as anti-spam rather than a security boundary.
+  New `npm run test:captcha` suite (wired into CI) covering module semantics,
+  widget-SHA256-vs-node agreement, and E2E register rejection of missing/wrong/
+  replayed proofs.
 
 ## [1.0.2] - 2026-08-08
 

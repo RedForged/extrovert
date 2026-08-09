@@ -6,35 +6,54 @@ const db = require('../db');
 const { createUser, getUserByUsername, getUserByReferralCode, getUserById } = db;
 const { adminExists } = db;
 const { getAccountIds, getSignedInAccounts, addAccount, setActiveAccount, removeAccount } = require('../accounts');
+const captcha = require('../captcha');
 
 const router = express.Router();
 
 router.get('/register', (req, res) => {
   if (req.session.userId) return res.redirect('/');
   const ref = String(req.query.ref || '').trim();
-  res.render('register', { error: null, ref });
+  res.render('register', { error: null, ref, captcha: captcha.generateChallenge(req) });
+});
+
+// Fresh captcha challenge for the widget (JSON). Session-bound, so the cookie
+// jar that fetches it must be the one that POSTs /register.
+router.get('/register/captcha', (req, res) => {
+  res.json(captcha.generateChallenge(req));
 });
 
 router.post('/register', async (req, res) => {
+  // Anti-bot gate FIRST: every attempt (successful or not) consumes the
+  // single-use proof, so a solved captcha can't be replayed and cheap
+  // username-enumeration attempts each cost a fresh solve. The verify check is
+  // a single hash — the PoW cost is paid client-side.
+  const cap = captcha.verify(req, req.body);
+  if (!cap.ok) {
+    return res.render('register', {
+      error: cap.error,
+      ref: String(req.body.ref || req.query.ref || '').trim(),
+      captcha: captcha.generateChallenge(req),
+    });
+  }
   const username = String(req.body.username || '').trim();
   const password = String(req.body.password || '');
   const displayName = String(req.body.displayName || '').trim() || username;
+  const ref = String(req.body.ref || req.query.ref || '').trim();
 
   if (!/^[a-zA-Z0-9_]{3,20}$/.test(username)) {
-    return res.render('register', { error: 'Username must be 3-20 letters, numbers, or underscores.' });
+    return res.render('register', { error: 'Username must be 3-20 letters, numbers, or underscores.', ref, captcha: captcha.generateChallenge(req) });
   }
   // Policy: at least 12 characters; at most 72 BYTES (bcrypt truncates at 72
   // bytes, so longer input would silently collide with its own prefix — a
   // byte limit prevents that while keeping full Unicode/emoji support).
   if (password.length < 12 || Buffer.byteLength(password, 'utf8') > 72) {
-    return res.render('register', { error: 'Password must be at least 12 characters and at most 72 bytes (multi-byte characters such as emoji count more).' });
+    return res.render('register', { error: 'Password must be at least 12 characters and at most 72 bytes (multi-byte characters such as emoji count more).', ref, captcha: captcha.generateChallenge(req) });
   }
   if (getUserByUsername(username)) {
-    return res.render('register', { error: 'That username is taken — try another.' });
+    return res.render('register', { error: 'That username is taken — try another.', ref, captcha: captcha.generateChallenge(req) });
   }
 
   // Handle referral.
-  const ref = String(req.body.ref || req.query.ref || '').trim();
   let referredBy = null;
   const registrantIp = req.ip || req.connection.remoteAddress;
   if (ref) {
@@ -43,7 +62,7 @@ router.post('/register', async (req, res) => {
       const refIp = db.getReferrerIp ? db.getReferrerIp(referrer.id) : null;
       // Anti-farming: reject if same IP as referrer's stored IP.
       if (refIp && registrantIp === refIp) {
-        return res.render('register', { error: "You can't use a referral from your own network.", ref });
+        return res.render('register', { error: "You can't use a referral from your own network.", ref, captcha: captcha.generateChallenge(req) });
       }
       referredBy = referrer.id;
     }

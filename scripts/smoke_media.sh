@@ -3,19 +3,30 @@
 set -u
 BASE=http://localhost:3000
 J="${TMPDIR:-/tmp}/extrovert-smoke-media-cookies"
+REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 rm -f "$J"*
 ok() { echo "  $([ $1 -eq 0 ] && echo '[OK]' || echo '[FAIL]') $2"; }
 
 # Fetch a CSRF token from the page's hidden form input.
 csrf() { grep -o 'name="_csrf" value="[^"]*"' "$1" | head -1 | sed 's/.*value="//;s/"//'; }
 
-# Registration and login require CSRF + a 12+ character password.
+# Solve the register proof-of-work captcha embedded in the fetched page, using
+# the app's own verifier module (same hash the server checks).
+captcha() {
+  grep -o 'data-challenge="[^"]*" data-salt="[^"]*" data-maxnumber="[0-9]*" data-difficulty="[0-9]*"' "$1" | head -1 \
+  | sed 's/data-challenge="\([^"]*\)" data-salt="\([^"]*\)" data-maxnumber="\([0-9]*\)" data-difficulty="\([0-9]*\)"/\1 \2 \3 \4/' \
+  | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const[c,salt,m,d]=s.trim().split(' ');const{findNumber}=require(process.argv[1]);console.log(findNumber(c,salt,Number(m),Number(d)))})" "$REPO_ROOT/src/captcha.js"
+}
+
+# Registration and login require CSRF + a 12+ character password + captcha solve.
 reg() {
   curl -s -c "$J.$1" -b "$J.$1" -o /tmp/.smreg.html "$BASE/register"
   T=$(csrf /tmp/.smreg.html)
+  N=$(captcha /tmp/.smreg.html)
   curl -s -c "$J.$1" -b "$J.$1" -o /dev/null \
     --data-urlencode "_csrf=$T" --data-urlencode "username=$1" \
-    --data-urlencode "password=password12345" --data-urlencode "displayName=$2" "$BASE/register"
+    --data-urlencode "password=password12345" --data-urlencode "displayName=$2" \
+    --data-urlencode "captcha_number=$N" "$BASE/register"
 }
 login() {
   curl -s -c "$J.$1" -b "$J.$1" -o /tmp/.smlogin.html "$BASE/login"

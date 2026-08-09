@@ -100,6 +100,16 @@ function absorbCookies(jar, resp) {
 function jarHeader(jar) { return Object.values(jar.cookies).map(v => `connect.sid=${v}`).join('; '); }
 function extractCsrf(html) { const m = String(html).match(/name="_csrf" value="([^"]+)"/); return m ? m[1] : null; }
 
+// Solve the register page's embedded PoW captcha so the security suites keep
+// exercising the real registration pipeline (the captcha stays enforced).
+const { findNumber } = require('../src/captcha');
+function solveCaptcha(html) {
+  const m = String(html).match(/data-challenge="([^"]+)" data-salt="([^"]+)" data-maxnumber="(\d+)" data-difficulty="(\d+)"/);
+  if (!m) throw new Error('captcha challenge not found on /register page');
+  const n = findNumber(m[1], m[2], Number(m[3]), Number(m[4]));
+  return { captcha_number: String(n) };
+}
+
 async function req(url, opts = {}) {
   const headers = { 'X-Forwarded-Proto': 'https' };
   if (opts.token) headers['Authorization'] = 'Bearer ' + opts.token;
@@ -184,15 +194,17 @@ describe('OWASP ASVS v4.0 (automatable subset)', () => {
     it('2.1.1 — minimum password length is 12', async () => {
       const jar = { cookies: {} };
       const pre = await req('/register', { jar });
-      const csrf = extractCsrf(await pre.text());
-      const weak = await req('/register', { method: 'POST', jar, form: { username: 'weakpass', password: 'abc123', _csrf: csrf } });
+      const preHtml = await pre.text();
+      const csrf = extractCsrf(preHtml);
+      const weak = await req('/register', { method: 'POST', jar, form: { username: 'weakpass', password: 'abc123', _csrf: csrf, ...solveCaptcha(preHtml) } });
       assert.strictEqual(weak.status, 200, 'short password rejected');
       assert.ok((await weak.text()).includes('Password must be at least 12'), 'policy error mentions 12');
       assert.ok(!db.getUserByUsername('weakpass'), 'no account created');
       const jar2 = { cookies: {} };
       const pre2 = await req('/register', { jar: jar2 });
-      const csrf2 = extractCsrf(await pre2.text());
-      const strong = await req('/register', { method: 'POST', jar: jar2, form: { username: 'strongpass', password: 'longenough123', _csrf: csrf2 } });
+      const pre2Html = await pre2.text();
+      const csrf2 = extractCsrf(pre2Html);
+      const strong = await req('/register', { method: 'POST', jar: jar2, form: { username: 'strongpass', password: 'longenough123', _csrf: csrf2, ...solveCaptcha(pre2Html) } });
       assert.strictEqual(strong.status, 302, '12+ char password accepted');
       assert.ok(db.getUserByUsername('strongpass'), 'account created');
     });
@@ -200,8 +212,9 @@ describe('OWASP ASVS v4.0 (automatable subset)', () => {
     it('2.1.6 — passwords longer than 128 characters are blocked', async () => {
       const jar = { cookies: {} };
       const pre = await req('/register', { jar });
-      const csrf = extractCsrf(await pre.text());
-      const resp = await req('/register', { method: 'POST', jar, form: { username: 'longpw', password: 'x'.repeat(200), _csrf: csrf } });
+      const preHtml = await pre.text();
+      const csrf = extractCsrf(preHtml);
+      const resp = await req('/register', { method: 'POST', jar, form: { username: 'longpw', password: 'x'.repeat(200), _csrf: csrf, ...solveCaptcha(preHtml) } });
       assert.strictEqual(resp.status, 200, 'overlong password rejected');
       assert.ok((await resp.text()).includes('Password must be'));
       assert.ok(!db.getUserByUsername('longpw'), 'no account created');
@@ -213,8 +226,9 @@ describe('OWASP ASVS v4.0 (automatable subset)', () => {
       assert.ok(Buffer.byteLength(over, 'utf8') > 72, 'fixture is over the byte limit');
       const jar = { cookies: {} };
       const pre = await req('/register', { jar });
-      const csrf = extractCsrf(await pre.text());
-      const bad = await req('/register', { method: 'POST', jar, form: { username: 'emojipw', password: over, _csrf: csrf } });
+      const preHtml = await pre.text();
+      const csrf = extractCsrf(preHtml);
+      const bad = await req('/register', { method: 'POST', jar, form: { username: 'emojipw', password: over, _csrf: csrf, ...solveCaptcha(preHtml) } });
       assert.strictEqual(bad.status, 200, 'over-72-byte password rejected');
       assert.ok((await bad.text()).includes('Password must be'), 'byte-limit error shown');
       assert.ok(!db.getUserByUsername('emojipw'), 'no account created');
@@ -223,8 +237,9 @@ describe('OWASP ASVS v4.0 (automatable subset)', () => {
       assert.strictEqual(Buffer.byteLength(atLimit, 'utf8'), 72, 'fixture is exactly at the limit');
       const jar2 = { cookies: {} };
       const pre2 = await req('/register', { jar: jar2 });
-      const csrf2 = extractCsrf(await pre2.text());
-      const okResp = await req('/register', { method: 'POST', jar: jar2, form: { username: 'emojipw2', password: atLimit, _csrf: csrf2 } });
+      const pre2Html = await pre2.text();
+      const csrf2 = extractCsrf(pre2Html);
+      const okResp = await req('/register', { method: 'POST', jar: jar2, form: { username: 'emojipw2', password: atLimit, _csrf: csrf2, ...solveCaptcha(pre2Html) } });
       assert.strictEqual(okResp.status, 302, '72-byte password accepted (full Unicode supported)');
       assert.ok(db.getUserByUsername('emojipw2'), 'account created');
     });
@@ -317,8 +332,9 @@ describe('OWASP ASVS v4.0 (automatable subset)', () => {
     it('5.1.1 — input validation on all inputs (username, lengths)', async () => {
       const jar = { cookies: {} };
       const pre = await req('/register', { jar });
-      const csrf = extractCsrf(await pre.text());
-      const bad = await req('/register', { method: 'POST', jar, form: { username: 'bad user!', password: 'longenough123', _csrf: csrf } });
+      const preHtml = await pre.text();
+      const csrf = extractCsrf(preHtml);
+      const bad = await req('/register', { method: 'POST', jar, form: { username: 'bad user!', password: 'longenough123', _csrf: csrf, ...solveCaptcha(preHtml) } });
       assert.strictEqual(bad.status, 200);
       assert.ok((await bad.text()).includes('Username must be'));
       const long = await req('/api/v1/statuses', { method: 'POST', token: aliceToken, body: { type: 'text', body: 'x'.repeat(6000) } });

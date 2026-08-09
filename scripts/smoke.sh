@@ -3,15 +3,25 @@
 set -u
 BASE=http://localhost:3000
 J=/home/axoisaxo/extrovert/.cookies
+REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 rm -f "$J"*
 
 # Fetch a CSRF token from the page's meta tag.
 csrf() { grep -o 'name="csrf-token" content="[^"]*"' "$1" | head -1 | sed 's/.*content="//;s/"//'; }
 
+# Solve the register proof-of-work captcha embedded in the fetched page, using
+# the app's own verifier module (same hash the server checks).
+captcha() {
+  grep -o 'data-challenge="[^"]*" data-salt="[^"]*" data-maxnumber="[0-9]*" data-difficulty="[0-9]*"' "$1" | head -1 \
+  | sed 's/data-challenge="\([^"]*\)" data-salt="\([^"]*\)" data-maxnumber="\([0-9]*\)" data-difficulty="\([0-9]*\)"/\1 \2 \3 \4/' \
+  | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const[c,salt,m,d]=s.trim().split(' ');const{findNumber}=require(process.argv[1]);console.log(findNumber(c,salt,Number(m),Number(d)))})" "$REPO_ROOT/src/captcha.js"
+}
+
 reg() {
   curl -s -c "$J.$1" -b "$J.$1" -o /tmp/.reg.html "$BASE/register"
   T=$(csrf /tmp/.reg.html)
-  curl -s -c "$J.$1" -b "$J.$1" -o /dev/null --data-urlencode "_csrf=$T" --data-urlencode "username=$1" --data-urlencode "password=password12345" --data-urlencode "displayName=$2" "$BASE/register"
+  N=$(captcha /tmp/.reg.html)
+  curl -s -c "$J.$1" -b "$J.$1" -o /dev/null --data-urlencode "_csrf=$T" --data-urlencode "username=$1" --data-urlencode "password=password12345" --data-urlencode "displayName=$2" --data-urlencode "captcha_number=$N" "$BASE/register"
 }
 login() {
   curl -s -c "$J.$1" -b "$J.$1" -o /tmp/.login.html "$BASE/login"

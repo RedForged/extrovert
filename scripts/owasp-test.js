@@ -123,6 +123,16 @@ function extractCsrf(html) {
   return m ? m[1] : null;
 }
 
+// Solve the register page's embedded PoW captcha so the security suites keep
+// exercising the real registration pipeline (the captcha stays enforced).
+const { findNumber } = require('../src/captcha');
+function solveCaptcha(html) {
+  const m = String(html).match(/data-challenge="([^"]+)" data-salt="([^"]+)" data-maxnumber="(\d+)" data-difficulty="(\d+)"/);
+  if (!m) throw new Error('captcha challenge not found on /register page');
+  const n = findNumber(m[1], m[2], Number(m[3]), Number(m[4]));
+  return { captcha_number: String(n) };
+}
+
 async function req(url, opts = {}) {
   const headers = {};
   if (opts.token) headers['Authorization'] = 'Bearer ' + opts.token;
@@ -270,10 +280,11 @@ describe('OWASP Top 10', () => {
       // Register a real user over HTTP (exercises the whole register pipeline).
       const jar = { cookies: {} };
       const pre = await req('/register', { jar });
-      const csrf = extractCsrf(await pre.text());
+      const preHtml = await pre.text();
+      const csrf = extractCsrf(preHtml);
       const reg = await req('/register', {
         method: 'POST', jar,
-        form: { username: 'crypto_user', password: 's3cretPass!123', displayName: 'Crypto', _csrf: csrf },
+        form: { username: 'crypto_user', password: 's3cretPass!123', displayName: 'Crypto', _csrf: csrf, ...solveCaptcha(preHtml) },
       });
       assert.strictEqual(reg.status, 302, 'registration succeeds');
       const row = db.db.prepare(`SELECT password_hash FROM users WHERE username = 'crypto_user'`).get();
@@ -380,10 +391,11 @@ describe('OWASP Top 10', () => {
     it('registration rejects SQLi/HTML in usernames', async () => {
       const jar = { cookies: {} };
       const pre = await req('/register', { jar });
-      const csrf = extractCsrf(await pre.text());
+      const preHtml = await pre.text();
+      const csrf = extractCsrf(preHtml);
       const resp = await req('/register', {
         method: 'POST', jar,
-        form: { username: `<script>alert(1)</script>' OR 1=1--`, password: 'secret123456', _csrf: csrf },
+        form: { username: `<script>alert(1)</script>' OR 1=1--`, password: 'secret123456', _csrf: csrf, ...solveCaptcha(preHtml) },
       });
       assert.strictEqual(resp.status, 200, 'no redirect');
       const text = await resp.text();
@@ -426,10 +438,11 @@ describe('OWASP Top 10', () => {
       db.db.prepare(`UPDATE users SET referral_code = 'owasp-ref' WHERE id = ?`).run(aliceId);
       const jar = { cookies: {} };
       const pre = await req('/register?ref=owasp-ref', { jar });
-      const csrf = extractCsrf(await pre.text());
+      const preHtml = await pre.text();
+      const csrf = extractCsrf(preHtml);
       const resp = await req('/register', {
         method: 'POST', jar,
-        form: { username: 'ref_farmer', password: 'secret123456', ref: 'owasp-ref', _csrf: csrf },
+        form: { username: 'ref_farmer', password: 'secret123456', ref: 'owasp-ref', _csrf: csrf, ...solveCaptcha(preHtml) },
       });
       assert.strictEqual(resp.status, 200, 'same-IP referral rejected, no redirect');
       const text = await resp.text();
@@ -527,9 +540,10 @@ describe('OWASP Top 10', () => {
     it('enforces a minimum password length on registration', async () => {
       const jar = { cookies: {} };
       const pre = await req('/register', { jar });
-      const csrf = extractCsrf(await pre.text());
+      const preHtml = await pre.text();
+      const csrf = extractCsrf(preHtml);
       const resp = await req('/register', {
-        method: 'POST', jar, form: { username: 'shortpw', password: 'abc', _csrf: csrf },
+        method: 'POST', jar, form: { username: 'shortpw', password: 'abc', _csrf: csrf, ...solveCaptcha(preHtml) },
       });
       assert.strictEqual(resp.status, 200, 'weak password not accepted');
       const text = await resp.text();
