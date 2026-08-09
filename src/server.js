@@ -233,6 +233,16 @@ app.locals.relTime = function relTime(ts) {
   return new Date(ts).toLocaleDateString();
 };
 
+// Never let browsers cache dynamic pages: they are session/user-specific and
+// must reflect the deployed version on every load. Without this, heuristic
+// caching (ETag + no Cache-Control) can serve a stale page — which looks like
+// updates "didn't ship". Static assets below (/static, /uploads) are not
+// affected; they keep their own cache headers.
+app.use((req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  next();
+});
+
 app.use(optionalAuth);
 
 // Expose user data to all templates.
