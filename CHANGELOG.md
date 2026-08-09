@@ -29,20 +29,20 @@ below reconstruct the history behind each version.
     seeding, add-account preservation, switching, per-account logout/removal,
     OAuth account binding, tampered-`account_id` rejection, and legacy-session
     fallback.
-- **Register captcha (anti-bot)**: `/register` is now gated by a self-hosted,
-  self-created proof-of-work captcha — the client proves work by finding a
-  `number` such that `sha256(challenge + salt + number)` starts with 4 hex
-  zeroes (`EXTV_CAPTCHA_DIFFICULTY`, 1–5). No third-party service, no external
-  requests, no API keys. Challenges are random, session-bound, expire after
-  5 minutes, and are single-use (a solved proof cannot be replayed; every
-  username-enumeration attempt costs a fresh solve). The search range scales
-  with the difficulty so legit solves stay near-certain. Verification is a
-  single hash server-side, so it is not a DoS vector. The widget uses a pure-JS
-  SHA-256 and works on plain-HTTP instances; registration requires JS. Stops
-  scripted bots; documented as anti-spam rather than a security boundary.
-  New `npm run test:captcha` suite (wired into CI) covering module semantics,
-  widget-SHA256-vs-node agreement, and E2E register rejection of missing/wrong/
-  replayed proofs.
+- **Register captcha (anti-bot)**: `/register` is gated by a **self-hosted
+  image captcha**, fully inside the instance/image — no third-party service,
+  no external requests, no API keys. The server renders a distorted-text SVG
+  (`GET /register/captcha`, `image/svg+xml`, `Cache-Control: no-store`) using
+  the `svg-captcha` generator (npm dependency); the client types the characters, so a
+  plain terminal/scripted client cannot register. Challenges are random,
+  session-bound, expire after 5 minutes, and are single-use (an answer cannot
+  be replayed; every username-enumeration attempt costs a fresh challenge); the
+  expected answer lives only in the server-side session store. Stops scripted
+  bots; documented as anti-spam rather than a security boundary (OCR-capable
+  bots can still read the image). Replaces the earlier proof-of-work captcha,
+  which a terminal could solve by brute force.
+  New `npm run test:captcha` suite (wired into CI) covering verification
+  semantics and E2E register rejection of missing/wrong/replayed answers.
 
 ## [1.0.2] - 2026-08-08
 

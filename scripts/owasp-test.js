@@ -123,14 +123,14 @@ function extractCsrf(html) {
   return m ? m[1] : null;
 }
 
-// Solve the register page's embedded PoW captcha so the security suites keep
-// exercising the real registration pipeline (the captcha stays enforced).
-const { findNumber } = require('../src/captcha');
-function solveCaptcha(html) {
-  const m = String(html).match(/data-challenge="([^"]+)" data-salt="([^"]+)" data-maxnumber="(\d+)" data-difficulty="(\d+)"/);
-  if (!m) throw new Error('captcha challenge not found on /register page');
-  const n = findNumber(m[1], m[2], Number(m[3]), Number(m[4]));
-  return { captcha_number: String(n) };
+// Fetch the captcha image for the jar, then return the session's expected
+// answer (read from the server-side store, as an operator could). Keeps the
+// captcha ENFORCED in these security suites.
+const { sidFromCookie, captchaAnswer } = require('./captcha-helper');
+async function solveCaptcha(jar) {
+  const answer = await captchaAnswer(sidFromCookie(jar.cookies['connect.sid']));
+  if (!answer) throw new Error('captcha answer not found in session');
+  return { captcha: answer };
 }
 
 async function req(url, opts = {}) {
@@ -282,9 +282,10 @@ describe('OWASP Top 10', () => {
       const pre = await req('/register', { jar });
       const preHtml = await pre.text();
       const csrf = extractCsrf(preHtml);
+      const cap = await solveCaptcha(jar);
       const reg = await req('/register', {
         method: 'POST', jar,
-        form: { username: 'crypto_user', password: 's3cretPass!123', displayName: 'Crypto', _csrf: csrf, ...solveCaptcha(preHtml) },
+        form: { username: 'crypto_user', password: 's3cretPass!123', displayName: 'Crypto', _csrf: csrf, ...cap },
       });
       assert.strictEqual(reg.status, 302, 'registration succeeds');
       const row = db.db.prepare(`SELECT password_hash FROM users WHERE username = 'crypto_user'`).get();
@@ -393,9 +394,10 @@ describe('OWASP Top 10', () => {
       const pre = await req('/register', { jar });
       const preHtml = await pre.text();
       const csrf = extractCsrf(preHtml);
+      const cap = await solveCaptcha(jar);
       const resp = await req('/register', {
         method: 'POST', jar,
-        form: { username: `<script>alert(1)</script>' OR 1=1--`, password: 'secret123456', _csrf: csrf, ...solveCaptcha(preHtml) },
+        form: { username: `<script>alert(1)</script>' OR 1=1--`, password: 'secret123456', _csrf: csrf, ...cap },
       });
       assert.strictEqual(resp.status, 200, 'no redirect');
       const text = await resp.text();
@@ -440,9 +442,10 @@ describe('OWASP Top 10', () => {
       const pre = await req('/register?ref=owasp-ref', { jar });
       const preHtml = await pre.text();
       const csrf = extractCsrf(preHtml);
+      const cap = await solveCaptcha(jar);
       const resp = await req('/register', {
         method: 'POST', jar,
-        form: { username: 'ref_farmer', password: 'secret123456', ref: 'owasp-ref', _csrf: csrf, ...solveCaptcha(preHtml) },
+        form: { username: 'ref_farmer', password: 'secret123456', ref: 'owasp-ref', _csrf: csrf, ...cap },
       });
       assert.strictEqual(resp.status, 200, 'same-IP referral rejected, no redirect');
       const text = await resp.text();
@@ -542,8 +545,9 @@ describe('OWASP Top 10', () => {
       const pre = await req('/register', { jar });
       const preHtml = await pre.text();
       const csrf = extractCsrf(preHtml);
+      const cap = await solveCaptcha(jar);
       const resp = await req('/register', {
-        method: 'POST', jar, form: { username: 'shortpw', password: 'abc', _csrf: csrf, ...solveCaptcha(preHtml) },
+        method: 'POST', jar, form: { username: 'shortpw', password: 'abc', _csrf: csrf, ...cap },
       });
       assert.strictEqual(resp.status, 200, 'weak password not accepted');
       const text = await resp.text();

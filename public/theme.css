@@ -419,7 +419,7 @@ h4 { font-size: var(--fs-lg); font-family: var(--font-body); font-weight: 700; l
 .account-switcher-signout { color: var(--text-muted); border-top: 1px solid var(--border-soft); margin-top: 2px; }
 .account-switcher-signout:hover { color: var(--danger, #ff5d5d); background: none; }
 
-/* ── Register captcha (proof-of-work) ─────────────────────────────── */
+/* ── Register captcha (image) ─────────────────────────────────────── */
 .captcha { margin-top: 18px; }
 .captcha-box {
   display: flex; align-items: center; gap: 10px;
@@ -432,15 +432,17 @@ h4 { font-size: var(--fs-lg); font-family: var(--font-body); font-weight: 700; l
   padding: 6px;
 }
 .captcha-status { font-size: var(--fs-sm); font-weight: 600; color: var(--text-secondary); }
-.captcha-status.busy::after {
-  content: ''; display: inline-block; width: 12px; height: 12px; margin-left: 8px;
-  border: 2px solid var(--border-strong); border-top-color: var(--primary);
-  border-radius: 50%; vertical-align: -2px; animation: captcha-spin 0.7s linear infinite;
+.captcha-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.captcha-img {
+  border: 1px solid var(--border-soft); border-radius: var(--radius);
+  flex: none; background: #f2efe8;
 }
-.captcha-status.ok { color: var(--primary-strong); }
-.captcha-status.err { color: var(--danger, #ff5d5d); }
+.captcha-row input[type="text"] { flex: 1; min-width: 0; text-transform: none; }
+.captcha-refresh {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 40px; height: 40px; padding: 0; flex: none;
+}
 .captcha-note { margin: 8px 2px 0; font-size: var(--fs-xs); }
-@keyframes captcha-spin { to { transform: rotate(360deg); } }
 
 /* ── Cards & surfaces ─────────────────────────────────────────────── */
 

@@ -100,14 +100,14 @@ function absorbCookies(jar, resp) {
 function jarHeader(jar) { return Object.values(jar.cookies).map(v => `connect.sid=${v}`).join('; '); }
 function extractCsrf(html) { const m = String(html).match(/name="_csrf" value="([^"]+)"/); return m ? m[1] : null; }
 
-// Solve the register page's embedded PoW captcha so the security suites keep
-// exercising the real registration pipeline (the captcha stays enforced).
-const { findNumber } = require('../src/captcha');
-function solveCaptcha(html) {
-  const m = String(html).match(/data-challenge="([^"]+)" data-salt="([^"]+)" data-maxnumber="(\d+)" data-difficulty="(\d+)"/);
-  if (!m) throw new Error('captcha challenge not found on /register page');
-  const n = findNumber(m[1], m[2], Number(m[3]), Number(m[4]));
-  return { captcha_number: String(n) };
+// The register page GET generates the session's captcha; return the expected
+// answer (read from the server-side store, as an operator could). Keeps the
+// captcha ENFORCED in these security suites.
+const { sidFromCookie, captchaAnswer } = require('./captcha-helper');
+async function solveCaptcha(jar) {
+  const answer = await captchaAnswer(sidFromCookie(jar.cookies['connect.sid']));
+  if (!answer) throw new Error('captcha answer not found in session');
+  return { captcha: answer };
 }
 
 async function req(url, opts = {}) {
@@ -196,7 +196,8 @@ describe('OWASP ASVS v4.0 (automatable subset)', () => {
       const pre = await req('/register', { jar });
       const preHtml = await pre.text();
       const csrf = extractCsrf(preHtml);
-      const weak = await req('/register', { method: 'POST', jar, form: { username: 'weakpass', password: 'abc123', _csrf: csrf, ...solveCaptcha(preHtml) } });
+      const cap = await solveCaptcha(jar);
+      const weak = await req('/register', { method: 'POST', jar, form: { username: 'weakpass', password: 'abc123', _csrf: csrf, ...cap } });
       assert.strictEqual(weak.status, 200, 'short password rejected');
       assert.ok((await weak.text()).includes('Password must be at least 12'), 'policy error mentions 12');
       assert.ok(!db.getUserByUsername('weakpass'), 'no account created');
@@ -204,7 +205,8 @@ describe('OWASP ASVS v4.0 (automatable subset)', () => {
       const pre2 = await req('/register', { jar: jar2 });
       const pre2Html = await pre2.text();
       const csrf2 = extractCsrf(pre2Html);
-      const strong = await req('/register', { method: 'POST', jar: jar2, form: { username: 'strongpass', password: 'longenough123', _csrf: csrf2, ...solveCaptcha(pre2Html) } });
+      const cap2 = await solveCaptcha(jar2);
+      const strong = await req('/register', { method: 'POST', jar: jar2, form: { username: 'strongpass', password: 'longenough123', _csrf: csrf2, ...cap2 } });
       assert.strictEqual(strong.status, 302, '12+ char password accepted');
       assert.ok(db.getUserByUsername('strongpass'), 'account created');
     });
@@ -214,7 +216,8 @@ describe('OWASP ASVS v4.0 (automatable subset)', () => {
       const pre = await req('/register', { jar });
       const preHtml = await pre.text();
       const csrf = extractCsrf(preHtml);
-      const resp = await req('/register', { method: 'POST', jar, form: { username: 'longpw', password: 'x'.repeat(200), _csrf: csrf, ...solveCaptcha(preHtml) } });
+      const cap = await solveCaptcha(jar);
+      const resp = await req('/register', { method: 'POST', jar, form: { username: 'longpw', password: 'x'.repeat(200), _csrf: csrf, ...cap } });
       assert.strictEqual(resp.status, 200, 'overlong password rejected');
       assert.ok((await resp.text()).includes('Password must be'));
       assert.ok(!db.getUserByUsername('longpw'), 'no account created');
@@ -228,7 +231,8 @@ describe('OWASP ASVS v4.0 (automatable subset)', () => {
       const pre = await req('/register', { jar });
       const preHtml = await pre.text();
       const csrf = extractCsrf(preHtml);
-      const bad = await req('/register', { method: 'POST', jar, form: { username: 'emojipw', password: over, _csrf: csrf, ...solveCaptcha(preHtml) } });
+      const cap = await solveCaptcha(jar);
+      const bad = await req('/register', { method: 'POST', jar, form: { username: 'emojipw', password: over, _csrf: csrf, ...cap } });
       assert.strictEqual(bad.status, 200, 'over-72-byte password rejected');
       assert.ok((await bad.text()).includes('Password must be'), 'byte-limit error shown');
       assert.ok(!db.getUserByUsername('emojipw'), 'no account created');
@@ -239,7 +243,8 @@ describe('OWASP ASVS v4.0 (automatable subset)', () => {
       const pre2 = await req('/register', { jar: jar2 });
       const pre2Html = await pre2.text();
       const csrf2 = extractCsrf(pre2Html);
-      const okResp = await req('/register', { method: 'POST', jar: jar2, form: { username: 'emojipw2', password: atLimit, _csrf: csrf2, ...solveCaptcha(pre2Html) } });
+      const cap2 = await solveCaptcha(jar2);
+      const okResp = await req('/register', { method: 'POST', jar: jar2, form: { username: 'emojipw2', password: atLimit, _csrf: csrf2, ...cap2 } });
       assert.strictEqual(okResp.status, 302, '72-byte password accepted (full Unicode supported)');
       assert.ok(db.getUserByUsername('emojipw2'), 'account created');
     });
@@ -334,7 +339,8 @@ describe('OWASP ASVS v4.0 (automatable subset)', () => {
       const pre = await req('/register', { jar });
       const preHtml = await pre.text();
       const csrf = extractCsrf(preHtml);
-      const bad = await req('/register', { method: 'POST', jar, form: { username: 'bad user!', password: 'longenough123', _csrf: csrf, ...solveCaptcha(preHtml) } });
+      const cap = await solveCaptcha(jar);
+      const bad = await req('/register', { method: 'POST', jar, form: { username: 'bad user!', password: 'longenough123', _csrf: csrf, ...cap } });
       assert.strictEqual(bad.status, 200);
       assert.ok((await bad.text()).includes('Username must be'));
       const long = await req('/api/v1/statuses', { method: 'POST', token: aliceToken, body: { type: 'text', body: 'x'.repeat(6000) } });

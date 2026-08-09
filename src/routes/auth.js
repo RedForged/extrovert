@@ -13,26 +13,33 @@ const router = express.Router();
 router.get('/register', (req, res) => {
   if (req.session.userId) return res.redirect('/');
   const ref = String(req.query.ref || '').trim();
-  res.render('register', { error: null, ref, captcha: captcha.generateChallenge(req) });
+  // Generate the captcha challenge now (server-side state only — the answer is
+  // never in the HTML). The <img src="/register/captcha"> the view embeds
+  // regenerates it on load, which is the state the POST is verified against.
+  captcha.generate(req);
+  res.render('register', { error: null, ref });
 });
 
-// Fresh captcha challenge for the widget (JSON). Session-bound, so the cookie
-// jar that fetches it must be the one that POSTs /register.
+// Fresh captcha image for the widget (SVG). Session-bound, so the cookie jar
+// that loads it must be the one that POSTs /register. no-store keeps a failed
+// registration re-rendering with a genuinely fresh challenge.
 router.get('/register/captcha', (req, res) => {
-  res.json(captcha.generateChallenge(req));
+  const svg = captcha.generate(req);
+  res.set({ 'Content-Type': 'image/svg+xml', 'Cache-Control': 'no-store, max-age=0' });
+  res.send(svg);
 });
 
 router.post('/register', async (req, res) => {
   // Anti-bot gate FIRST: every attempt (successful or not) consumes the
-  // single-use proof, so a solved captcha can't be replayed and cheap
-  // username-enumeration attempts each cost a fresh solve. The verify check is
-  // a single hash — the PoW cost is paid client-side.
+  // single-use challenge, so a typed answer can't be replayed and cheap
+  // username-enumeration attempts each cost a fresh image. The verify check is
+  // a constant-time string compare — no client-side cost at all.
   const cap = captcha.verify(req, req.body);
   if (!cap.ok) {
+    captcha.generate(req); // fresh challenge for the re-rendered form
     return res.render('register', {
       error: cap.error,
       ref: String(req.body.ref || req.query.ref || '').trim(),
-      captcha: captcha.generateChallenge(req),
     });
   }
   const username = String(req.body.username || '').trim();
@@ -41,16 +48,19 @@ router.post('/register', async (req, res) => {
   const ref = String(req.body.ref || req.query.ref || '').trim();
 
   if (!/^[a-zA-Z0-9_]{3,20}$/.test(username)) {
-    return res.render('register', { error: 'Username must be 3-20 letters, numbers, or underscores.', ref, captcha: captcha.generateChallenge(req) });
+    captcha.generate(req);
+    return res.render('register', { error: 'Username must be 3-20 letters, numbers, or underscores.', ref });
   }
   // Policy: at least 12 characters; at most 72 BYTES (bcrypt truncates at 72
   // bytes, so longer input would silently collide with its own prefix — a
   // byte limit prevents that while keeping full Unicode/emoji support).
   if (password.length < 12 || Buffer.byteLength(password, 'utf8') > 72) {
-    return res.render('register', { error: 'Password must be at least 12 characters and at most 72 bytes (multi-byte characters such as emoji count more).', ref, captcha: captcha.generateChallenge(req) });
+    captcha.generate(req);
+    return res.render('register', { error: 'Password must be at least 12 characters and at most 72 bytes (multi-byte characters such as emoji count more).', ref });
   }
   if (getUserByUsername(username)) {
-    return res.render('register', { error: 'That username is taken — try another.', ref, captcha: captcha.generateChallenge(req) });
+    captcha.generate(req);
+    return res.render('register', { error: 'That username is taken — try another.', ref });
   }
 
   // Handle referral.
@@ -62,7 +72,8 @@ router.post('/register', async (req, res) => {
       const refIp = db.getReferrerIp ? db.getReferrerIp(referrer.id) : null;
       // Anti-farming: reject if same IP as referrer's stored IP.
       if (refIp && registrantIp === refIp) {
-        return res.render('register', { error: "You can't use a referral from your own network.", ref, captcha: captcha.generateChallenge(req) });
+        captcha.generate(req);
+        return res.render('register', { error: "You can't use a referral from your own network.", ref });
       }
       referredBy = referrer.id;
     }

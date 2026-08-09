@@ -1,69 +1,53 @@
 'use strict';
 
-// Self-hosted, self-created proof-of-work captcha for /register (anti-bot).
+// Self-hosted image captcha for /register (anti-bot).
 //
-// No third-party service, no external requests, no images: the client must
-// find a `number` such that sha256(challenge + salt + number) starts with
-// `difficulty` hex zeroes. The server verifies with a single hash — the cost
-// is paid by the client, so verification is cheap and is not a DoS vector.
+// Fully inside the Extrovert instance/image: no third-party service, no
+// external requests, no API keys. The server renders a distorted-text SVG
+// (the svg-captcha generator, a regular npm dependency) and the client types the characters — a
+// plain terminal/scripted client has no way to read the image, so mass
+// registration via curl/POST is stopped outright.
 //
 // The challenge is random per request, bound to the session, short-lived
 // (5 minutes) and SINGLE-USE: it is consumed on every registration attempt,
-// successful or not, so a solved proof can never be replayed and every
-// username-enumeration attempt costs a fresh solve.
+// successful or not, so an answer can never be replayed and every
+// username-enumeration attempt costs a fresh challenge.
 //
 // NOTE: this is anti-spam, not a security boundary. It stops scripted bots
-// (curl, mass-signup tools) that don't do the work; a determined attacker
-// willing to burn CPU can solve the PoW. Difficulty is tunable via
-// EXTV_CAPTCHA_DIFFICULTY (1-5, default 4 => ~2^16 = ~65k hashes on average).
+// (curl, mass-signup tools) that don't read images — a terminal cannot pass.
+// A bot with OCR — or that extracts the bundled font and matches the rendered
+// glyph paths — can still solve it, as with any fixed-font image captcha.
+// Only a managed behavioral service would go further, and that would require
+// external JS — excluded by this project's self-hosting constraint.
 
 const crypto = require('node:crypto');
+const svgCaptcha = require('svg-captcha');
 
-const DEFAULT_DIFFICULTY = 4;
-const MAX_DIFFICULTY = 5; // hard ceiling: ~8.4M hashes at diff 5, a few seconds
 const TTL_MS = 5 * 60 * 1000;
+const LENGTH = 6; // characters in the image
+// Drop easily-confused characters (0/O, 1/l/I) so humans make fewer mistakes.
+const IGNORE_CHARS = '0oO1ilI';
 
-// The client must find a number below maxnumber, with ~8x headroom over the
-// expected 2^(4*diff) hashes, so a legit solve succeeds with overwhelming
-// probability (failure ~e^-8, and the widget retries with a fresh challenge).
-function maxnumberFor(diff) {
-  return Math.ceil(Math.pow(2, 4 * diff) * 8);
+// Render a fresh challenge bound to this session. Returns the SVG body to
+// serve as image/svg+xml; the expected answer (lowercased) + expiry live in
+// req.session.captcha.
+function generate(req) {
+  const cap = svgCaptcha.create({
+    size: LENGTH,
+    ignoreChars: IGNORE_CHARS,
+    noise: 3,
+    color: true,
+    background: '#f2efe8',
+    width: 160,
+    height: 56,
+  });
+  req.session.captcha = {
+    text: cap.text.toLowerCase(),
+    expiresAt: Date.now() + TTL_MS,
+  };
+  return cap.data;
 }
 
-function difficulty() {
-  const n = Number(process.env.EXTV_CAPTCHA_DIFFICULTY);
-  if (Number.isInteger(n) && n >= 1 && n <= MAX_DIFFICULTY) return n;
-  return DEFAULT_DIFFICULTY;
-}
-
-function hashOf(challenge, salt, number) {
-  return crypto.createHash('sha256').update(challenge + salt + String(number), 'utf8').digest('hex');
-}
-
-// Pure helper: the number whose sha256(challenge + salt + number) starts with
-// `diff` hex zeroes, or null if none exists below maxnumber. Exposed for tests
-// and any server-side tooling.
-function findNumber(challenge, salt, maxnumber, diff) {
-  const target = '0'.repeat(diff);
-  for (let n = 0; n <= maxnumber; n++) {
-    if (hashOf(challenge, salt, n).startsWith(target)) return n;
-  }
-  return null;
-}
-
-// Fresh challenge bound to this session. Returns the public fields the widget
-// needs; the full record (incl. expiry AND the pinned difficulty — verify()
-// must not re-read the env later) lives in req.session.captcha.
-function generateChallenge(req) {
-  const challenge = crypto.randomBytes(32).toString('hex');
-  const salt = crypto.randomBytes(16).toString('hex');
-  const diff = difficulty();
-  const maxnumber = maxnumberFor(diff);
-  req.session.captcha = { challenge, salt, maxnumber, difficulty: diff, expiresAt: Date.now() + TTL_MS };
-  return { challenge, salt, maxnumber, difficulty: diff };
-}
-
-// Verify a submitted proof. Always consumes the session challenge (single-use).
 function verify(req, body) {
   const data = req.session.captcha;
   delete req.session.captcha; // single-use: consumed whether or not it verifies
@@ -73,14 +57,24 @@ function verify(req, body) {
   if (Date.now() > data.expiresAt) {
     return { ok: false, error: 'Captcha expired — reload the page and try again.' };
   }
-  const number = Number(body && body.captcha_number);
-  if (!Number.isInteger(number) || number < 0 || number > data.maxnumber) {
+  const answer = String((body && body.captcha) || '').toLowerCase();
+  if (answer.length < LENGTH || answer.length > 16) {
     return { ok: false, error: 'Captcha verification failed — please try again.' };
   }
-  if (!hashOf(data.challenge, data.salt, number).startsWith('0'.repeat(data.difficulty))) {
+  // Constant-time compare. Buffers are compared RAW; a length mismatch bails
+  // BEFORE timingSafeEqual, which throws on unequal lengths — that throw must
+  // never reach the async route handler, or one unauthenticated request (e.g.
+  // a multibyte answer that is 6 code units but >6 UTF-8 bytes) crashes the
+  // whole process.
+  const a = Buffer.from(answer, 'utf8');
+  const b = Buffer.from(data.text, 'utf8');
+  if (a.length !== b.length) {
+    return { ok: false, error: 'Captcha verification failed — please try again.' };
+  }
+  if (!crypto.timingSafeEqual(a, b)) {
     return { ok: false, error: 'Captcha verification failed — please try again.' };
   }
   return { ok: true };
 }
 
-module.exports = { DEFAULT_DIFFICULTY, MAX_DIFFICULTY, TTL_MS, maxnumberFor, difficulty, hashOf, findNumber, generateChallenge, verify };
+module.exports = { TTL_MS, LENGTH, generate, verify };

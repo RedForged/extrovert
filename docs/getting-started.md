@@ -35,7 +35,7 @@ Generate one with `openssl rand -hex 32` (or `node -e "console.log(require('cryp
 ## First run
 
 1. Open `http://localhost:3000`.
-2. **Sign up** (`/register`) — usernames are 3–20 letters, numbers, or underscores; passwords at least 12 characters and at most 72 bytes (multi-byte characters such as emoji count more). Registration runs a quick proof-of-work captcha (a second of your CPU, no images or third-party services) to keep bots out; JavaScript must be enabled for the check.
+2. **Sign up** (`/register`) — usernames are 3–20 letters, numbers, or underscores; passwords at least 12 characters and at most 72 bytes (multi-byte characters such as emoji count more). Registration includes a self-hosted image captcha (type the characters shown) to keep bots out — no third-party service involved.
 3. You will be redirected to **Become Admin** (`/become-admin`): the very first account on a fresh instance is offered the admin role. Anyone can claim it as long as **no admin exists yet** — so do this immediately after setting up a new instance. Later sign-ups are never offered it.
 4. Find someone by username on the **Discover** page (`/discover`), follow them, and your feed fills with their content and their friends' content.
 

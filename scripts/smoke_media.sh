@@ -10,23 +10,24 @@ ok() { echo "  $([ $1 -eq 0 ] && echo '[OK]' || echo '[FAIL]') $2"; }
 # Fetch a CSRF token from the page's hidden form input.
 csrf() { grep -o 'name="_csrf" value="[^"]*"' "$1" | head -1 | sed 's/.*value="//;s/"//'; }
 
-# Solve the register proof-of-work captcha embedded in the fetched page, using
-# the app's own verifier module (same hash the server checks).
-captcha() {
-  grep -o 'data-challenge="[^"]*" data-salt="[^"]*" data-maxnumber="[0-9]*" data-difficulty="[0-9]*"' "$1" | head -1 \
-  | sed 's/data-challenge="\([^"]*\)" data-salt="\([^"]*\)" data-maxnumber="\([0-9]*\)" data-difficulty="\([0-9]*\)"/\1 \2 \3 \4/' \
-  | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const[c,salt,m,d]=s.trim().split(' ');const{findNumber}=require(process.argv[1]);console.log(findNumber(c,salt,Number(m),Number(d)))})" "$REPO_ROOT/src/captcha.js"
+# Read the register captcha answer for a cookie jar from the session DB
+# (dev/tooling only — remote clients only ever see the SVG image).
+captcha_answer() {
+  local val sid
+  val=$(awk -F'\t' '/connect\.sid/ {print $7}' "$J.$1" | head -1)
+  sid=$(printf '%s' "$val" | sed 's/^s%3A//' | cut -d. -f1)
+  node "$REPO_ROOT/scripts/captcha-answer.js" "$sid"
 }
 
-# Registration and login require CSRF + a 12+ character password + captcha solve.
+# Registration and login require CSRF + a 12+ character password + captcha.
 reg() {
   curl -s -c "$J.$1" -b "$J.$1" -o /tmp/.smreg.html "$BASE/register"
   T=$(csrf /tmp/.smreg.html)
-  N=$(captcha /tmp/.smreg.html)
+  N=$(captcha_answer "$1")
   curl -s -c "$J.$1" -b "$J.$1" -o /dev/null \
     --data-urlencode "_csrf=$T" --data-urlencode "username=$1" \
     --data-urlencode "password=password12345" --data-urlencode "displayName=$2" \
-    --data-urlencode "captcha_number=$N" "$BASE/register"
+    --data-urlencode "captcha=$N" "$BASE/register"
 }
 login() {
   curl -s -c "$J.$1" -b "$J.$1" -o /tmp/.smlogin.html "$BASE/login"
