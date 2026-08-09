@@ -441,9 +441,10 @@ h4 { font-size: var(--fs-lg); font-family: var(--font-body); font-weight: 700; l
 .captcha-refresh {
   display: inline-flex; align-items: center; justify-content: center;
   width: 44px; height: 44px; padding: 0; flex: none;
-  background: var(--surface-2); border-color: var(--border-strong); color: var(--text);
+  background: var(--surface-2); border-color: var(--border-strong);
+  color: var(--primary-strong);
 }
-.captcha-refresh:hover { background: var(--surface-3, var(--surface-2)); color: var(--primary-strong); }
+.captcha-refresh:hover { background: var(--surface-3, var(--surface-2)); color: var(--primary); }
 .captcha-note { margin: 8px 2px 0; font-size: var(--fs-xs); }
 
 /* ── Cards & surfaces ─────────────────────────────────────────────── */
