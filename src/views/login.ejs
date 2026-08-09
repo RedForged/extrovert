@@ -2,9 +2,28 @@
   <div style="max-width:400px;margin:48px auto">
     <div style="text-align:center;margin-bottom:24px">
       <%- include('partials/rings', { size: 56, animate: true }) %>
-      <h2 style="margin:14px 0 4px">Welcome back</h2>
-      <p class="muted" style="margin:0">Glad you're here again.</p>
+      <h2 style="margin:14px 0 4px"><%= addMode ? 'Add another account' : 'Welcome back' %></h2>
+      <% if (addMode) { %>
+        <p class="muted" style="margin:0">This device is already signed in — add one more account.</p>
+      <% } else { %>
+        <p class="muted" style="margin:0">Glad you're here again.</p>
+      <% } %>
     </div>
+    <% if (addMode && signedInAccounts.length > 0) { %>
+      <div class="card elevated" style="margin-bottom:16px">
+        <p class="muted" style="margin:0 0 10px;font-size:var(--fs-sm)">Signed in on this device</p>
+        <% signedInAccounts.forEach(function(acc) { %>
+          <div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-top:1px solid var(--border-soft)">
+            <% if (acc.avatar) { %><img src="<%= acc.avatar %>" alt="" style="width:32px;height:32px;border-radius:50%;object-fit:cover;flex:none"><% } else { %><div style="width:32px;height:32px;border-radius:50%;background:var(--primary-soft);color:var(--primary-strong);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;flex:none"><%= (acc.display_name || acc.username).slice(0,1).toUpperCase() %></div><% } %>
+            <span style="flex:1;min-width:0"><strong style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><%= acc.display_name %></strong><small class="muted">@<%= acc.username %></small></span>
+            <% if (String(acc.id) === String(locals.currentUser && locals.currentUser.id)) { %><span class="btn ghost" style="padding:4px 10px;font-size:var(--fs-xs);cursor:default">Active</span><% } %>
+          </div>
+        <% }) %>
+        <div style="border-top:1px solid var(--border-soft);padding-top:10px;margin-top:6px">
+          <a href="/account/switch?next=<%= encodeURIComponent(next || '/') %>" style="font-size:var(--fs-sm)">Switch account instead</a>
+        </div>
+      </div>
+    <% } %>
     <div class="card elevated">
       <% if (error) { %><div class="flash err"><span class="flash-ico"><%- include('partials/icon', { name: 'alert', size: 18 }) %></span><span><%= error %></span></div><% } %>
       <form method="post" action="/login<%= next ? '?next=' + encodeURIComponent(next) : '' %>" autocomplete="on">
@@ -14,9 +33,9 @@
         <label for="login-password">Password</label>
         <input type="password" id="login-password" name="password" autocomplete="current-password" required>
         <input type="hidden" name="next" value="<%= next %>">
-        <button class="btn full" style="margin-top:20px">Log in</button>
+        <button class="btn full" style="margin-top:20px"><%= addMode ? 'Add account' : 'Log in' %></button>
       </form>
     </div>
-    <p class="muted center" style="margin-top:18px">New here? <a href="/register">Make an account</a></p>
+    <% if (!addMode) { %><p class="muted center" style="margin-top:18px">New here? <a href="/register">Make an account</a></p><% } %>
   </div>
 <%- include('partials/footer') %>

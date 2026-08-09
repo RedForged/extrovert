@@ -5,6 +5,31 @@ follows [Semantic Versioning](https://semver.org/). This is the first tagged
 release: the codebase carries its version in `package.json`, and the sections
 below reconstruct the history behind each version.
 
+## [Unreleased]
+
+### Features
+- **Multi-account (planned.md F1)**: sign in to several accounts on one browser
+  and switch without logging out. The session model now tracks an ordered list
+  of signed-in accounts (`req.session.accountIds`) with `req.session.userId` as
+  the active account — every existing `userId` read site is unchanged.
+  - Account switcher in the top bar, plus `/account/switch` (picker) and
+    `POST /account/switch` / `POST /account/remove` endpoints.
+  - Login becomes "add to list + set active"; **logout removes only the active
+    account** (whole session is destroyed only when the last account is
+    removed, so switching never invalidates other sessions or OAuth tokens);
+    "Sign out of all accounts" is available in the switcher menu.
+  - **OAuth account selection**: when several accounts are signed in, the
+    consent page embeds an "Authorize as" picker; the chosen account's id is
+    bound to the authorization code (and its OIDC `nonce`), so the token and
+    userinfo follow the selected account. The picker never bypasses consent —
+    it only changes which account authorizes.
+  - Account lists persist across restarts via the `account_sessions` table in
+    the DB-backed session store (`data/sessions.db`).
+  - New `npm run test:multi-account` suite (wired into CI) covering list
+    seeding, add-account preservation, switching, per-account logout/removal,
+    OAuth account binding, tampered-`account_id` rejection, and legacy-session
+    fallback.
+
 ## [1.0.2] - 2026-08-08
 
 First tagged release. Since v1.0.1:

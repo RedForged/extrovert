@@ -33,6 +33,12 @@ jobs:
       - name: OWASP ASVS v4.0 verification suite
         run: npm run test:asvs
 
+      - name: OAuth 2.0 / OIDC flow suite
+        run: npm run test:oauth
+
+      - name: Multi-account suite
+        run: npm run test:multi-account
+
   docker-build:
     name: Docker image build
     runs-on: ubuntu-latest

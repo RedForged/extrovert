@@ -19,6 +19,7 @@
     "test:multidevice": "node scripts/multidevice-decrypt-test.js",
     "test:render": "node scripts/render-smoke.js",
     "test:oauth": "node scripts/oauth-flow-test.js",
+    "test:multi-account": "node scripts/multi-account-test.js",
     "test:self-session": "node scripts/self-session-test.js",
     "test:session-reload": "node scripts/session-reload-test.js"
   },

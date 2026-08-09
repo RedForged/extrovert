@@ -356,6 +356,69 @@ h4 { font-size: var(--fs-lg); font-family: var(--font-body); font-weight: 700; l
 .ann-author-name { color: var(--text-secondary); font-weight: 600; }
 .ann-updated::before { content: '·'; margin-right: 8px; opacity: 0.6; }
 
+/* ── Account switcher (top bar) ───────────────────────────────────── */
+.account-switcher { position: relative; display: inline-flex; margin: 0 2px; }
+.account-switcher-summary {
+  display: inline-flex; align-items: center; gap: 8px;
+  list-style: none; cursor: pointer; padding: 7px 12px;
+  border-radius: var(--radius-full); color: var(--text-secondary);
+  font-size: var(--fs-sm); font-weight: 600; line-height: 1.1;
+  transition: background var(--t-fast) var(--ease-soft), color var(--t-fast) var(--ease-soft);
+}
+.account-switcher-summary::-webkit-details-marker { display: none; }
+.account-switcher-summary:hover,
+.account-switcher[open] .account-switcher-summary {
+  background: var(--surface-2); color: var(--text);
+}
+.account-switcher-summary > svg { opacity: 0.65; }
+.account-switcher-avatar {
+  display: inline-flex; width: 26px; height: 26px; border-radius: 50%;
+  overflow: hidden; border: 1px solid var(--border-soft); flex: none;
+}
+.account-switcher-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.account-switcher-avatar-letter {
+  display: flex; align-items: center; justify-content: center; width: 100%; height: 100%;
+  background: var(--primary-soft); color: var(--primary-strong);
+  font-weight: 700; font-size: 12px; font-family: var(--font-display);
+}
+.account-switcher-pop {
+  position: absolute; top: calc(100% + 12px); right: 0; z-index: 60;
+  width: min(300px, 86vw); background: var(--surface);
+  border: 1px solid var(--border-strong); border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg); padding: 10px;
+}
+.account-switcher-title {
+  margin: 4px 8px 6px; font-family: var(--font-display); font-weight: 600;
+  font-size: var(--fs-sm); color: var(--text-muted);
+}
+.account-switcher-row { margin: 0; }
+.account-switcher-btn {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  background: none; border: none; color: var(--text); text-align: left;
+  padding: 8px 10px; border-radius: var(--radius); cursor: pointer;
+  font-family: inherit; font-size: var(--fs-sm);
+  transition: background var(--t-fast) var(--ease-soft);
+}
+.account-switcher-btn:hover { background: var(--surface-2); }
+.account-switcher-btn.active { background: var(--primary-soft); }
+.account-switcher-row-avatar {
+  display: inline-flex; width: 30px; height: 30px; border-radius: 50%;
+  overflow: hidden; border: 1px solid var(--border-soft); flex: none;
+}
+.account-switcher-row-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.account-switcher-row-name { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
+.account-switcher-row-name strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-switcher-row-name small { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-switcher-check { color: var(--primary-strong); display: inline-flex; flex: none; }
+.account-switcher-link {
+  display: flex; align-items: center; gap: 8px; margin-top: 4px;
+  padding: 8px 10px; border-radius: var(--radius); font-size: var(--fs-sm);
+  color: var(--primary-strong); text-decoration: none;
+}
+.account-switcher-link:hover { background: var(--surface-2); }
+.account-switcher-signout { color: var(--text-muted); border-top: 1px solid var(--border-soft); margin-top: 2px; }
+.account-switcher-signout:hover { color: var(--danger, #ff5d5d); background: none; }
+
 /* ── Cards & surfaces ─────────────────────────────────────────────── */
 
 .card {

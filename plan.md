@@ -15,7 +15,7 @@
 | **D. Security hardening** | ✅ D2 (OIDC key `0600` + env override), D5 (CSRF), D6 (helmet/CSP); ⚠️ D3 rotation exists but has no admin/CLI trigger; ⏳ D1 intentional (public-by-URL, documented), D4 P3 token-theft detection |
 | **E. General improvements** | ✅ E5 fixed (real `created_at`/`bio` in search/context/notifications); ⚠️ E2 (test gaps), E3 (no score cursor), E4 (serializePost N+1), E6 (hardcoded limits), E7 (no CI drift check) partial; ⏳ E1 refactor |
 
-**Remaining work:** D3 trigger, D4, E2/E3/E4/E6/E7 partials, optional P3s (B7, C7, E1), and the intentional D1 decision. The "Suggested execution order" at the bottom is historical — Phases 1–4 are complete.
+**Remaining work:** D3 trigger, D4, E2/E3/E4/E6/E7 partials, optional P3s (B7, C7, E1), and the intentional D1 decision. The "Suggested execution order" at the bottom is historical — Phases 1–4 are complete. **planned.md F1 (multi-account with OAuth account selection) is implemented** (2026-08-09) — see planned.md; F2 (2FA), F3 (passkeys), F4 (ActivityPub), F5 (bots) remain open.
 
 ---
 

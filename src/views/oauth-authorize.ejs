@@ -22,6 +22,27 @@
       </ul>
     </p>
 
+    <% if (signedInAccounts.length > 1) { %>
+      <p style="margin-bottom:8px"><strong>Authorize as:</strong></p>
+      <div style="border:1px solid var(--border-soft);border-radius:12px;padding:6px;margin-bottom:6px">
+        <% signedInAccounts.forEach(function(acc) { %>
+          <label style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;cursor:pointer;margin:0"
+            <% if (String(acc.id) === String(activeId)) { %>class="oauth-acc-selected"<% } %>>
+            <input type="radio" name="account_id" value="<%= acc.id %>" style="flex:none" <%= String(acc.id) === String(activeId) ? 'checked' : '' %>>
+            <% if (acc.avatar) { %><img src="<%= acc.avatar %>" alt="" style="width:30px;height:30px;border-radius:50%;object-fit:cover;flex:none"><% } else { %><span style="width:30px;height:30px;border-radius:50%;background:var(--primary-soft);color:var(--primary-strong);display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;flex:none"><%= (acc.display_name || acc.username).slice(0,1).toUpperCase() %></span><% } %>
+            <span style="flex:1;min-width:0">
+              <strong style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><%= acc.display_name %></strong>
+              <small style="opacity:0.65">@<%= acc.username %></small>
+            </span>
+            <% if (String(acc.id) === String(activeId)) { %><small style="opacity:0.6;flex:none">current</small><% } %>
+          </label>
+        <% }) %>
+      </div>
+      <p style="margin:0 0 16px;font-size:0.82rem">
+        <a href="<%= addAccountUrl %>">Use a different account</a>
+      </p>
+    <% } %>
+
     <form method="POST" action="/api/v1/oauth/authorize">
       <input type="hidden" name="_csrf" value="<%= csrfToken %>">
       <input type="hidden" name="client_id" value="<%= app.client_id %>">

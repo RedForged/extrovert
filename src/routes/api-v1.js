@@ -12,6 +12,7 @@ const { canView } = require('../network');
 const feed = require('../feed');
 const { requireApiAuth, clientAppAuth, generateToken, VALID_SCOPES } = require('../api-auth');
 const { signIdToken, ISSUER } = require('../oidc');
+const { getAccountIds } = require('../accounts');
 const { getOnlineUsers, getUserPresence, sendDmEvent, cancelPendingCallByToken } = require('../webrtc-signaling');
 const { onNotification } = require('../notif-broadcaster');
 const dm = require('../dm');
@@ -237,6 +238,14 @@ router.get('/oauth/authorize', (req, res) => {
     return errorResponse(res, 400, 'Bad Request', 'None of the requested scopes are granted to this client.');
   }
 
+  // F1 multi-account: when several accounts are signed in on this device, the
+  // consent page embeds an account picker so the user chooses WHICH account
+  // authorizes the app. The picker only changes which account — the consent
+  // approval step below stays mandatory.
+  const accountIds = getAccountIds(req);
+  const signedInAccounts = accountIds.map(id => db.getUserById(id)).filter(Boolean);
+  const oauthNextUrl = '/api/v1/oauth/authorize?' + new URLSearchParams(req.query).toString();
+
   res.render('oauth-authorize', {
     app,
     redirect_uri,
@@ -246,6 +255,9 @@ router.get('/oauth/authorize', (req, res) => {
     code_challenge_method,
     nonce,
     csrfToken: req.session.csrfToken,
+    signedInAccounts,
+    activeId: req.session.userId,
+    addAccountUrl: '/login?add=1&next=' + encodeURIComponent(oauthNextUrl),
   });
 });
 
@@ -259,7 +271,7 @@ router.post('/oauth/authorize', (req, res) => {
     return errorResponse(res, 403, 'Bad Request', 'CSRF token missing or invalid. Re-open the authorization request.');
   }
 
-  const { client_id, redirect_uri, scope, state, code_challenge, code_challenge_method, nonce, approve } = req.body;
+  const { client_id, redirect_uri, scope, state, code_challenge, code_challenge_method, nonce, approve, account_id } = req.body;
 
   const app = db.getOAuthAppByClientId(client_id);
   if (!app) return errorResponse(res, 401, 'Invalid Client', 'Unknown client_id.');
@@ -278,6 +290,19 @@ router.post('/oauth/authorize', (req, res) => {
     return res.redirect(redirectUrl.toString());
   }
 
+  // F1 multi-account: the consent POST carries the account chosen on the
+  // consent page. It must be one of the accounts signed in on this device —
+  // the picker never lets a client bypass consent, it only chooses WHICH
+  // account the code is bound to (nonce rides along on the same code row).
+  let userId = req.session.userId;
+  if (account_id !== undefined && account_id !== '') {
+    const parsed = Number(account_id);
+    if (!Number.isInteger(parsed) || !getAccountIds(req).includes(parsed)) {
+      return errorResponse(res, 400, 'Bad Request', 'Selected account is not signed in on this device.');
+    }
+    userId = parsed;
+  }
+
   // Cap requested scopes by what the client registered (least privilege).
   const requestedScopes = scope || app.scopes;
   const appScopes = new Set(app.scopes.split(' '));
@@ -291,13 +316,13 @@ router.post('/oauth/authorize', (req, res) => {
 
   const code = crypto.randomBytes(32).toString('hex');
 
-  db.createOAuthCode(code, app.id, req.session.userId, validScopes, code_challenge || null, code_challenge_method || null, redirect_uri, nonce || null);
+  db.createOAuthCode(code, app.id, userId, validScopes, code_challenge || null, code_challenge_method || null, redirect_uri, nonce || null);
 
   const redirectUrl = new URL(redirect_uri);
   redirectUrl.searchParams.set('code', code);
   if (state) redirectUrl.searchParams.set('state', state);
 
-  db.auditLog('oauth_code_issued', req.session.userId, `App "${app.name}" scopes: ${validScopes}`);
+  db.auditLog('oauth_code_issued', userId, `App "${app.name}" scopes: ${validScopes}`);
   res.redirect(redirectUrl.toString());
 });
 

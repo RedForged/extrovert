@@ -2,6 +2,29 @@
 
 `/settings` is your account hub.
 
+## Multiple accounts on one device
+
+You can sign in to several Extrovert accounts on the same browser and switch
+between them without logging out:
+
+- **Switch** — use the account menu in the top bar (your avatar/name), or open
+  `/account/switch` directly. Clicking another account makes it active; every
+  other account stays signed in.
+- **Add** — choose **Add another account** from the account menu (or visit
+  `/login?add=1`). The login page shows which accounts this device already has
+  and adds the new one to the list.
+- **Remove** — `/account/switch` has a remove button per account; removing the
+  last account signs the device out entirely.
+- **Log out** removes *the active account only*; if other accounts remain you
+  stay signed in as the next one. **Sign out of all accounts** (in the account
+  menu) ends the whole device session.
+
+When an OAuth app asks for authorization while several accounts are signed in,
+the consent page includes an **Authorize as** picker — you choose which account
+grants the app access (the code and any OIDC `nonce` are bound to that account).
+Switching or logging out never revokes OAuth tokens, and removing one account
+does not affect the others' sessions.
+
 ## Theme
 
 Choose **Light** or **Dark** (dark is the default). Applied via `public/theme.css`; stored per account.

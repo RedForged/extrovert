@@ -5,6 +5,7 @@ const crypto = require('node:crypto');
 const db = require('../db');
 const { getUserTheme, setUserTheme, getUserDeveloperMode, setUserDeveloperMode, deleteUser } = db;
 const { VALID_SCOPES } = require('../api-auth');
+const { removeAccount } = require('../accounts');
 
 const router = express.Router();
 
@@ -37,9 +38,14 @@ router.post('/delete', (req, res) => {
   const user = res.locals.currentUser;
   if (!user) return res.redirect('/login');
   deleteUser(user.id);
-  req.session.destroy(() => {
-    res.redirect('/');
-  });
+  // F1 multi-account: remove only the deleted account from this device's list.
+  // Other accounts signed in on the same device stay signed in; the whole
+  // session is destroyed only when the deleted account was the last one.
+  const result = removeAccount(req, user.id);
+  if (result === 'destroyed') {
+    return req.session.destroy(() => res.redirect('/'));
+  }
+  res.redirect('/');
 });
 
 // Developer OAuth app management

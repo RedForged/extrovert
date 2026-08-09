@@ -1,7 +1,9 @@
 # Extrovert — Planned Features
 
 > Grounded in direct source analysis. File:line citations throughout.
-> Status: **planning phase** — nothing here has been implemented yet.
+> Status: **F1 (multi-account) implemented** on 2026-08-09; F2–F5 remain
+> planning-phase (nothing implemented yet). Implemented items carry a `[✅ DONE]`
+> tag verified against the current code.
 
 ---
 
@@ -27,7 +29,7 @@ avoid shipping an intermediate login UX twice.
 between them; when an OAuth client asks for authorization, the user picks **which** account
 authorizes the app, instead of the server blindly using the session's current account.
 
-### F1.1 Session model: single `userId` → list of signed-in accounts  [P1]
+### F1.1 Session model: single `userId` → list of signed-in accounts  [P1]  [✅ DONE]
 
 **Where:** `src/routes/auth.js:70-96` (login), `src/routes/auth.js:98-100` (logout), `src/session-store.js` (session persistence).
 
@@ -43,7 +45,7 @@ Today `req.session.userId` is a single integer set on login and destroyed on log
 - `req.session.regenerate()` on login (`auth.js:83`) must be reworked: regenerate the session but
   re-seed `accountIds` from the just-signed-in account instead of wiping state.
 
-### F1.2 Persist account list across restarts (remembered devices)  [P1]
+### F1.2 Persist account list across restarts (remembered devices)  [P1]  [✅ DONE]
 
 **Where:** `src/session-store.js` (express-session store), `src/db.js:304+` (ALTER TABLE migration pattern).
 
@@ -54,7 +56,7 @@ Today `req.session.userId` is a single integer set on login and destroyed on log
 - Follow the existing `try { db.exec(...) } catch {}` migration idiom (`db.js:304-323`) — this is
   additive-only, so existing installs upgrade in place.
 
-### F1.3 Account switcher UI  [P2]
+### F1.3 Account switcher UI  [P2]  [✅ DONE]
 
 **Where:** `src/views/login.ejs`, header layout (in `src/views/`), `src/routes/auth.js`.
 
@@ -67,7 +69,7 @@ Today `req.session.userId` is a single integer set on login and destroyed on log
 - New endpoints: `GET /account/switch` (renders picker), `POST /account/switch` (sets active),
   `POST /account/remove` (removes one account from the list).
 
-### F1.4 OAuth: account selection at authorization time  [P1] — the headline feature
+### F1.4 OAuth: account selection at authorization time  [P1]  [✅ DONE] — the headline feature
 
 **Where:** `src/routes/api-v1.js:200-250` (GET `/oauth/authorize`), `src/routes/api-v1.js:254+` (POST `/oauth/authorize`).
 
@@ -88,13 +90,45 @@ Today GET `/oauth/authorize` redirects to `/login?next=...` when `!req.session.u
 - The OIDC `nonce` (stored on `oauth_codes`, `db.js:322`) must be bound to the selected account as
   well, so a code issued for account A can't be replayed against account B.
 
-### F1.5 All other endpoints keep using the active account  [P2]
+### F1.5 All other endpoints keep using the active account  [P2]  [✅ DONE]
 
 **Where:** every `req.session.userId` read across `src/routes/*`.
 
 No behavior change: `userId` stays the active account everywhere (API, chat, admin). Switching
 accounts atomically swaps `req.session.userId`. Audit that no route accidentally reads the *list*
 where it meant the *active* account.
+
+### F1.6 Implementation notes  [✅ DONE]
+
+Landing commit: **2026-08-09** (see `CHANGELOG.md` → Unreleased).
+
+- `src/accounts.js` is the single owner of the list/active semantics
+  (`getAccountIds` / `addAccount` / `setActiveAccount` / `removeAccount`); `src/auth.js`
+  middleware exposes `res.locals.signedInAccounts` to every template.
+- The `account_sessions` table lives in the **session store DB** (`src/session-store.js`,
+  `data/sessions.db`), synced on every session write from `accountIds` + `userId`, and cleaned
+  up on `destroy`/`clear`/expiry purge. It survives restarts alongside the session row.
+- Login carries the existing account list across `regenerate()` **only when the session was
+  already signed in** (add-another-account flow); a fresh login seeds the list with just the
+  new account, preserving the anti-fixation property (`src/routes/auth.js`).
+- Logout removes the active account and keeps the session when others remain
+  (`POST /logout`, plus `?all=1` to sign out of the whole device — a small addition to the
+  plan for the switcher menu).
+- New endpoints: `GET/POST /account/switch` (picker page + set-active) and
+  `POST /account/remove`; all CSRF-guarded by the existing global middleware.
+- F1.4 chose the **consent page embeds the picker** variant ("Authorize as" radios, plus a
+  "Use a different account" link): `GET /api/v1/oauth/authorize` passes the signed-in
+  accounts, `POST /api/v1/oauth/authorize` validates `account_id` against the device list
+  and binds the code (and its `nonce`) to the selected account. Consent remains mandatory;
+  the picker only changes *which* account.
+- Covered by `scripts/multi-account-test.js` (`npm run test:multi-account`, wired into CI):
+  list seeding, add-account preservation, switching, per-account logout/removal, OAuth
+  account binding (id_token `sub`/`nonce`, userinfo), tampered-`account_id` rejection,
+  legacy-session (no `accountIds`) fallback, and deleted-account cleanup.
+- **Deleted accounts never leave ghosts behind**: `getSignedInAccounts` drops ids that no
+  longer resolve (admin/other-device deletion) and falls back to the first remaining
+  account; `/settings/delete` removes only the deleted account from the device list,
+  keeping other signed-in accounts (the session is destroyed only when it was the last).
 
 ---
 

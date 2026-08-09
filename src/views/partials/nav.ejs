@@ -50,7 +50,42 @@
       </div>
     <% } %>
     <span class="spacer"></span>
-    <form method="post" action="/logout" style="margin:0"><input type="hidden" name="_csrf" value="<%= locals.csrfToken %>"><button title="Log out"><span class="nav-icon"><%- include('icon', { name: 'logout', size: 18 }) %></span><span class="nav-text">Log out</span></button></form>
+    <details class="account-switcher" id="account-switcher">
+      <summary class="account-switcher-summary" title="Switch account">
+        <span class="account-switcher-avatar">
+          <% if (locals.currentUser.avatar) { %><img src="<%= locals.currentUser.avatar %>" alt=""><% } else { %><span class="account-switcher-avatar-letter"><%= (locals.currentUser.display_name || locals.currentUser.username).slice(0,1).toUpperCase() %></span><% } %>
+        </span>
+        <span class="nav-text"><%= locals.currentUser.display_name %></span>
+        <%- include('icon', { name: 'more', size: 14 }) %>
+      </summary>
+      <div class="account-switcher-pop">
+        <p class="account-switcher-title">Switch account</p>
+        <% (locals.signedInAccounts || []).forEach(function(acc) { %>
+          <form method="post" action="/account/switch" class="account-switcher-row">
+            <input type="hidden" name="_csrf" value="<%= locals.csrfToken %>">
+            <input type="hidden" name="account_id" value="<%= acc.id %>">
+            <input type="hidden" name="next" value="<%= _cp || '/' %>">
+            <button type="submit" class="account-switcher-btn <%= String(acc.id) === String(locals.currentUser.id) ? 'active' : '' %>" title="Use @<%= acc.username %>">
+              <span class="account-switcher-row-avatar">
+                <% if (acc.avatar) { %><img src="<%= acc.avatar %>" alt=""><% } else { %><span class="account-switcher-avatar-letter"><%= (acc.display_name || acc.username).slice(0,1).toUpperCase() %></span><% } %>
+              </span>
+              <span class="account-switcher-row-name">
+                <strong><%= acc.display_name %></strong>
+                <small>@<%= acc.username %></small>
+              </span>
+              <% if (String(acc.id) === String(locals.currentUser.id)) { %><span class="account-switcher-check"><%- include('icon', { name: 'check', size: 14 }) %></span><% } %>
+            </button>
+          </form>
+        <% }) %>
+        <a class="account-switcher-link" href="/login?add=1&next=<%= encodeURIComponent(_cp || '/') %>"><%- include('icon', { name: 'plus', size: 14 }) %> Add another account</a>
+        <form method="post" action="/logout" class="account-switcher-row">
+          <input type="hidden" name="_csrf" value="<%= locals.csrfToken %>">
+          <input type="hidden" name="all" value="1">
+          <button type="submit" class="account-switcher-btn account-switcher-signout" title="Sign out of every account on this device"><%- include('icon', { name: 'logout', size: 14 }) %> Sign out of all accounts</button>
+        </form>
+      </div>
+    </details>
+    <form method="post" action="/logout" style="margin:0"><input type="hidden" name="_csrf" value="<%= locals.csrfToken %>"><button title="Log out of this account"><span class="nav-icon"><%- include('icon', { name: 'logout', size: 18 }) %></span><span class="nav-text">Log out</span></button></form>
   <% } else { %>
     <span class="spacer"></span>
     <a href="/login">Log in</a>
