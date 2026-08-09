@@ -437,13 +437,13 @@ h4 { font-size: var(--fs-lg); font-family: var(--font-body); font-weight: 700; l
   border: 1px solid var(--border-soft); border-radius: var(--radius);
   flex: none; background: #f2efe8;
 }
-.captcha input[type="text"] {
-  width: 100%; margin-top: 10px; text-transform: none;
-}
+.captcha-row input[type="text"] { flex: 1; min-width: 0; text-transform: none; }
 .captcha-refresh {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 40px; height: 40px; padding: 0; flex: none;
+  width: 44px; height: 44px; padding: 0; flex: none;
+  background: var(--surface-2); border-color: var(--border-strong); color: var(--text);
 }
+.captcha-refresh:hover { background: var(--surface-3, var(--surface-2)); color: var(--primary-strong); }
 .captcha-note { margin: 8px 2px 0; font-size: var(--fs-xs); }
 
 /* ── Cards & surfaces ─────────────────────────────────────────────── */
