@@ -507,8 +507,11 @@
       if (e.t === 0) {
         var ns = new Olm.Session();
         ns.create_inbound(account, e.b);
+        account.remove_one_time_keys(ns);
         return saveSessionBaseline(otherIdStr, ns).then(function () {
           return saveSession(otherIdStr, ns);
+        }).then(function () {
+          return saveAccount();
         }).then(function () { return ns.decrypt(e.t, e.b); });
       }
       if (base) return base.decrypt(e.t, e.b);
@@ -833,7 +836,11 @@
               var ns = new Olm.Session();
               ns.create_inbound(account, env.b);
               account.remove_one_time_keys(ns);
-              return saveSession(String(k.sender_id), ns).then(function () { return ns.decrypt(env.t, env.b); });
+              return saveSessionBaseline(String(k.sender_id), ns).then(function () {
+                return saveSession(String(k.sender_id), ns);
+              }).then(function () {
+                return saveAccount();
+              }).then(function () { return ns.decrypt(env.t, env.b); });
             }
             if (!s) throw new Error('No session to decrypt room key');
             return s.decrypt(env.t, env.b);
@@ -1426,16 +1433,11 @@
 
       saveBtn.disabled = true;
       saveBtn.textContent = 'Saving…';
-      var req = { proto: proto, body: '', sender_ciphertext: '' };
-      var cryptoP;
-      if (proto === 'olm') {
-        cryptoP = encryptOlm(val, recipientId, otherIdStr, otherUsername).then(function (r) {
-          req.body = r.recipientCipher;
-          req.sender_ciphertext = r.senderCipher;
-        });
-      } else {
-        cryptoP = Promise.resolve();
-      }
+      var req = { proto: 'olm', body: '', sender_ciphertext: '' };
+      var cryptoP = encryptOlm(val, recipientId, otherIdStr, otherUsername).then(function (r) {
+        req.body = r.recipientCipher;
+        req.sender_ciphertext = r.senderCipher;
+      });
       cryptoP.then(function () {
         var params = 'body=' + encodeURIComponent(req.body) +
           '&proto=' + encodeURIComponent(req.proto) +

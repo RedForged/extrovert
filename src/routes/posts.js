@@ -243,7 +243,7 @@ router.get('/:id/history', (req, res) => {
   const user = res.locals.currentUser;
   if (!user) return res.redirect('/login');
   const entityType = req.query.type || 'post';
-  const entityId = entityType === 'comment' ? Number(req.params.id) : Number(req.params.id);
+  const entityId = Number(req.params.id);
   const history = getEditHistory(entityType, entityId);
   const post = getPostById(entityType === 'comment' ? Number(req.query.post_id || 0) : Number(req.params.id));
   if (post && !canView(user.id, post.user_id)) return res.redirect('/');
