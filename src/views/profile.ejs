@@ -3,11 +3,18 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title><%= profileUser.display_name %> (@<%= profileUser.username %>) · Extrovert</title>
-  <link rel="stylesheet" href="/static/theme.css">
-  <meta name="csrf-token" content="<%= typeof csrfToken !== 'undefined' ? csrfToken : '' %>">
+  <link rel="stylesheet" href="/static/theme.css?v=3">
+  <link rel="manifest" href="/static/manifest.webmanifest">
+  <meta name="csrf-token" content="<%= typeof csrfToken !== 'undefined' ? csrfToken : (locals.csrfToken || '') %>">
+  <script src="/static/lib/olm.js?v=1"></script>
   <script src="/static/e2ee.js?v=13"></script>
   <script src="/static/copy-ref.js?v=2"></script>
+  <script src="/static/stickers.js?v=1"></script>
+  <script src="/static/interact.js?v=4"></script>
+  <script src="/static/webrtc.js?v=3"></script>
+  <script src="/static/webrtc-ui.js?v=2"></script>
+  <script src="/static/announcement.js?v=1"></script>
+  <script src="/static/push-register.js?v=1"></script>
   <style><%- css %></style>
 </head>
 <body>

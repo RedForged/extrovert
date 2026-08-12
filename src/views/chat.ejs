@@ -66,9 +66,9 @@
         data-security-active="<%= security.active ? '1' : '0' %>"
         style="position:relative">
     <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-    <input type="text" name="body" id="sticker-input-chat" placeholder="Type a message…" maxlength="2000" required autofocus<%= (typeof recipientCurve === 'object' && recipientCurve) ? '' : ' disabled' %>>
+    <input type="text" name="body" id="sticker-input-chat" placeholder="Type a message…" maxlength="2000" required autofocus aria-label="Type a message"<%= (typeof recipientCurve === 'object' && recipientCurve) ? '' : ' disabled' %>>
     <button<%= (typeof recipientCurve === 'object' && recipientCurve) ? '' : ' disabled' %>><%- include('partials/icon', { name: 'arrowRight', size: 16 }) %> Send</button>
-    <button class="btn ghost sticker-btn" data-target="sticker-popup-chat" type="button" style="padding:6px 10px" title="Stickers"<%= (typeof recipientCurve === 'object' && recipientCurve) ? '' : ' disabled' %>><%- include('partials/icon', { name: 'smile', size: 18 }) %></button>
+    <button class="btn ghost sticker-btn" data-target="sticker-popup-chat" type="button" style="padding:6px 10px" title="Stickers" aria-label="Open stickers"<%= (typeof recipientCurve === 'object' && recipientCurve) ? '' : ' disabled' %>><%- include('partials/icon', { name: 'smile', size: 18 }) %></button>
     <div id="sticker-popup-chat" style="display:none;position:absolute;bottom:100%;right:0;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);z-index:100;box-shadow:var(--shadow)"></div>
   </form>
   <div id="chat-send-error" class="muted" style="display:none;text-align:center;font-size:0.85rem;color:var(--danger);padding:6px 0"></div>
@@ -81,11 +81,11 @@
     <p><strong><%= other.display_name %></strong> hasn't set up end-to-end encryption yet. Ask them to log in to the site once to generate their encryption keys, then try again.</p>
   </div>
 
-  <div id="e2ee-unlock-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:1000;align-items:center;justify-content:center" data-username="<%= other.username %>">
+  <div id="e2ee-unlock-overlay" role="dialog" aria-modal="true" aria-labelledby="e2ee-unlock-title" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:1000;align-items:center;justify-content:center" data-username="<%= other.username %>">
     <div class="card" style="max-width:360px;width:90%;text-align:center">
-      <h3>Unlock End-to-End Encryption</h3>
+      <h3 id="e2ee-unlock-title">Unlock End-to-End Encryption</h3>
       <p class="muted">Enter your password to decrypt your keys and enable secure messaging.</p>
-      <input type="password" id="e2ee-password" placeholder="Password" style="width:100%;margin-bottom:10px">
+      <input type="password" id="e2ee-password" placeholder="Password" aria-label="Password" autocomplete="current-password" style="width:100%;margin-bottom:10px">
       <button class="btn" id="e2ee-unlock-btn">Unlock</button>
       <div id="e2ee-unlock-error" style="color:var(--danger);margin-top:8px;display:none"></div>
       <a href="#" id="e2ee-reset-link" style="display:block;margin-top:12px;font-size:0.8rem;color:var(--text-muted)">Forgot password or can't unlock? Reset keys</a>

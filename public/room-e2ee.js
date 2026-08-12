@@ -75,12 +75,14 @@
     var overlay = document.createElement('div');
     overlay.id = 'e2ee-unlock-overlay';
     overlay.style.cssText = 'display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:1000;align-items:center;justify-content:center';
-    overlay.setAttribute('data-username', username);
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.setAttribute('aria-labelledby', 'e2ee-room-unlock-title');
     overlay.innerHTML =
       '<div class="card" style="max-width:360px;width:90%;text-align:center">' +
-        '<h3>Unlock End-to-End Encryption</h3>' +
+        '<h3 id="e2ee-room-unlock-title">Unlock End-to-End Encryption</h3>' +
         '<p class="muted">Enter your password to decrypt your keys and enable encrypted room messages.</p>' +
-        '<input type="password" id="e2ee-password" placeholder="Password" style="width:100%;margin-bottom:10px">' +
+        '<input type="password" id="e2ee-password" placeholder="Password" aria-label="Password" autocomplete="current-password" style="width:100%;margin-bottom:10px">' +
         '<button class="btn" id="e2ee-unlock-btn">Unlock</button>' +
         '<div id="e2ee-unlock-error" style="color:var(--danger);margin-top:8px;display:none"></div>' +
       '</div>';

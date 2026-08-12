@@ -77,20 +77,20 @@
     </div>
     <form class="room-input" id="room-send-form" data-channel-id="<%= firstChannel ? firstChannel.id : '' %>">
       <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-      <input type="text" name="body" placeholder="Message #<%= firstChannel ? firstChannel.name : '' %>" autocomplete="off" required>
+      <input type="text" name="body" placeholder="Message #<%= firstChannel ? firstChannel.name : '' %>" aria-label="Message #<%= firstChannel ? firstChannel.name : '' %>" autocomplete="off" required>
       <button class="btn" type="submit"><%- include('../partials/icon', { name: 'arrowRight', size: 15 }) %> Send</button>
     </form>
   </main>
 </div>
-<div class="report-overlay" id="report-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:1000;align-items:center;justify-content:center">
+<div class="report-overlay" id="report-overlay" role="dialog" aria-modal="true" aria-labelledby="report-modal-title" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:1000;align-items:center;justify-content:center">
   <div class="card" style="max-width:400px;width:90%">
-    <h3 style="margin-top:0">Report message</h3>
+    <h3 id="report-modal-title" style="margin-top:0">Report message</h3>
     <div id="report-message-preview" style="padding:10px 12px;background:var(--surface-2);border:1px solid var(--border-soft);border-radius:var(--radius-lg);margin-bottom:14px;font-style:italic"></div>
     <form id="report-form">
       <input type="hidden" name="_csrf" value="<%= csrfToken %>">
       <input type="hidden" name="message_id" id="report-msg-id" value="">
-      <label>Reason</label>
-      <input type="text" name="reason" id="report-reason" placeholder="What's wrong with this message?" required style="width:100%;margin-bottom:14px">
+      <label for="report-reason">Reason</label>
+      <input type="text" name="reason" id="report-reason" placeholder="What's wrong with this message?" aria-label="Reason for report" required style="width:100%;margin-bottom:14px">
       <div style="display:flex;gap:8px">
         <button class="btn" type="submit"><%- include('../partials/icon', { name: 'flag', size: 15 }) %> Send report</button>
         <button class="btn ghost close-report-overlay" type="button">Cancel</button>
