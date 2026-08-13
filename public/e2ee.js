@@ -237,26 +237,58 @@
   // decrypts, so after a send + reload it can no longer re-decrypt history. We
   // also persist a BASELINE copy (state at creation) and use it to decrypt stored
   // messages; the live session stays for sending + live incoming messages.
-  var sessionBaselines = {}; // idStr -> Olm.Session (recreated from baseline)
+  var sessionBaselinePickles = {}; // idStr -> string (pickle)
+  var sessionBaselines = {};        // idStr -> Olm.Session (recreated from baseline)
 
   function saveSessionBaseline(idStr, session) {
-    sessionBaselines[idStr] = session;
-    return encryptWithKd(session.pickle(PICKLE_KEY)).then(function (enc) {
+    var pickle = session.pickle(PICKLE_KEY);
+    sessionBaselinePickles[idStr] = pickle;
+    var fresh = new Olm.Session();
+    fresh.unpickle(PICKLE_KEY, pickle);
+    sessionBaselines[idStr] = fresh;
+    return encryptWithKd(pickle).then(function (enc) {
       return idbSet(STORE_OLM, 'sessionBase:' + idStr, enc);
     });
   }
 
   function loadSessionBaseline(idStr) {
     if (sessionBaselines[idStr]) return Promise.resolve(sessionBaselines[idStr]);
+    if (sessionBaselinePickles[idStr]) {
+      var fresh = new Olm.Session();
+      fresh.unpickle(PICKLE_KEY, sessionBaselinePickles[idStr]);
+      sessionBaselines[idStr] = fresh;
+      return Promise.resolve(fresh);
+    }
     return idbGet(STORE_OLM, 'sessionBase:' + idStr).then(function (enc) {
       if (!enc) return null;
       return decryptWithKd(enc).then(function (pickle) {
+        sessionBaselinePickles[idStr] = pickle;
         var s = new Olm.Session();
         s.unpickle(PICKLE_KEY, pickle);
         sessionBaselines[idStr] = s;
         return s;
       });
     });
+  }
+
+  function resetSessionBaseline(idStr) {
+    if (sessionBaselinePickles[idStr]) {
+      try {
+        var s = new Olm.Session();
+        s.unpickle(PICKLE_KEY, sessionBaselinePickles[idStr]);
+        sessionBaselines[idStr] = s;
+      } catch (_) {}
+    }
+  }
+
+  function resetSelfInboundBaseline() {
+    if (selfInboundBaseline) {
+      try {
+        var s = new Olm.Session();
+        s.unpickle(PICKLE_KEY, selfInboundBaseline);
+        selfInbound = s;
+      } catch (_) {}
+    }
   }
 
   function loadSelfSessions() {
@@ -502,32 +534,69 @@
       var env = JSON.parse(msg.sender_ciphertext || msg.body);
       return loadSelfSessions().then(function () {
         if (!selfInbound) throw new Error('No self-inbound session');
-        return selfInbound.decrypt(env.t, env.b);
+        try {
+          return selfInbound.decrypt(env.t, env.b);
+        } catch (err) {
+          if (selfInboundBaseline) {
+            resetSelfInboundBaseline();
+            return selfInbound.decrypt(env.t, env.b);
+          }
+          throw err;
+        }
       });
     }
-    // Incoming messages. A PreKey message (t=0) ALWAYS starts a NEW session
-    // chain — the first message from this sender, a second device, or a key
-    // rotation — and must be used to derive the inbound session itself. Feeding
-    // it to an existing baseline instead fails with BAD_MESSAGE_MAC (and shows
-    // "[unable to decrypt]"). The sender's identity is embedded in the PreKey
-    // message, so no external identity key is needed.
-    // Non-PreKey messages (t>0) continue the current chain and decrypt through
-    // the baseline (creation-state) session, so history stays readable however
-    // far the live ratchet has advanced.
+    // Incoming messages. A PreKey message (t=0) starts a session chain if none
+    // exists or if a new device/rotation occurred. If an existing baseline or
+    // live session matches the message, we decrypt through that existing session.
+    // Otherwise, we derive a new inbound session from the PreKey message.
     var e = JSON.parse(msg.body);
     return loadSessionBaseline(otherIdStr).then(function (base) {
-      if (e.t === 0) {
-        var ns = new Olm.Session();
-        ns.create_inbound(account, e.b);
-        account.remove_one_time_keys(ns);
-        return saveSessionBaseline(otherIdStr, ns).then(function () {
-          return saveSession(otherIdStr, ns);
-        }).then(function () {
-          return saveAccount();
-        }).then(function () { return ns.decrypt(e.t, e.b); });
+      if (base && base.matches_inbound(e.b)) {
+        try {
+          return base.decrypt(e.t, e.b);
+        } catch (_) {}
       }
-      if (base) return base.decrypt(e.t, e.b);
-      throw new Error('No session for sender and message is not a PreKey.');
+      return loadSession(otherIdStr).then(function (live) {
+        if (live && live.matches_inbound(e.b)) {
+          try {
+            var plain = live.decrypt(e.t, e.b);
+            return saveSession(otherIdStr, live).then(function () { return plain; });
+          } catch (_) {}
+        }
+        if (e.t === 0) {
+          var ns = new Olm.Session();
+          try {
+            ns.create_inbound(account, e.b);
+            account.remove_one_time_keys(ns);
+            return saveSessionBaseline(otherIdStr, ns).then(function () {
+              return saveSession(otherIdStr, ns);
+            }).then(function () {
+              return saveAccount();
+            }).then(function () { return ns.decrypt(e.t, e.b); });
+          } catch (createErr) {
+            if (base) {
+              try { return base.decrypt(e.t, e.b); } catch (_) {}
+            }
+            if (live) {
+              try {
+                var pLive = live.decrypt(e.t, e.b);
+                return saveSession(otherIdStr, live).then(function () { return pLive; });
+              } catch (_) {}
+            }
+            throw createErr;
+          }
+        }
+        if (base) {
+          try { return base.decrypt(e.t, e.b); } catch (_) {}
+        }
+        if (live) {
+          try {
+            var pLive2 = live.decrypt(e.t, e.b);
+            return saveSession(otherIdStr, live).then(function () { return pLive2; });
+          } catch (_) {}
+        }
+        throw new Error('No session for sender and message could not be decrypted.');
+      });
     });
   }
 
@@ -844,15 +913,27 @@
         .map(function (k) {
           return loadSession(String(k.sender_id)).then(function (s) {
             var env = JSON.parse(k.encrypted_key);
+            if (s && s.matches_inbound(env.b)) {
+              try {
+                return s.decrypt(env.t, env.b);
+              } catch (_) {}
+            }
             if (env.t === 0) {
               var ns = new Olm.Session();
-              ns.create_inbound(account, env.b);
-              account.remove_one_time_keys(ns);
-              return saveSessionBaseline(String(k.sender_id), ns).then(function () {
-                return saveSession(String(k.sender_id), ns);
-              }).then(function () {
-                return saveAccount();
-              }).then(function () { return ns.decrypt(env.t, env.b); });
+              try {
+                ns.create_inbound(account, env.b);
+                account.remove_one_time_keys(ns);
+                return saveSessionBaseline(String(k.sender_id), ns).then(function () {
+                  return saveSession(String(k.sender_id), ns);
+                }).then(function () {
+                  return saveAccount();
+                }).then(function () { return ns.decrypt(env.t, env.b); });
+              } catch (err) {
+                if (s) {
+                  try { return s.decrypt(env.t, env.b); } catch (_) {}
+                }
+                throw err;
+              }
             }
             if (!s) throw new Error('No session to decrypt room key');
             return s.decrypt(env.t, env.b);
@@ -935,70 +1016,98 @@
 
   // ---- Decrypt messages already rendered in the DOM ----
   function decryptExistingMessages(otherIdStr, recipientCurve, otherUsername) {
-    var pending = [];
     var securePending = []; // local device copies for Additional Security conversations
     var secureAckIds = [];
     var myId = currentUserId();
-    document.querySelectorAll('.chat-msg').forEach(function (el) {
-      var bubble = el.querySelector('.chat-bubble');
-      if (!bubble || !bubble.childNodes.length) return;
-      var body = el.getAttribute('data-body') || '';
-      var keySender = el.getAttribute('data-key-sender') || '';
-      var keyRecipient = el.getAttribute('data-key-recipient') || '';
-      var proto = el.getAttribute('data-proto') || 'rsa';
-      var senderCt = el.getAttribute('data-sender-ciphertext') || '';
-      var isOwn = el.classList.contains('own');
-      // Gate on the message's OWN secure flag, not the current toggle state: a
-      // secure=1 message must be stored/acked even if the peer later disabled
-      // the mode, otherwise it would linger flagged on the server forever.
-      var msgSecure = el.getAttribute('data-secure') === '1';
-      var msgId = el.getAttribute('data-msg-id');
-      var createdAt = Number(el.getAttribute('data-ts')) || Date.now();
 
-      var recordFor = function (plain) {
-        return {
-          id: msgId,
-          from_id: isOwn ? myId : otherIdStr,
-          created_at: createdAt,
-          edited_at: null,
-          proto: proto,
-          plaintext: plain,
-          own: isOwn,
-        };
-      };
-      var markSecure = function (rec) { securePending.push(rec); secureAckIds.push(rec.id); };
+    return secureLoadMessages(otherIdStr).then(function (savedMsgs) {
+      var localMap = {};
+      (savedMsgs || []).forEach(function (m) {
+        if (m && m.id && m.plaintext !== undefined) localMap[String(m.id)] = m.plaintext;
+      });
 
-      // Stickers: the body IS the plaintext (no ciphertext, no key).
-      if (body.indexOf('/uploads/stickers/') === 0) {
-        if (msgSecure) markSecure(recordFor(body));
-        return;
-      }
+      resetSelfInboundBaseline();
+      resetSessionBaseline(otherIdStr);
 
-      if (proto === 'olm') {
-        var msg = { body: body, sender_ciphertext: senderCt };
-        pending.push(decryptOlm(msg, isOwn, otherIdStr, recipientCurve).then(function (plain) {
-          bubble.textContent = plain;
-          if (msgSecure) markSecure(recordFor(plain));
-        }).catch(function (err) {
-          console.error('DM decrypt failed', isOwn ? 'own' : 'incoming', 'msg', el.getAttribute('data-msg-id'), err && err.message);
-          blobFail(bubble);
-        }));
-        return;
-      }
-      var keyForDecrypt = isOwn ? keySender : keyRecipient;
-      if (body && keyForDecrypt) {
-        pending.push(decryptLegacyRSA(body, keyForDecrypt).then(function (plain) {
-          bubble.innerHTML = '';
-          bubble.appendChild(document.createTextNode(plain));
-          if (msgSecure) markSecure(recordFor(plain));
-        }).catch(function () {}));
-      }
-    });
-    return Promise.all(pending).then(function () {
-      if (!securePending.length) return;
-      var writes = securePending.map(function (rec) { return securePersistMessage(otherIdStr, rec); });
-      return Promise.all(writes).then(function () {
-        return ackSecureMessages(otherUsername, secureAckIds);
+      var msgElements = Array.prototype.slice.call(document.querySelectorAll('.chat-msg'));
+      var chain = Promise.resolve();
+
+      msgElements.forEach(function (el) {
+        chain = chain.then(function () {
+          var bubble = el.querySelector('.chat-bubble');
+          if (!bubble || !bubble.childNodes.length) return;
+          var body = el.getAttribute('data-body') || '';
+          var keySender = el.getAttribute('data-key-sender') || '';
+          var keyRecipient = el.getAttribute('data-key-recipient') || '';
+          var proto = el.getAttribute('data-proto') || 'rsa';
+          var senderCt = el.getAttribute('data-sender-ciphertext') || '';
+          var isOwn = el.classList.contains('own');
+          // Gate on the message's OWN secure flag, not the current toggle state: a
+          // secure=1 message must be stored/acked even if the peer later disabled
+          // the mode, otherwise it would linger flagged on the server forever.
+          var msgSecure = el.getAttribute('data-secure') === '1';
+          var msgId = el.getAttribute('data-msg-id');
+          var createdAt = Number(el.getAttribute('data-ts')) || Date.now();
+
+          var recordFor = function (plain) {
+            return {
+              id: msgId,
+              from_id: isOwn ? myId : otherIdStr,
+              created_at: createdAt,
+              edited_at: null,
+              proto: proto,
+              plaintext: plain,
+              own: isOwn,
+            };
+          };
+          var markSecure = function (rec) { securePending.push(rec); secureAckIds.push(rec.id); };
+
+          // Stickers: the body IS the plaintext (no ciphertext, no key).
+          if (body.indexOf('/uploads/stickers/') === 0) {
+            securePersistMessage(otherIdStr, recordFor(body));
+            if (msgSecure) markSecure(recordFor(body));
+            return;
+          }
+
+          // Check if already in local cache
+          if (localMap[String(msgId)] !== undefined) {
+            bubble.textContent = localMap[String(msgId)];
+            if (msgSecure) markSecure(recordFor(localMap[String(msgId)]));
+            return;
+          }
+
+          if (proto === 'olm') {
+            var msg = { body: body, sender_ciphertext: senderCt };
+            return decryptOlm(msg, isOwn, otherIdStr, recipientCurve).then(function (plain) {
+              bubble.textContent = plain;
+              localMap[String(msgId)] = plain;
+              securePersistMessage(otherIdStr, recordFor(plain));
+              if (msgSecure) markSecure(recordFor(plain));
+            }).catch(function (err) {
+              console.error('DM decrypt failed', isOwn ? 'own' : 'incoming', 'msg', el.getAttribute('data-msg-id'), err && err.message);
+              blobFail(bubble);
+            });
+          }
+
+          var keyForDecrypt = isOwn ? keySender : keyRecipient;
+          if (body && keyForDecrypt) {
+            return decryptLegacyRSA(body, keyForDecrypt).then(function (plain) {
+              bubble.innerHTML = '';
+              bubble.appendChild(document.createTextNode(plain));
+              localMap[String(msgId)] = plain;
+              securePersistMessage(otherIdStr, recordFor(plain));
+              if (msgSecure) markSecure(recordFor(plain));
+            }).catch(function () {});
+          }
+        });
+      });
+
+      return chain.then(function () {
+        if (!securePending.length) return;
+        var writes = securePending.map(function (rec) { return securePersistMessage(otherIdStr, rec); });
+        return Promise.all(writes).then(function () {
+          return ackSecureMessages(otherUsername, secureAckIds);
+        });
       });
     });
   }
@@ -1040,6 +1149,19 @@
     var container = document.querySelector('.chat-messages');
     if (!container) return;
     var otherUsername = currentOtherUsername();
+    var sendForm = document.querySelector('.chat-form');
+    var otherIdStr = sendForm ? String(sendForm.getAttribute('data-recipient') || '') : '';
+    if (otherIdStr && plaintext) {
+      securePersistMessage(otherIdStr, {
+        id: msg.id,
+        from_id: currentUserId(),
+        created_at: msg.created_at || Date.now(),
+        edited_at: msg.edited_at || null,
+        proto: msg.proto || 'olm',
+        plaintext: plaintext,
+        own: true,
+      });
+    }
     var div = document.createElement('div');
     div.className = 'chat-msg own';
     div.setAttribute('data-msg-id', String(msg.id));
@@ -1308,21 +1430,19 @@
       } else {
         bubble.textContent = plain;
       }
-      // Additional Security: keep a device copy and acknowledge receipt so the
-      // server can delete the message once the sender has acked too.
-      if (Number(m.secure) === 1) {
-        securePersistMessage(otherIdStr, {
-          id: m.id,
-          from_id: m.from_id,
-          created_at: m.created_at,
-          edited_at: m.edited_at || null,
-          proto: isSticker ? 'plain' : (m.proto || 'olm'),
-          plaintext: plain,
-          own: false,
-        }).then(function () {
+      securePersistMessage(otherIdStr, {
+        id: m.id,
+        from_id: m.from_id,
+        created_at: m.created_at,
+        edited_at: m.edited_at || null,
+        proto: isSticker ? 'plain' : (m.proto || 'olm'),
+        plaintext: plain,
+        own: false,
+      }).then(function () {
+        if (Number(m.secure) === 1) {
           return ackSecureMessages(currentOtherUsername(), [m.id]);
-        });
-      }
+        }
+      });
     }).catch(function () {
       bubble.textContent = '[unable to decrypt]';
     });
@@ -1689,25 +1809,45 @@
     ensureReady({ onNeedsPassword: function () {} }).then(function (ok) {
       if (!ok) return;
       items.forEach(function (el) {
+        var otherId = el.getAttribute('data-other-id') || '';
         var body = el.getAttribute('data-body') || '';
         if (!body || body.indexOf('/uploads/stickers/') === 0) return;
         var proto = el.getAttribute('data-proto') || 'rsa';
         var isOwn = el.getAttribute('data-own') === '1';
-        var otherId = el.getAttribute('data-other-id') || '';
         var curve = el.getAttribute('data-curve') || '';
         var key = isOwn
           ? el.getAttribute('data-key-sender') || ''
           : el.getAttribute('data-key-recipient') || '';
-        var p;
-        if (proto === 'olm') {
-          p = decryptOlm(
-            { body: body, sender_ciphertext: el.getAttribute('data-sender-ciphertext') || '' },
-            isOwn, otherId, curve
-          );
-        } else {
-          p = key ? decryptLegacyRSA(body, key) : Promise.reject(new Error('no key'));
-        }
-        p.then(function (plain) { el.textContent = plain; }).catch(function () {});
+        secureLoadMessages(otherId).then(function (saved) {
+          if (saved && saved.length) {
+            var last = saved[saved.length - 1];
+            if (last && last.plaintext) {
+              el.textContent = last.plaintext;
+              return;
+            }
+          }
+          var p;
+          if (proto === 'olm') {
+            p = decryptOlm(
+              { body: body, sender_ciphertext: el.getAttribute('data-sender-ciphertext') || '' },
+              isOwn, otherId, curve
+            );
+          } else {
+            p = key ? decryptLegacyRSA(body, key) : Promise.reject(new Error('no key'));
+          }
+          p.then(function (plain) {
+            el.textContent = plain;
+            securePersistMessage(otherId, {
+              id: 'preview-' + otherId,
+              from_id: isOwn ? currentUserId() : otherId,
+              created_at: Date.now(),
+              edited_at: null,
+              proto: proto,
+              plaintext: plain,
+              own: isOwn,
+            });
+          }).catch(function () {});
+        });
       });
     }).catch(function () {});
   }

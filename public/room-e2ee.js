@@ -96,6 +96,7 @@
       var gsid = el.getAttribute('data-group-session-id');
       var textEl = el.querySelector('.room-msg-text');
       if (!textEl) return;
+      if (textEl.textContent && textEl.textContent !== '[unable to decrypt]') return;
       decryptMessage(senderId, ciphertext, gsid).then(function (plain) {
         textEl.textContent = plain;
         textEl.classList.remove('e2ee-pending');

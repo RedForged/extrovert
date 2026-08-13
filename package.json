@@ -23,7 +23,8 @@
     "test:captcha": "node scripts/captcha-test.js",
     "test:self-session": "node scripts/self-session-test.js",
     "test:session-reload": "node scripts/session-reload-test.js",
-    "test:delete-message": "node scripts/delete-message-test.js"
+    "test:delete-message": "node scripts/delete-message-test.js",
+    "test:lifecycle": "node scripts/e2ee-full-lifecycle-test.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
