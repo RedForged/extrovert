@@ -1874,6 +1874,10 @@
   function addLiveIncomingMsg(m, otherIdStr, senderCurve) {
     var container = document.querySelector('.chat-messages');
     if (!container) return;
+    if (m && m.id && document.querySelector('.chat-msg[data-msg-id="' + m.id + '"]')) return;
+    var emptyPlaceholder = container.querySelector('.center.muted');
+    if (emptyPlaceholder) emptyPlaceholder.remove();
+
     var div = document.createElement('div');
     div.className = 'chat-msg';
     div.setAttribute('data-msg-id', String(m.id));
@@ -1913,13 +1917,17 @@
         proto: isSticker ? 'plain' : (m.proto || 'olm'),
         plaintext: plain,
         own: false,
+        msg_secure: Number(m.secure) === 1,
       }).then(function () {
         if (Number(m.secure) === 1) {
           return ackSecureMessages(currentOtherUsername(), [m.id]);
         }
       });
-    }).catch(function () {
+      scrollChatBottom();
+    }).catch(function (err) {
+      console.warn('Live message decrypt failed', err);
       bubble.textContent = '[unable to decrypt]';
+      scrollChatBottom();
     });
     scrollChatBottom();
   }
@@ -1937,17 +1945,22 @@
     var myRecipient = String(recipientId);
     window.ExtrovertCall.on('new_dm', function (data) {
       var m = data.message;
-      if (!m || String(m.from_id) !== myRecipient) return;
+      if (!m) return;
+      var curUser = currentOtherUsername().toLowerCase();
+      var fromUser = String(data.from_username || '').toLowerCase();
+      var matchId = String(m.from_id || m.sender_id || '') === myRecipient;
+      var matchUser = fromUser && curUser && fromUser === curUser;
+      if (!matchId && !matchUser) return;
       if (!liveReady) { liveBuffer.push(data); return; }
-      addLiveIncomingMsg(m, liveOtherIdStr, data.sender_curve || liveSenderCurve);
+      addLiveIncomingMsg(m, liveOtherIdStr || myRecipient, data.sender_curve || liveSenderCurve);
     });
     window.ExtrovertCall.on('delete_dm', function (data) {
       var mid = data.message_id;
       if (!mid) return;
       var el = document.querySelector('.chat-msg[data-msg-id="' + mid + '"]');
       if (el) el.remove();
-      if (liveOtherIdStr) {
-        secureDeleteMessage(liveOtherIdStr, mid);
+      if (liveOtherIdStr || recipientId) {
+        secureDeleteMessage(liveOtherIdStr || recipientId, mid);
       }
     });
   }

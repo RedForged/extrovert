@@ -693,12 +693,13 @@ function sendDmEvent(toUsername, payload) {
   const message = Object.assign({ type: 'new_dm' }, payload);
   let delivered = false;
   const sentWs = new Set();
+  const targetLower = String(toUsername || '').trim().toLowerCase();
+  if (!targetLower) return false;
 
   for (const [userId, conns] of dmClients) {
-    const conn = conns.values().next().value;
-    if (conn && conn.username === toUsername) {
-      for (const c of conns) {
-        if (!sentWs.has(c.ws)) {
+    for (const c of conns) {
+      if (c && String(c.username || '').trim().toLowerCase() === targetLower) {
+        if (c.ws && !sentWs.has(c.ws) && c.ws.readyState === 1) {
           try { c.ws.send(JSON.stringify(message)); delivered = true; sentWs.add(c.ws); } catch {}
         }
       }
@@ -706,8 +707,8 @@ function sendDmEvent(toUsername, payload) {
   }
 
   for (const [userId, client] of clients) {
-    if (client && client.username === toUsername) {
-      if (!sentWs.has(client.ws)) {
+    if (client && String(client.username || '').trim().toLowerCase() === targetLower) {
+      if (client.ws && !sentWs.has(client.ws) && client.ws.readyState === 1) {
         try { client.ws.send(JSON.stringify(message)); delivered = true; sentWs.add(client.ws); } catch {}
       }
     }
