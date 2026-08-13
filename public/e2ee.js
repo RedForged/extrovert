@@ -28,12 +28,21 @@
   var PREKEYS_URL = '/chats/prekeys';
   var PREKEYS_COUNT_URL = '/chats/prekeys/count';
   var PREKEYS_BACKUP_URL = '/chats/prekeys/backup';
+  var REKEY_REQUEST_URL = '/chats/rekey/request';
+  var REKEY_NEEDED_URL = '/chats/rekey/needed';
+  var REKEY_ACK_URL = '/chats/rekey/ack';
   var PREKEY_THRESHOLD = 3;
 
   // Native clients (Tauri app) configure the crypto bridge before this script
   // loads: { apiBase, bearerToken, olmWasmUrl }. In the web app this is
   // undefined and everything behaves exactly as before (same-origin + CSRF).
   var NATIVE_CFG = window.ExtrovertE2EEConfig || null;
+
+  // How often to poll for a peer's ratchet-reset request while an outbound
+  // session is being reused (kept separate from the slower identity check).
+  var REKEY_CHECK_MS = (NATIVE_CFG && NATIVE_CFG.rekeyCheckMs) || 15000;
+  var rekeyLastCheck = {};
+  var rekeyRequestedAt = {};
 
   // Runtime state
   var olmInitPromise = null;
@@ -407,8 +416,19 @@
     var otks = Object.keys(keys.curve25519).map(function (id) {
       return { id: id, public_key: keys.curve25519[id] };
     });
+    // A fallback key guarantees senders can always build a fresh session even
+    // when the one-time pool is exhausted; accounts created before fallback
+    // support (or restored from old pickles) may not have one.
     var fallback = JSON.parse(account.fallback_key());
-    var fb = fallback.curve25519[Object.keys(fallback.curve25519)[0]];
+    var fbKeys = Object.keys(fallback.curve25519 || {});
+    if (!fbKeys.length) {
+      try {
+        account.generate_fallback_key();
+        fallback = JSON.parse(account.fallback_key());
+        fbKeys = Object.keys(fallback.curve25519 || {});
+      } catch (_) {}
+    }
+    var fb = fbKeys.length ? fallback.curve25519[fbKeys[0]] : undefined;
     return csrfFetch(PREKEYS_URL, {
       method: 'POST',
       body: JSON.stringify({ identity_key: myIdKeys.curve25519, ed25519_key: myIdKeys.ed25519, fallback_key: fb, one_time_keys: otks })
@@ -506,12 +526,15 @@
   function getOrCreateOutboundSession(otherId, otherIdStr, otherUsername) {
     if (sessions[otherIdStr]) {
       if (Date.now() - (sessionIdentLastCheck[otherIdStr] || 0) < OUTBOUND_SESSION_CHECK_MS) {
-        return Promise.resolve(sessions[otherIdStr]);
+        return checkRekeyNeeded(otherId, otherIdStr, otherUsername, sessions[otherIdStr]);
       }
       return checkOutboundSessionIdentity(otherId, otherIdStr, otherUsername, sessions[otherIdStr]);
     }
     return loadSession(otherIdStr).then(function (s) { return s || null; }).then(function (existing) {
       if (!existing) return createOutboundSession(otherId, otherIdStr, otherUsername);
+      if (Date.now() - (sessionIdentLastCheck[otherIdStr] || 0) < OUTBOUND_SESSION_CHECK_MS) {
+        return checkRekeyNeeded(otherId, otherIdStr, otherUsername, existing);
+      }
       return checkOutboundSessionIdentity(otherId, otherIdStr, otherUsername, existing);
     });
   }
@@ -524,20 +547,59 @@
     return idbGet(STORE_OLM, 'sessionIdent:' + otherIdStr).then(function (ident) {
       if (!ident) {
         sessionIdentLastCheck[otherIdStr] = Date.now();
-        return existing; // session predates the guard: leave as-is
+        return checkRekeyNeeded(otherId, otherIdStr, otherUsername, existing);
       }
       return e2eeFetch('/chats/' + encodeURIComponent(otherUsername) + '/safety')
         .then(function (r) { return r.json(); })
         .then(function (d) {
           sessionIdentLastCheck[otherIdStr] = Date.now();
-          if (!d || !d.their_curve25519 || d.their_curve25519 === ident) return existing;
-          console.warn('DM session stale (recipient identity changed); recreating outbound session for', otherUsername);
-          return createOutboundSession(otherId, otherIdStr, otherUsername);
+          if (d && d.their_curve25519 && d.their_curve25519 !== ident) {
+            console.warn('DM session stale (recipient identity changed); recreating outbound session for', otherUsername);
+            return rebuildOutboundAndAck(otherId, otherIdStr, otherUsername);
+          }
+          return checkRekeyNeeded(otherId, otherIdStr, otherUsername, existing);
         }).catch(function () {
           sessionIdentLastCheck[otherIdStr] = Date.now();
           return existing; // network hiccup: keep going
         });
     });
+  }
+
+  // A peer who could not decrypt one of our messages asks us to start a fresh
+  // session. Polled on every send (rate-limited), so a deadlocked conversation
+  // heals even when the identity comparison alone cannot detect the problem.
+  function checkRekeyNeeded(otherId, otherIdStr, otherUsername, existing) {
+    if (Date.now() - (rekeyLastCheck[otherIdStr] || 0) < REKEY_CHECK_MS) {
+      return Promise.resolve(existing);
+    }
+    rekeyLastCheck[otherIdStr] = Date.now();
+    return e2eeFetch(REKEY_NEEDED_URL + '?requester_id=' + encodeURIComponent(otherId))
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d && d.needed) return rebuildOutboundAndAck(otherId, otherIdStr, otherUsername);
+        return existing;
+      }).catch(function () { return existing; });
+  }
+
+  function rebuildOutboundAndAck(otherId, otherIdStr, otherUsername) {
+    return createOutboundSession(otherId, otherIdStr, otherUsername).then(function (s) {
+      return csrfFetch(REKEY_ACK_URL, {
+        method: 'POST',
+        body: JSON.stringify({ requester_id: Number(otherId) })
+      }).then(function () { return s; }).catch(function () { return s; });
+    });
+  }
+
+  // Ask a sender to rebuild the session (fired when we cannot decrypt an
+  // incoming message). Rate-limited per peer so broken history doesn't spam.
+  function requestRekeyFrom(otherIdStr) {
+    var now = Date.now();
+    if (now - (rekeyRequestedAt[otherIdStr] || 0) < 60000) return;
+    rekeyRequestedAt[otherIdStr] = now;
+    csrfFetch(REKEY_REQUEST_URL, {
+      method: 'POST',
+      body: JSON.stringify({ other_id: Number(otherIdStr) })
+    }).catch(function () {});
   }
 
   function createOutboundSession(otherId, otherIdStr, otherUsername) {
@@ -665,6 +727,7 @@
                 return saveSession(otherIdStr, live).then(function () { return pLive; });
               } catch (_) {}
             }
+            requestRekeyFrom(otherIdStr);
             throw createErr;
           }
         }
@@ -677,6 +740,7 @@
             return saveSession(otherIdStr, live).then(function () { return pLive2; });
           } catch (_) {}
         }
+        requestRekeyFrom(otherIdStr);
         throw new Error('No session for sender and message could not be decrypted.');
       });
     });
@@ -790,7 +854,11 @@
       return loadAccountFromStorage();
     }).then(function (acct) {
       if (acct) {
-        return loadSelfSessions().then(function () { return true; });
+        // Local account exists: also top up the published prekey pool. A pure
+        // recipient otherwise never replenishes, and once the pool is empty
+        // every peer's session rebuild fails (they fall back to stale sessions
+        // pinned to a dead identity and incoming messages break forever).
+        return loadSelfSessions().then(function () { return maybeReplenishPrekeys(); }).then(function () { return true; });
       }
       var storedKek = sessionStorage.getItem(KEK_SESSION_KEY);
       if (storedKek) {

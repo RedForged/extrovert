@@ -380,6 +380,17 @@ try { db.exec(`
 `); } catch {}
 try { db.exec(`CREATE INDEX IF NOT EXISTS idx_olm_prekeys_user ON olm_prekeys(user_id, used)`); } catch {}
 
+// Ratchet-reset requests: a recipient who could not decrypt an incoming DM
+// asks the sender to rebuild the Olm session with a fresh prekey bundle.
+try { db.exec(`
+  CREATE TABLE IF NOT EXISTS dm_rekey_requests (
+    requester_id INTEGER NOT NULL REFERENCES users(id),
+    target_id    INTEGER NOT NULL REFERENCES users(id),
+    created_at   INTEGER NOT NULL,
+    PRIMARY KEY (requester_id, target_id)
+  );
+`); } catch {}
+
 // --- Megolm (group) room encryption ---
 // room_messages: protocol column + Megolm ciphertext + which group session encrypted it.
 try { db.exec(`ALTER TABLE room_messages ADD COLUMN proto TEXT NOT NULL DEFAULT 'plain'`); } catch {}
@@ -980,16 +991,28 @@ function getEncryptedPrivateKey(userId) {
 // ---------- Olm (Signal-style) identity + prekeys ----------
 function setOlmIdentity(userId, identityKey, ed25519Key, fallbackKey) {
   const existing = getOlmIdentity(userId);
-  if (existing && existing.identity_key && existing.identity_key !== identityKey) {
+  const rotated = !!(existing && existing.identity_key && existing.identity_key !== identityKey);
+  if (rotated) {
     // Identity rotated (new device / explicit key reset): the old chain is
     // dead. Purge its unused one-time prekeys so a bundle can never combine
     // the new identity with a stale prekey the new account cannot decrypt.
     db.prepare(`DELETE FROM olm_prekeys WHERE user_id = ?`).run(userId);
   }
+  if (existing) {
+    // Same identity (replenish publishes): refresh the key material but keep
+    // rotated_at at the LAST REAL rotation. Bumping it on every publish would
+    // orphan still-valid prekeys in claimOlmPrekey's generation filter and
+    // silently starve the pool.
+    db.prepare(`
+      UPDATE olm_identity SET identity_key = ?, ed25519_key = ?, fallback_key = ?,
+        rotated_at = CASE WHEN ? THEN ? ELSE rotated_at END
+      WHERE user_id = ?
+    `).run(identityKey, ed25519Key, fallbackKey || null, rotated ? 1 : 0, Date.now(), userId);
+    return;
+  }
   db.prepare(`
     INSERT INTO olm_identity (user_id, identity_key, ed25519_key, fallback_key, created_at, rotated_at)
     VALUES (?,?,?,?,?,?)
-    ON CONFLICT(user_id) DO UPDATE SET identity_key = excluded.identity_key, ed25519_key = excluded.ed25519_key, fallback_key = excluded.fallback_key, rotated_at = excluded.rotated_at
   `).run(userId, identityKey, ed25519Key, fallbackKey || null, Date.now(), Date.now());
 }
 
@@ -1038,6 +1061,19 @@ function claimOlmPrekey(userId) {
   if (!row) return null;
   db.prepare(`UPDATE olm_prekeys SET used = 1 WHERE id = ?`).run(row.id);
   return { id: row.key_id, public_key: row.public_key };
+}
+
+function requestDmRekey(requesterId, targetId) {
+  db.prepare(`
+    INSERT INTO dm_rekey_requests (requester_id, target_id, created_at) VALUES (?,?,?)
+    ON CONFLICT(requester_id, target_id) DO UPDATE SET created_at = excluded.created_at
+  `).run(requesterId, targetId, Date.now());
+}
+function dmRekeyNeeded(targetId, requesterId) {
+  return !!db.prepare(`SELECT 1 FROM dm_rekey_requests WHERE requester_id = ? AND target_id = ?`).get(requesterId, targetId);
+}
+function clearDmRekey(requesterId, targetId) {
+  db.prepare(`DELETE FROM dm_rekey_requests WHERE requester_id = ? AND target_id = ?`).run(requesterId, targetId);
 }
 
 // ---------- account deletion ----------
@@ -1695,7 +1731,7 @@ module.exports = {
   // E2EE
   setPublicKey, getPublicKey, getEncryptedPrivateKey,
   // Olm (Signal-style) E2EE
-  setOlmIdentity, getOlmIdentity, setOlmBackup, addOlmPrekeys, countAvailablePrekeys, claimOlmPrekey,
+  setOlmIdentity, getOlmIdentity, setOlmBackup, addOlmPrekeys, countAvailablePrekeys, claimOlmPrekey, requestDmRekey, dmRekeyNeeded, clearDmRekey,
   // admin
   adminExists, getAllUsers, promoteUser, removeReferralBadge, banUser, unbanUser,
   // referrals

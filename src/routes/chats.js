@@ -8,7 +8,7 @@ const {
   createNotification, setPublicKey, getPublicKey, getEncryptedPrivateKey,
   editMessage, deleteMessage, getEditHistory,
   setDmSecurity, getDmSecurity, ackMessagesReceived,
-  setOlmIdentity, getOlmIdentity, addOlmPrekeys, countAvailablePrekeys, claimOlmPrekey, setOlmBackup,
+  setOlmIdentity, getOlmIdentity, addOlmPrekeys, countAvailablePrekeys, claimOlmPrekey, setOlmBackup, requestDmRekey, dmRekeyNeeded, clearDmRekey,
 } = require('../db');
 
 const router = express.Router();
@@ -121,6 +121,33 @@ router.get('/:username/bundle', (req, res) => {
     one_time_key: otk,            // { id, public_key } or null
     fallback_key: id.fallback_key,
   });
+});
+
+// Ratchet-reset protocol: a recipient who could not decrypt an incoming DM
+// asks the sender to rebuild the Olm session. The sender checks for pending
+// requests before reusing an existing session and acks after rebuilding.
+router.post('/rekey/request', express.json(), (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.status(401).json({ error: 'not logged in' });
+  const otherId = Number(req.body && req.body.other_id);
+  if (!otherId) return res.status(400).json({ error: 'missing other_id' });
+  requestDmRekey(user.id, otherId);
+  res.json({ ok: true });
+});
+router.get('/rekey/needed', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.status(401).json({ error: 'not logged in' });
+  const requesterId = Number(req.query.requester_id);
+  if (!requesterId) return res.status(400).json({ error: 'missing requester_id' });
+  res.json({ needed: dmRekeyNeeded(user.id, requesterId) });
+});
+router.post('/rekey/ack', express.json(), (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.status(401).json({ error: 'not logged in' });
+  const requesterId = Number(req.body && req.body.requester_id);
+  if (!requesterId) return res.status(400).json({ error: 'missing requester_id' });
+  clearDmRekey(requesterId, user.id);
+  res.json({ ok: true });
 });
 
 // Recipient's ed25519 identity key for safety-number verification.
