@@ -411,7 +411,9 @@
     myIdKeys = { curve25519: k.curve25519, ed25519: k.ed25519 };
   }
 
-  function publishPrekeys() {
+  // Publish (or refresh) the identity + prekey bundle. `force` skips the
+  // supersession guard and is only used by the explicit key reset.
+  function publishPrekeys(force) {
     var keys = JSON.parse(account.one_time_keys());
     var otks = Object.keys(keys.curve25519).map(function (id) {
       return { id: id, public_key: keys.curve25519[id] };
@@ -429,20 +431,36 @@
       } catch (_) {}
     }
     var fb = fbKeys.length ? fallback.curve25519[fbKeys[0]] : undefined;
-    return csrfFetch(PREKEYS_URL, {
-      method: 'POST',
-      body: JSON.stringify({ identity_key: myIdKeys.curve25519, ed25519_key: myIdKeys.ed25519, fallback_key: fb, one_time_keys: otks })
-    }).then(function (r) { return r.json(); }).then(function () {
-      account.mark_keys_as_published();
-      return saveAccount();
+    var post = function () {
+      return csrfFetch(PREKEYS_URL, {
+        method: 'POST',
+        body: JSON.stringify({ identity_key: myIdKeys.curve25519, ed25519_key: myIdKeys.ed25519, fallback_key: fb, one_time_keys: otks })
+      }).then(function (r) { return r.json(); }).then(function () {
+        account.mark_keys_as_published();
+        return saveAccount();
+      });
+    };
+    if (force) return post();
+    // Supersession guard: never re-publish an identity the server has already
+    // replaced (keys reset in another tab/device). A stale client republishing
+    // its old identity would rotate the server right back and break the newer
+    // device — the flip-flop that made the "keys no longer match" notice
+    // persist immediately after a reset. Stale clients must not publish; the
+    // notice guides them to reset instead.
+    return csrfFetch('/chats/prekeys/identity').then(function (r) { return r.json(); }).then(function (cur) {
+      if (cur && cur.identity_key && cur.identity_key !== myIdKeys.curve25519) {
+        console.warn('e2ee: local identity superseded on the server; refusing to republish', myIdKeys.curve25519, 'vs', cur.identity_key);
+        return Promise.reject(new Error('identity superseded'));
+      }
+      return post();
     });
   }
 
-  function createAndPublishAccount() {
+  function createAndPublishAccount(force) {
     createOlmAccount();
     account.generate_fallback_key();
     account.generate_one_time_keys(5);
-    return publishPrekeys();
+    return publishPrekeys(force);
   }
 
   function fetchBackup() {
@@ -2021,7 +2039,7 @@ return fetchBackup().then(function (data) {
       rekeyLastCheck = {};
       rekeyRequestedAt = {};
       sessionIdentLastCheck = {};
-      return createAndPublishAccount();
+      return createAndPublishAccount(true); // force: the reset IS the sanctioned rotation
     }).then(function () {
       return ensureSelfSessions();
     }).then(function () {

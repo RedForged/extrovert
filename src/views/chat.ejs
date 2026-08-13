@@ -79,7 +79,8 @@
   <div id="e2ee-identity-mismatch" class="card" style="display:none;text-align:center;padding:0.9rem 1rem;margin-top:10px">
     <p class="muted" style="margin:0;font-size:0.85rem">
       Your local encryption keys no longer match the ones on the server, so incoming messages can't be decrypted.
-      <a href="#" class="e2ee-reset-link" style="color:var(--text-muted);text-decoration:underline">Reset encryption keys</a> to start fresh — your contacts reconnect automatically on their next message.
+      <a href="#" class="e2ee-reset-link" style="color:var(--text-muted);text-decoration:underline">Reset encryption keys</a> to start fresh — your contacts reconnect automatically on their next message.<br>
+      <small style="font-size:0.75rem">If you already reset: another open tab or device may still hold the old keys and re-published them. Close other tabs/apps, reset once more, and keep them closed.</small>
     </p>
   </div>
   <div id="dm-security-notice" class="card" style="display:<%= security.active ? 'block' : 'none' %>;text-align:center;padding:0.9rem 1rem;margin-top:10px">

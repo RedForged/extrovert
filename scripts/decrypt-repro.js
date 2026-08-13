@@ -96,18 +96,18 @@ class SimBrowser {
   }
 
   // --- account creation + publishing (createAndPublishAccount) ---
-  async initCrypto() {
+  async initCrypto(forcePublish) {
     this.account = new Olm.Account();
     this.account.create();
     const k = JSON.parse(this.account.identity_keys());
     this.myIdKeys = { curve25519: k.curve25519, ed25519: k.ed25519 };
     this.account.generate_fallback_key();
     this.account.generate_one_time_keys(5);
-    await this.publishPrekeys();
+    await this.publishPrekeys(forcePublish);
     await this.ensureSelfSessions();
   }
 
-  async publishPrekeys() {
+  async publishPrekeys(force) {
     const keys = JSON.parse(this.account.one_time_keys());
     const otks = Object.keys(keys.curve25519).map((id) => ({ id, public_key: keys.curve25519[id] }));
     let fallback = JSON.parse(this.account.fallback_key());
@@ -120,14 +120,25 @@ class SimBrowser {
       } catch (_) {}
     }
     const fb = fbKeys.length ? fallback.curve25519[fbKeys[0]] : undefined;
-    const r = await this.csrfFetch('/chats/prekeys', {
-      method: 'POST',
-      body: JSON.stringify({ identity_key: this.myIdKeys.curve25519, ed25519_key: this.myIdKeys.ed25519, fallback_key: fb, one_time_keys: otks }),
-    });
-    if (r.status !== 200) throw new Error('prekeys publish failed: ' + r.status + ' ' + (await r.text()));
-    await r.json();
-    this.account.mark_keys_as_published();
-    await this.saveAccount();
+    const post = async () => {
+      const r = await this.csrfFetch('/chats/prekeys', {
+        method: 'POST',
+        body: JSON.stringify({ identity_key: this.myIdKeys.curve25519, ed25519_key: this.myIdKeys.ed25519, fallback_key: fb, one_time_keys: otks }),
+      });
+      if (r.status !== 200) throw new Error('prekeys publish failed: ' + r.status + ' ' + (await r.text()));
+      await r.json();
+      this.account.mark_keys_as_published();
+      await this.saveAccount();
+    };
+    if (force) return post();
+    // Supersession guard (mirrors the browser): never re-publish an identity
+    // the server has already replaced — that is the flip-flop that makes a
+    // reset look like it never happened.
+    const cur = await this.csrfFetch('/chats/prekeys/identity').then((r) => r.json());
+    if (cur && cur.identity_key && cur.identity_key !== this.myIdKeys.curve25519) {
+      throw new Error('identity superseded');
+    }
+    return post();
   }
 
   // --- self sessions (ensureSelfSessions) ---
@@ -340,7 +351,7 @@ class SimBrowser {
     this.selfOutbound = null;
     this.selfInbound = null;
     this.selfInboundBaseline = null;
-    await this.initCrypto();
+    await this.initCrypto(true); // force: the reset is the sanctioned rotation
   }
 }
 
@@ -523,6 +534,27 @@ async function main() {
   const replyMsgs = fetchMessages(bobId, aliceId);
   const pReply = await alice.decryptOlm(replyMsgs[2], false, String(bobId), bob.myIdKeys.curve25519);
   ok(pReply === 'hello alice #3', 'alice decrypts bob reply after reset -> ' + JSON.stringify(pReply));
+
+  console.log('\nTEST 10: stale client cannot clobber a reset (supersession guard)');
+  // The flip-flop the user hit: a second tab/device still holding the old
+  // account re-publishes it, rotating the server back and making the reset
+  // look like it never happened. The guard must refuse that publish.
+  const staleBob = new SimBrowser(base, 'bob', 'pw2', bobId);
+  await staleBob.login();
+  staleBob.account = new Olm.Account();
+  staleBob.account.unpickle(PICKLE_KEY, bobAccountBackup); // the PRE-reset account
+  const sk = JSON.parse(staleBob.account.identity_keys());
+  staleBob.myIdKeys = { curve25519: sk.curve25519, ed25519: sk.ed25519 };
+  ok(staleBob.myIdKeys.curve25519 === oldBobIdentity, 'stale client holds the pre-reset identity');
+  staleBob.account.generate_one_time_keys(5);
+  let guardBlocked = false;
+  try {
+    await staleBob.publishPrekeys();
+  } catch (e) {
+    guardBlocked = /superseded/.test(e.message || e);
+  }
+  ok(guardBlocked, 'stale client publish is refused by the supersession guard');
+  ok(db.getOlmIdentity(bobId).identity_key === newBobIdentity, 'server identity unchanged after the stale attempt');
 
   console.log(failures ? '\nSOME TESTS FAILED' : '\nALL TESTS PASSED');
   process.exit(failures ? 1 : 0);
