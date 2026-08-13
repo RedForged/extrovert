@@ -494,7 +494,9 @@
     var next = prev.then(function () {
       return secureLoadMessages(otherIdStr).then(function (msgs) {
         var filtered = msgs.filter(function (m) { return String(m.id) !== String(msgId); });
-        return secureSaveMessages(otherIdStr, filtered);
+        return secureSaveMessages(otherIdStr, filtered).then(function () {
+          scheduleHistorySync();
+        });
       });
     });
     secureWriteQueues[otherIdStr] = next.catch(function () {});
@@ -874,13 +876,42 @@
   }
 
   // Multi-device DM Decryption
+  function decryptSelfFallback(msg) {
+    var rawSelf = msg.sender_ciphertext || msg.body;
+    if (!rawSelf) return Promise.resolve('');
+    try {
+      var env2 = typeof rawSelf === 'string' ? JSON.parse(rawSelf) : rawSelf;
+      if (!env2 || env2.t === undefined || !env2.b) {
+        return Promise.resolve(typeof msg.body === 'string' ? msg.body : '');
+      }
+      return loadSelfSessions().then(function () {
+        if (!selfInbound) return typeof msg.body === 'string' ? msg.body : '';
+        try {
+          var p = selfInbound.decrypt(env2.t, env2.b);
+          return p || '';
+        } catch (err) {
+          if (selfInboundBaseline) {
+            resetSelfInboundBaseline();
+            try {
+              var p2 = selfInbound.decrypt(env2.t, env2.b);
+              return p2 || '';
+            } catch (_) {}
+          }
+          return '[Unable to decrypt — encrypted for previous session]';
+        }
+      });
+    } catch (_) {
+      return Promise.resolve(typeof msg.body === 'string' ? msg.body : '');
+    }
+  }
+
   function decryptOlm(msg, isOwn, otherIdStr, theirCurve25519) {
     if (isOwn) {
       return getOrCreateDeviceId().then(function (myDevId) {
         var raw = msg.body;
         if (raw) {
           try {
-            var env = JSON.parse(raw);
+            var env = typeof raw === 'string' ? JSON.parse(raw) : raw;
             if (env && env.v === 2 && env.devices && env.devices[myDevId]) {
               var targetCipher = env.devices[myDevId];
               var devKey = activeUserId() + ':' + myDevId;
@@ -888,26 +919,17 @@
                 if (live) {
                   try {
                     var p = live.decrypt(targetCipher.t, targetCipher.b);
-                    return saveSession(devKey, live).then(function () { return p; });
+                    if (p) {
+                      return saveSession(devKey, live).then(function () { return p; });
+                    }
                   } catch (_) {}
                 }
+                return decryptSelfFallback(msg);
               });
             }
           } catch (_) {}
         }
-        var env2 = JSON.parse(msg.sender_ciphertext || msg.body);
-        return loadSelfSessions().then(function () {
-          if (!selfInbound) throw new Error('No self-inbound session');
-          try {
-            return selfInbound.decrypt(env2.t, env2.b);
-          } catch (err) {
-            if (selfInboundBaseline) {
-              resetSelfInboundBaseline();
-              return selfInbound.decrypt(env2.t, env2.b);
-            }
-            throw err;
-          }
-        });
+        return decryptSelfFallback(msg);
       });
     }
 
@@ -1719,7 +1741,20 @@
         var id = el.getAttribute('data-msg-id');
         if (id) existing[id] = true;
       });
-      var missing = msgs.filter(function (m) { return !existing[String(m.id)]; });
+      // Purge deleted non-secure messages from local cache (messages that were deleted on the server)
+      var deletedNonSecure = msgs.filter(function (m) {
+        return !existing[String(m.id)] && !m.msg_secure && !m.secure;
+      });
+      if (deletedNonSecure.length > 0) {
+        deletedNonSecure.forEach(function (d) {
+          secureDeleteMessage(otherIdStr, d.id);
+        });
+      }
+
+      // Only ephemeral/secure=1 messages are meant to be rendered when missing from server
+      var missing = msgs.filter(function (m) {
+        return !existing[String(m.id)] && (m.msg_secure || m.secure);
+      });
       if (!missing.length) return;
       // Static snapshot of the server-rendered nodes (insertBefore keeps the
       // NodeList stale, so compute insertion points up front).

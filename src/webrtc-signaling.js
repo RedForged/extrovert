@@ -692,18 +692,31 @@ function getUserPresence(username) {
   return { online: false, in_call: false };
 }
 
-// Push a new DM (ciphertext only) to EVERY open tab of the recipient.
+// Push a new DM or delete event to EVERY open tab and client of the recipient.
 function sendDmEvent(toUsername, payload) {
   const message = Object.assign({ type: 'new_dm' }, payload);
   let delivered = false;
+  const sentWs = new Set();
+
   for (const [userId, conns] of dmClients) {
     const conn = conns.values().next().value;
     if (conn && conn.username === toUsername) {
       for (const c of conns) {
-        try { c.ws.send(JSON.stringify(message)); delivered = true; } catch {}
+        if (!sentWs.has(c.ws)) {
+          try { c.ws.send(JSON.stringify(message)); delivered = true; sentWs.add(c.ws); } catch {}
+        }
       }
     }
   }
+
+  for (const [userId, client] of clients) {
+    if (client && client.username === toUsername) {
+      if (!sentWs.has(client.ws)) {
+        try { client.ws.send(JSON.stringify(message)); delivered = true; sentWs.add(client.ws); } catch {}
+      }
+    }
+  }
+
   return delivered;
 }
 
