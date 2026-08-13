@@ -222,6 +222,10 @@
         emit('new_dm', msg);
         break;
 
+      case 'delete_dm':
+        emit('delete_dm', msg);
+        break;
+
       case 'error':
         emit('error', msg.message);
         break;

@@ -6,7 +6,7 @@ const {
   db, getUserByUsername, getUserById, areMutualFollowers,
   sendMessage, getConversations, getMessages, markConversationRead,
   createNotification, setPublicKey, getPublicKey, getEncryptedPrivateKey,
-  editMessage, getEditHistory,
+  editMessage, deleteMessage, getEditHistory,
   setDmSecurity, getDmSecurity, ackMessagesReceived,
   setOlmIdentity, getOlmIdentity, addOlmPrekeys, countAvailablePrekeys, claimOlmPrekey, setOlmBackup,
 } = require('../db');
@@ -240,6 +240,41 @@ router.post('/:username/edit/:mid', (req, res) => {
     return res.json({ message: msg });
   }
   res.redirect('/chats/' + req.params.username);
+});
+
+// Delete a message.
+router.post('/:username/delete/:mid', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return req.xhr ? res.json({ error: 'not logged in' }) : res.redirect('/login');
+  const other = getUserByUsername(req.params.username);
+  if (!other || !areMutualFollowers(user.id, other.id)) {
+    return req.xhr ? res.json({ error: 'cannot message' }) : res.redirect(back(req, '/chats'));
+  }
+  const msgId = Number(req.params.mid);
+  const msg = deleteMessage(msgId, user.id);
+  if (!msg) return req.xhr ? res.json({ error: 'not found or not yours' }) : res.status(404).send('Message not found or not yours.');
+
+  // Live-notify both the recipient and sender's other tabs
+  sendDmEvent(other.username, {
+    type: 'delete_dm',
+    message_id: msgId,
+    from_username: user.username,
+  });
+  sendDmEvent(user.username, {
+    type: 'delete_dm',
+    message_id: msgId,
+    from_username: user.username,
+  });
+
+  if (req.xhr) {
+    return res.json({ ok: true, deleted: msgId });
+  }
+  res.redirect('/chats/' + req.params.username);
+});
+
+router.post('/:username/messages/:mid/delete', (req, res) => {
+  req.url = `/${encodeURIComponent(req.params.username)}/delete/${encodeURIComponent(req.params.mid)}`;
+  router.handle(req, res);
 });
 
 module.exports = router;

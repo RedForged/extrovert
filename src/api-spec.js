@@ -853,6 +853,23 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
         },
       },
     },
+    '/api/v1/rooms/{id}/channels/{cid}/messages/{mid}': {
+      delete: {
+        summary: 'Delete a room message (own message, or moderator with MANAGE_MESSAGES / admin)',
+        tags: ['Rooms'],
+        security: [{ oauth2: ['write'] }],
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'integer' } },
+          { name: 'cid', in: 'path', required: true, schema: { type: 'integer' } },
+          { name: 'mid', in: 'path', required: true, schema: { type: 'integer' } },
+        ],
+        responses: {
+          '200': { description: '{ ok: true }' },
+          '403': { description: 'No permission' },
+          '404': { description: 'Room, channel, or message not found' },
+        },
+      },
+    },
     '/api/v1/rooms/{id}/session': {
       post: {
         summary: 'Publish or refresh your Megolm group session for a room, with encrypted keys per member',

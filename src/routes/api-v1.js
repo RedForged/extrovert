@@ -1165,6 +1165,24 @@ router.post('/rooms/:id/channels/:cid/messages', requireApiAuth('write'), (req, 
   res.status(201).json({ data: { id: String(msgId) } });
 });
 
+router.delete('/rooms/:id/channels/:cid/messages/:mid', requireApiAuth('write'), (req, res) => {
+  const room = db.getRoom(parseInt(req.params.id, 10));
+  if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
+  if (!db.isRoomMember(room.id, req.apiUser.id) && !req.apiUser.is_admin) return errorResponse(res, 403, 'Forbidden', 'Not a member.');
+  const channel = db.getRoomChannel(parseInt(req.params.cid, 10));
+  if (!channel || channel.room_id !== room.id) return errorResponse(res, 404, 'Not Found', 'Channel not found.');
+  const msgId = parseInt(req.params.mid, 10);
+  const msgs = db.getRoomMessages(channel.id);
+  const msg = msgs.find(m => m.id === msgId);
+  if (!msg) return errorResponse(res, 404, 'Not Found', 'Message not found.');
+  const canDeleteOwn = msg.user_id === req.apiUser.id;
+  const canModerate = db.hasRoomPermission(room.id, req.apiUser.id, 16); // 16 = PERM.MANAGE_MESSAGES
+  if (!canDeleteOwn && !canModerate && !req.apiUser.is_admin) return errorResponse(res, 403, 'Forbidden', 'No permission.');
+  db.deleteRoomMessage(msgId);
+  db.auditLog('room_message_deleted', req.apiUser.id, `Room ${room.id} Message ${msgId}`);
+  res.json({ data: { ok: true } });
+});
+
 // Publish / refresh the caller's Megolm group session for a room + encrypted keys.
 router.post('/rooms/:id/session', requireApiAuth('write'), (req, res) => {
   const room = db.getRoom(parseInt(req.params.id, 10));
@@ -1512,8 +1530,28 @@ router.patch('/messages/:id', requireApiAuth('write:direct'), (req, res) => {
 
 // Delete a message
 router.delete('/messages/:id', requireApiAuth('write:direct'), (req, res) => {
-  const ok = dm.deleteMessage(parseInt(req.params.id, 10), req.apiUser.id);
+  const msgId = parseInt(req.params.id, 10);
+  const targetMsg = db.db.prepare(`
+    SELECT m.*, u.username AS from_username, u2.username AS to_username
+    FROM messages m
+    JOIN users u ON u.id = m.from_id
+    JOIN users u2 ON u2.id = m.to_id
+    WHERE m.id = ?
+  `).get(msgId);
+  const ok = dm.deleteMessage(msgId, req.apiUser.id);
   if (!ok) return errorResponse(res, 404, 'Not Found', 'Message not found or not yours.');
+  if (targetMsg) {
+    sendDmEvent(targetMsg.to_username, {
+      type: 'delete_dm',
+      message_id: msgId,
+      from_username: targetMsg.from_username,
+    });
+    sendDmEvent(targetMsg.from_username, {
+      type: 'delete_dm',
+      message_id: msgId,
+      from_username: targetMsg.from_username,
+    });
+  }
   db.auditLog('dm_deleted', req.apiUser.id, `Message ${req.params.id}`);
   res.json({ data: { ok: true } });
 });

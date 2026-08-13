@@ -45,6 +45,7 @@
              <% if (m.edited_at) { %><span class="edited-indicator" title="<%= new Date(m.edited_at).toLocaleString() %>">· edited</span><% } %>
              <% if (m.from_id === currentUser.id) { %>
                <button class="edit-msg-btn" style="font-size:0.7rem;color:var(--text-muted);background:none;border:none;cursor:pointer;padding:0 2px;margin-left:4px;text-decoration:underline">Edit</button>
+               <button class="delete-msg-btn" data-msg-id="<%= m.id %>" data-csrf="<%= csrfToken %>" data-action="/chats/<%= other.username %>/delete/<%= m.id %>" style="font-size:0.7rem;color:var(--text-muted);background:none;border:none;cursor:pointer;padding:0 2px;margin-left:4px;text-decoration:underline">Delete</button>
              <% } %>
            </div>
            <% if (m.from_id === currentUser.id) { %>

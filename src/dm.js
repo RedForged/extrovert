@@ -62,10 +62,7 @@ function editMessage(msgId, userId, newBody, keyForSender, keyForRecipient, prot
 }
 
 function deleteMessage(msgId, userId) {
-  const msg = db.db.prepare(`SELECT * FROM messages WHERE id = ? AND from_id = ?`).get(msgId, userId);
-  if (!msg) return false;
-  db.db.prepare(`DELETE FROM messages WHERE id = ?`).run(msgId);
-  return true;
+  return !!db.deleteMessage(msgId, userId);
 }
 
 module.exports = {

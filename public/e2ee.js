@@ -340,6 +340,18 @@
     return next;
   }
 
+  function secureDeleteMessage(otherIdStr, msgId) {
+    var prev = secureWriteQueues[otherIdStr] || Promise.resolve();
+    var next = prev.then(function () {
+      return secureLoadMessages(otherIdStr).then(function (msgs) {
+        var filtered = msgs.filter(function (m) { return String(m.id) !== String(msgId); });
+        return secureSaveMessages(otherIdStr, filtered);
+      });
+    });
+    secureWriteQueues[otherIdStr] = next.catch(function () {});
+    return next;
+  }
+
   // Tell the server we received these secure messages. It deletes them once the
   // other side has acknowledged too. Best-effort: failures are non-fatal.
   function ackSecureMessages(otherUsername, ids) {
@@ -1027,17 +1039,57 @@
   function addOwnMsg(plaintext, msg) {
     var container = document.querySelector('.chat-messages');
     if (!container) return;
+    var otherUsername = currentOtherUsername();
     var div = document.createElement('div');
     div.className = 'chat-msg own';
+    div.setAttribute('data-msg-id', String(msg.id));
+    div.setAttribute('data-ts', String(msg.created_at));
+    div.setAttribute('data-proto', msg.proto || 'olm');
+    div.setAttribute('data-body', msg.body || '');
+    if (msg.key_for_sender) div.setAttribute('data-key-sender', msg.key_for_sender);
+    if (msg.key_for_recipient) div.setAttribute('data-key-recipient', msg.key_for_recipient);
+    if (msg.sender_ciphertext) div.setAttribute('data-sender-ciphertext', msg.sender_ciphertext);
+    if (msg.secure) div.setAttribute('data-secure', String(msg.secure));
+
     var bubble = document.createElement('div');
     bubble.className = 'chat-bubble';
-    bubble.textContent = plaintext;
+    if (plaintext && plaintext.indexOf('/uploads/stickers/') === 0) {
+      bubble.innerHTML = '<img src="' + esc(plaintext) + '" class="sticker-inline" style="max-width:120px;max-height:120px;vertical-align:middle" alt="sticker">';
+    } else {
+      bubble.textContent = plaintext;
+    }
     div.appendChild(bubble);
+
     var time = document.createElement('div');
     time.className = 'muted';
     time.style.cssText = 'font-size:0.7rem;padding:0 4px';
     time.textContent = window.relTime ? window.relTime(msg.created_at) : new Date(msg.created_at).toLocaleString();
+
+    var editBtn = document.createElement('button');
+    editBtn.className = 'edit-msg-btn';
+    editBtn.style.cssText = 'font-size:0.7rem;color:var(--text-muted);background:none;border:none;cursor:pointer;padding:0 2px;margin-left:4px;text-decoration:underline';
+    editBtn.textContent = 'Edit';
+    time.appendChild(editBtn);
+
+    var delBtn = document.createElement('button');
+    delBtn.className = 'delete-msg-btn';
+    delBtn.setAttribute('data-msg-id', String(msg.id));
+    delBtn.setAttribute('data-csrf', csrfToken());
+    delBtn.setAttribute('data-action', '/chats/' + encodeURIComponent(otherUsername) + '/delete/' + encodeURIComponent(msg.id));
+    delBtn.style.cssText = 'font-size:0.7rem;color:var(--text-muted);background:none;border:none;cursor:pointer;padding:0 2px;margin-left:4px;text-decoration:underline';
+    delBtn.textContent = 'Delete';
+    time.appendChild(delBtn);
+
     div.appendChild(time);
+
+    var dataInput = document.createElement('input');
+    dataInput.type = 'hidden';
+    dataInput.className = 'edit-msg-data';
+    dataInput.value = msg.body || '';
+    dataInput.setAttribute('data-csrf', csrfToken());
+    dataInput.setAttribute('data-action', '/chats/' + encodeURIComponent(otherUsername) + '/edit/' + encodeURIComponent(msg.id));
+    div.appendChild(dataInput);
+
     container.appendChild(div);
     scrollChatBottom();
   }
@@ -1060,8 +1112,9 @@
 
   // Build a chat bubble DOM node from a device-local message record.
   function makeLocalMsgDiv(m, myId) {
+    var isOwn = (String(m.from_id) === String(myId)) || !!m.own;
     var div = document.createElement('div');
-    div.className = 'chat-msg' + (String(m.from_id) === String(myId) ? ' own' : '');
+    div.className = 'chat-msg' + (isOwn ? ' own' : '');
     div.setAttribute('data-msg-id', String(m.id));
     div.setAttribute('data-ts', String(m.created_at));
     var bubble = document.createElement('div');
@@ -1077,6 +1130,38 @@
     time.className = 'muted';
     time.style.cssText = 'font-size:0.7rem;padding:0 4px';
     time.textContent = window.relTime ? window.relTime(m.created_at) : new Date(m.created_at).toLocaleString();
+    if (m.edited_at) {
+      var ed = document.createElement('span');
+      ed.className = 'edited-indicator';
+      ed.title = new Date(m.edited_at).toLocaleString();
+      ed.textContent = '· edited';
+      time.appendChild(ed);
+    }
+    if (isOwn) {
+      var otherUsername = currentOtherUsername();
+      var editBtn = document.createElement('button');
+      editBtn.className = 'edit-msg-btn';
+      editBtn.style.cssText = 'font-size:0.7rem;color:var(--text-muted);background:none;border:none;cursor:pointer;padding:0 2px;margin-left:4px;text-decoration:underline';
+      editBtn.textContent = 'Edit';
+      time.appendChild(editBtn);
+
+      var delBtn = document.createElement('button');
+      delBtn.className = 'delete-msg-btn';
+      delBtn.setAttribute('data-msg-id', String(m.id));
+      delBtn.setAttribute('data-csrf', csrfToken());
+      delBtn.setAttribute('data-action', '/chats/' + encodeURIComponent(otherUsername) + '/delete/' + encodeURIComponent(m.id));
+      delBtn.style.cssText = 'font-size:0.7rem;color:var(--text-muted);background:none;border:none;cursor:pointer;padding:0 2px;margin-left:4px;text-decoration:underline';
+      delBtn.textContent = 'Delete';
+      time.appendChild(delBtn);
+
+      var dataInput = document.createElement('input');
+      dataInput.type = 'hidden';
+      dataInput.className = 'edit-msg-data';
+      dataInput.value = m.plaintext || '';
+      dataInput.setAttribute('data-csrf', csrfToken());
+      dataInput.setAttribute('data-action', '/chats/' + encodeURIComponent(otherUsername) + '/edit/' + encodeURIComponent(m.id));
+      div.appendChild(dataInput);
+    }
     div.appendChild(time);
     return div;
   }
@@ -1194,6 +1279,8 @@
     if (!container) return;
     var div = document.createElement('div');
     div.className = 'chat-msg';
+    div.setAttribute('data-msg-id', String(m.id));
+    div.setAttribute('data-ts', String(m.created_at));
     var bubble = document.createElement('div');
     bubble.className = 'chat-bubble';
     div.appendChild(bubble);
@@ -1258,6 +1345,15 @@
       if (!m || String(m.from_id) !== myRecipient) return;
       if (!liveReady) { liveBuffer.push(data); return; }
       addLiveIncomingMsg(m, liveOtherIdStr, data.sender_curve || liveSenderCurve);
+    });
+    window.ExtrovertCall.on('delete_dm', function (data) {
+      var mid = data.message_id;
+      if (!mid) return;
+      var el = document.querySelector('.chat-msg[data-msg-id="' + mid + '"]');
+      if (el) el.remove();
+      if (liveOtherIdStr) {
+        secureDeleteMessage(liveOtherIdStr, mid);
+      }
     });
   }
 
@@ -1364,9 +1460,40 @@
 
     document.addEventListener('click', function (e) {
       var editBtn = e.target.closest('.edit-msg-btn');
-      if (!editBtn) return;
-      e.preventDefault();
-      editMessageInline(editBtn, recipientId, otherIdStr, otherUsername);
+      if (editBtn) {
+        e.preventDefault();
+        editMessageInline(editBtn, recipientId, otherIdStr, otherUsername);
+        return;
+      }
+      var delBtn = e.target.closest('.delete-msg-btn');
+      if (delBtn) {
+        e.preventDefault();
+        var msgDiv = delBtn.closest('.chat-msg');
+        if (!msgDiv) return;
+        var msgId = delBtn.dataset.msgId || msgDiv.getAttribute('data-msg-id');
+        var action = delBtn.dataset.action || ('/chats/' + encodeURIComponent(otherUsername) + '/delete/' + encodeURIComponent(msgId));
+        var csrf = delBtn.dataset.csrf || csrfToken();
+        if (!confirm('Delete this message?')) return;
+        delBtn.disabled = true;
+        fetch(action, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf, 'X-Requested-With': 'XMLHttpRequest' },
+          body: '_csrf=' + encodeURIComponent(csrf),
+        }).then(function (r) { return r.json(); }).then(function (d) {
+          if (d.ok) {
+            msgDiv.remove();
+            if (otherIdStr) {
+              secureDeleteMessage(otherIdStr, msgId);
+            }
+          } else {
+            delBtn.disabled = false;
+            alert(d.error || 'Failed to delete message');
+          }
+        }).catch(function (err) {
+          delBtn.disabled = false;
+          console.error('Delete error', err);
+        });
+      }
     });
   }
 
@@ -1646,6 +1773,7 @@
     replenishPrekeys: maybeReplenishPrekeys,
     // ---- Additional Security: device-local copies + receipt acks ----
     persistSecureMessage: securePersistMessage,
+    deleteSecureMessage: secureDeleteMessage,
     loadSecureMessages: secureLoadMessages,
     ackSecureMessages: ackSecureMessages,
     fetchRecipientBundle: fetchBundle,

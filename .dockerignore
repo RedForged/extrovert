@@ -13,3 +13,4 @@ scripts
 .env
 .cookies
 .reasonix
+reasonix.toml

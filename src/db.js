@@ -681,6 +681,14 @@ function editMessage(msgId, userId, newBody, keyForSender, keyForRecipient, prot
   return true;
 }
 
+function deleteMessage(msgId, userId) {
+  const msg = db.prepare(`SELECT * FROM messages WHERE id = ? AND from_id = ?`).get(msgId, userId);
+  if (!msg) return null;
+  db.prepare(`DELETE FROM edit_history WHERE entity_type = 'message' AND entity_id = ?`).run(msgId);
+  db.prepare(`DELETE FROM messages WHERE id = ?`).run(msgId);
+  return msg;
+}
+
 function editRoomMessage(msgId, userId, newBody, proto, ciphertext, groupSessionId) {
   const msg = db.prepare(`SELECT * FROM room_messages WHERE id = ? AND user_id = ?`).get(msgId, userId);
   if (!msg) return false;
@@ -1176,6 +1184,7 @@ function updateRoom(id, name, description, html, css, isPublic) {
   db.prepare(`UPDATE rooms SET name=?, description=?, html=?, css=?, is_public=? WHERE id=?`).run(name, description, html, css, isPublic !== undefined ? (isPublic ? 1 : 0) : undefined, id);
 }
 function deleteRoomMessage(msgId) {
+  db.prepare(`DELETE FROM edit_history WHERE entity_type = 'room_message' AND entity_id = ?`).run(msgId);
   db.prepare(`DELETE FROM room_messages WHERE id = ?`).run(msgId);
 }
 function deleteRoom(id) {
@@ -1654,7 +1663,7 @@ module.exports = {
   // mutual follow
   areMutualFollowers,
   // messages
-  sendMessage, getConversations, getMessages, countUnreadMessages, markConversationRead,
+  sendMessage, getConversations, getMessages, countUnreadMessages, markConversationRead, deleteMessage,
   // additional security (server-side deletion after both received)
   setDmSecurity, getDmSecurity, ackMessagesReceived,
   // E2EE

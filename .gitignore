@@ -9,3 +9,4 @@ server.log
 .env
 .cookies
 .reasonix
+reasonix.toml

@@ -900,8 +900,9 @@ a.conv-row:hover { color: var(--primary); }
 .post-edited { margin-top: -0.5rem; margin-bottom: 0.5rem; font-size: var(--fs-sm); }
 .edit-post-form textarea { background: var(--surface); color: var(--text); border: 1px solid var(--border-soft); border-radius: var(--radius-sm); padding: 0.5rem; }
 .room-msg-edit-input { background: var(--surface); color: var(--text); border: 1px solid var(--border-soft); border-radius: var(--radius-sm); padding: 2px 6px; }
-.edit-msg-btn, .edit-comment-btn, .edit-post-btn { cursor: pointer; background: none; border: none; color: var(--text-secondary); padding: 0; display: inline-flex; }
+.edit-msg-btn, .delete-msg-btn, .edit-comment-btn, .edit-post-btn { cursor: pointer; background: none; border: none; color: var(--text-secondary); padding: 0; display: inline-flex; }
 .edit-msg-btn:hover, .edit-comment-btn:hover, .edit-post-btn:hover { color: var(--primary); }
+.delete-msg-btn:hover { color: var(--danger); }
 
 .inline-edit-btns { display: inline-flex; gap: 6px; align-items: center; }
 .inline-edit-btns .inline-save-btn {
