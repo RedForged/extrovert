@@ -429,11 +429,57 @@
     return csrfFetch(PREKEYS_BACKUP_URL).then(function (r) { return r.json(); });
   }
 
-  function uploadBackup(pickle) {
+  function uploadBackup(accountPickle) {
     if (!kek) return Promise.resolve();
-    return encryptWithKek(pickle, kek).then(function (enc) {
-      return csrfFetch(PREKEYS_URL, { method: 'POST', body: JSON.stringify({ backup: enc }) }).then(function (r) { return r.json(); });
+    var selfOutPickle = selfOutbound ? selfOutbound.pickle(PICKLE_KEY) : null;
+    var selfInPickle = selfInboundBaseline || (selfInbound ? selfInbound.pickle(PICKLE_KEY) : null);
+    return Promise.all([
+      encryptWithKek(accountPickle, kek),
+      selfOutPickle ? encryptWithKek(selfOutPickle, kek) : Promise.resolve(null),
+      selfInPickle ? encryptWithKek(selfInPickle, kek) : Promise.resolve(null),
+    ]).then(function (parts) {
+      var payload;
+      if (parts[1] || parts[2]) {
+        // v2: also back up the self-session pickles so a second device can
+        // decrypt its own sent copies. v1 payloads (plain account) still parse.
+        payload = JSON.stringify({ v: 2, account: parts[0], selfOutbound: parts[1], selfInbound: parts[2] });
+      } else {
+        payload = parts[0];
+      }
+      return csrfFetch(PREKEYS_URL, { method: 'POST', body: JSON.stringify({ backup: payload }) }).then(function (r) { return r.json(); });
     });
+  }
+
+  // Split a stored backup into its parts: v1 payloads are the raw KEK-encrypted
+  // account blob; v2 payloads are a JSON envelope { v: 2, account, selfOutbound,
+  // selfInbound } so the self-session pair can be restored on a new device too.
+  function unwrapBackup(enc) {
+    if (String(enc).indexOf('{') !== 0) return { account: enc };
+    try {
+      var parsed = JSON.parse(enc);
+      if (parsed && parsed.v === 2) return parsed;
+    } catch (e) {}
+    return { account: enc };
+  }
+
+  // Restore the self-session pair from a v2 backup (KEK-encrypted). The inbound
+  // baseline (state at creation) can walk forward through the whole sent
+  // history, so own copies decrypt on the new device too.
+  function restoreSelfSessionsFromBackup(data) {
+    var parsed = data && data.backup ? unwrapBackup(data.backup) : null;
+    if (!parsed || parsed.v !== 2) return Promise.resolve();
+    var restoreIn = parsed.selfInbound ? decryptWithKek(parsed.selfInbound, kek).then(function (pickle) {
+      var s = new Olm.Session();
+      s.unpickle(PICKLE_KEY, pickle);
+      selfInbound = s;
+      selfInboundBaseline = pickle;
+    }).catch(function () {}) : Promise.resolve();
+    var restoreOut = parsed.selfOutbound ? decryptWithKek(parsed.selfOutbound, kek).then(function (pickle) {
+      var so = new Olm.Session();
+      so.unpickle(PICKLE_KEY, pickle);
+      selfOutbound = so;
+    }).catch(function () {}) : Promise.resolve();
+    return Promise.all([restoreIn, restoreOut]);
   }
 
   function maybeReplenishPrekeys() {
@@ -449,25 +495,48 @@
     return e2eeFetch('/chats/' + encodeURIComponent(otherUsername) + '/bundle').then(function (r) { return r.json(); });
   }
 
+  // Re-check the recipient's identity at most this often even while the
+  // outbound session is cached in memory; a receiver who reset/rotated keys
+  // would otherwise keep getting undecryptable messages until a reload.
+  // Native clients may tune it via ExtrovertE2EEConfig.sessionCheckMs.
+  var OUTBOUND_SESSION_CHECK_MS = (NATIVE_CFG && NATIVE_CFG.sessionCheckMs) || 5 * 60 * 1000;
+  var sessionIdentLastCheck = {};
+
   // Outgoing session (sender -> recipient). Always resolves a Session.
   function getOrCreateOutboundSession(otherId, otherIdStr, otherUsername) {
-    if (sessions[otherIdStr]) return Promise.resolve(sessions[otherIdStr]);
+    if (sessions[otherIdStr]) {
+      if (Date.now() - (sessionIdentLastCheck[otherIdStr] || 0) < OUTBOUND_SESSION_CHECK_MS) {
+        return Promise.resolve(sessions[otherIdStr]);
+      }
+      return checkOutboundSessionIdentity(otherId, otherIdStr, otherUsername, sessions[otherIdStr]);
+    }
     return loadSession(otherIdStr).then(function (s) { return s || null; }).then(function (existing) {
       if (!existing) return createOutboundSession(otherId, otherIdStr, otherUsername);
-      // The recipient may have rotated their keys (e.g. reset) since this
-      // session was created; a stale session can never be decrypted by them.
-      // Re-check their current identity (cheap GET — no prekey is claimed) and
-      // recreate the session if it changed.
-      return idbGet(STORE_OLM, 'sessionIdent:' + otherIdStr).then(function (ident) {
-        if (!ident) return existing; // session predates the guard: leave as-is
-        return e2eeFetch('/chats/' + encodeURIComponent(otherUsername) + '/safety')
-          .then(function (r) { return r.json(); })
-          .then(function (d) {
-            if (!d || !d.their_curve25519 || d.their_curve25519 === ident) return existing;
-            console.warn('DM session stale (recipient identity changed); recreating outbound session for', otherUsername);
-            return createOutboundSession(otherId, otherIdStr, otherUsername);
-          }).catch(function () { return existing; }); // network hiccup: keep going
-      });
+      return checkOutboundSessionIdentity(otherId, otherIdStr, otherUsername, existing);
+    });
+  }
+
+  // The recipient may have rotated their keys (e.g. reset) since this session
+  // was created; a stale session can never be decrypted by them. Re-check their
+  // current identity (cheap GET — no prekey is claimed) and recreate the
+  // session if it changed.
+  function checkOutboundSessionIdentity(otherId, otherIdStr, otherUsername, existing) {
+    return idbGet(STORE_OLM, 'sessionIdent:' + otherIdStr).then(function (ident) {
+      if (!ident) {
+        sessionIdentLastCheck[otherIdStr] = Date.now();
+        return existing; // session predates the guard: leave as-is
+      }
+      return e2eeFetch('/chats/' + encodeURIComponent(otherUsername) + '/safety')
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          sessionIdentLastCheck[otherIdStr] = Date.now();
+          if (!d || !d.their_curve25519 || d.their_curve25519 === ident) return existing;
+          console.warn('DM session stale (recipient identity changed); recreating outbound session for', otherUsername);
+          return createOutboundSession(otherId, otherIdStr, otherUsername);
+        }).catch(function () {
+          sessionIdentLastCheck[otherIdStr] = Date.now();
+          return existing; // network hiccup: keep going
+        });
     });
   }
 
@@ -505,7 +574,11 @@
       selfInbound.create_inbound(account, initMsg.body);
       account.remove_one_time_keys(selfInbound);
       selfInboundBaseline = selfInbound.pickle(PICKLE_KEY);
-      return saveSelfSessions().then(function () { return saveAccount(); });
+      return saveSelfSessions().then(function () { return saveAccount(); }).then(function () {
+        // Refresh the password backup so a second device can restore this
+        // self-session pair (their own sent copies stay decryptable).
+        return uploadBackup(account.pickle(PICKLE_KEY));
+      });
     });
   }
 
@@ -568,7 +641,16 @@
           try {
             ns.create_inbound(account, e.b);
             account.remove_one_time_keys(ns);
-            return saveSessionBaseline(otherIdStr, ns).then(function () {
+            // Record who this session was built against, so the outbound-identity
+            // guard (checkOutboundSessionIdentity) can detect a receiver-side key
+            // rotation for sessions that were born here (create_inbound), not
+            // only for create_outbound sessions.
+            var identWrite = theirCurve25519
+              ? idbSet(STORE_OLM, 'sessionIdent:' + otherIdStr, theirCurve25519)
+              : Promise.resolve();
+            return identWrite.then(function () {
+              return saveSessionBaseline(otherIdStr, ns);
+            }).then(function () {
               return saveSession(otherIdStr, ns);
             }).then(function () {
               return saveAccount();
@@ -721,11 +803,12 @@
           if (!data.backup) {
             return createAndPublishAccount().then(function () { return uploadBackup(account.pickle(PICKLE_KEY)); });
           }
-          return decryptWithKek(data.backup, kek).then(function (pickle) {
+          return decryptWithKek(unwrapBackup(data.backup).account, kek).then(function (pickle) {
             account = new Olm.Account();
             account.unpickle(PICKLE_KEY, pickle);
             var k = JSON.parse(account.identity_keys());
             myIdKeys = { curve25519: k.curve25519, ed25519: k.ed25519 };
+            return restoreSelfSessionsFromBackup(data);
           }).then(function () { return maybeReplenishPrekeys(); });
         }).then(function () { return saveAccount(); }).then(function () {
           sessionStorage.removeItem(KEK_SESSION_KEY);
@@ -738,6 +821,15 @@
       }).then(function (data) {
         if (data && data.backup) {
           // A backup exists but we have no password key -> ask for it once.
+          if (opts.onNeedsPassword) opts.onNeedsPassword();
+          return false;
+        }
+        if (data && data.has_identity) {
+          // E2EE was set up on another browser/device (identity published, no
+          // recoverable backup). Never silently mint a new identity here — the
+          // peer's session is pinned to the old one and every incoming message
+          // would become "[unable to decrypt]" forever. Ask for the password
+          // (or an explicit key reset) instead.
           if (opts.onNeedsPassword) opts.onNeedsPassword();
           return false;
         }
@@ -1729,16 +1821,16 @@
         return loadAccountFromStorage();
       }).then(function (acct) {
         if (acct) return loadSelfSessions();
-        return fetchBackup().then(function (data) {
+return fetchBackup().then(function (data) {
           if (data.backup) {
-            return decryptWithKek(data.backup, kek).then(function (pickle) {
-              account = new Olm.Account();
-              account.unpickle(PICKLE_KEY, pickle);
-              var k = JSON.parse(account.identity_keys());
-              myIdKeys = { curve25519: k.curve25519, ed25519: k.ed25519 };
-            });
+            return decryptWithKek(unwrapBackup(data.backup).account, kek).then(function (pickle) {
+                account = new Olm.Account();
+                account.unpickle(PICKLE_KEY, pickle);
+                var k = JSON.parse(account.identity_keys());
+                myIdKeys = { curve25519: k.curve25519, ed25519: k.ed25519 };
+                return restoreSelfSessionsFromBackup(data);
+              });
           }
-          // No backup yet (e.g. registered before key setup existed): mint one.
           return createAndPublishAccount().then(function () {
             return uploadBackup(account.pickle(PICKLE_KEY));
           });
@@ -1788,6 +1880,39 @@
     input.onkeydown = function (e) {
       if (e.key === 'Enter') { e.preventDefault(); doUnlock(); }
     };
+  }
+
+  // Explicit key reset ("Forgot password / can't unlock? Reset keys"): mint a
+  // brand-new identity on purpose. This is the only sanctioned path to create a
+  // new identity when the old one is unrecoverable — a silent mint would break
+  // decryption of every peer message instead.
+  function resetEncryptionKeys() {
+    return initOlm().then(function () { return getOrCreateDeviceKey(); }).then(function () {
+      selfOutbound = null;
+      selfInbound = null;
+      selfInboundBaseline = null;
+      sessions = {};
+      sessionBaselinePickles = {};
+      sessionBaselines = {};
+      return createAndPublishAccount();
+    }).then(function () {
+      return uploadBackup(account.pickle(PICKLE_KEY));
+    }).then(function () {
+      window.location.reload();
+    }).catch(function (err) {
+      console.error('key reset failed', err);
+      window.alert('Failed to reset encryption keys.');
+    });
+  }
+
+  function initResetLink() {
+    var link = document.getElementById('e2ee-reset-link');
+    if (!link) return;
+    link.addEventListener('click', function (ev) {
+      ev.preventDefault();
+      if (!window.confirm('Reset encryption keys? Old messages from other devices can no longer be decrypted.')) return;
+      resetEncryptionKeys();
+    });
   }
 
   // ---- Main ----
@@ -1855,6 +1980,7 @@
   document.addEventListener('DOMContentLoaded', function () {
     interceptLoginForm();
     interceptRegisterForm();
+    initResetLink();
 
     var sendForm = document.querySelector('.chat-form');
     if (!sendForm) {

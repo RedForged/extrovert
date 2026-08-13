@@ -68,27 +68,34 @@ router.post('/prekeys', express.json(), (req, res) => {
   const ed25519Key = String(req.body.ed25519_key || '').trim();
   const fallbackKey = String(req.body.fallback_key || '').trim() || null;
   const oneTimeKeys = Array.isArray(req.body.one_time_keys) ? req.body.one_time_keys : [];
-  if (!identityKey || !ed25519Key || identityKey.length > 5000 || ed25519Key.length > 5000) {
+  const backup = String(req.body.backup || '').trim().slice(0, 200000) || null;
+  // Accept backup-only uploads (client pushes the password-encrypted recovery
+  // blob separately from the public identity bundle).
+  if (!identityKey && !backup) return res.status(400).json({ error: 'invalid identity' });
+  if (identityKey && (!ed25519Key || identityKey.length > 5000 || ed25519Key.length > 5000)) {
     return res.status(400).json({ error: 'invalid identity' });
   }
-  setOlmIdentity(user.id, identityKey, ed25519Key, fallbackKey);
+  if (identityKey) setOlmIdentity(user.id, identityKey, ed25519Key, fallbackKey);
   if (oneTimeKeys.length) {
     const clean = oneTimeKeys
       .filter(k => k && k.id && k.public_key && String(k.public_key).length <= 5000)
       .map(k => ({ id: String(k.id), public_key: String(k.public_key) }));
     if (clean.length) addOlmPrekeys(user.id, clean);
   }
-  const backup = String(req.body.backup || '').trim().slice(0, 200000) || null;
   if (backup) setOlmBackup(user.id, backup);
   res.json({ ok: true, available: countAvailablePrekeys(user.id) });
 });
 
 // Download the password-encrypted Olm account backup (for new-browser recovery).
+// has_identity tells the client whether an E2EE identity was ever published on
+// the server; with no backup and an existing identity, the client must prompt
+// instead of silently minting a new identity (which would break decryption of
+// every peer message).
 router.get('/prekeys/backup', (req, res) => {
   const user = res.locals.currentUser;
   if (!user) return res.status(401).json({ error: 'not logged in' });
   const id = getOlmIdentity(user.id);
-  res.json({ backup: id ? id.backup : null });
+  res.json({ backup: id ? id.backup : null, has_identity: !!(id && id.identity_key) });
 });
 
 // How many unused one-time prekeys the current user still has published.

@@ -979,6 +979,13 @@ function getEncryptedPrivateKey(userId) {
 
 // ---------- Olm (Signal-style) identity + prekeys ----------
 function setOlmIdentity(userId, identityKey, ed25519Key, fallbackKey) {
+  const existing = getOlmIdentity(userId);
+  if (existing && existing.identity_key && existing.identity_key !== identityKey) {
+    // Identity rotated (new device / explicit key reset): the old chain is
+    // dead. Purge its unused one-time prekeys so a bundle can never combine
+    // the new identity with a stale prekey the new account cannot decrypt.
+    db.prepare(`DELETE FROM olm_prekeys WHERE user_id = ?`).run(userId);
+  }
   db.prepare(`
     INSERT INTO olm_identity (user_id, identity_key, ed25519_key, fallback_key, created_at, rotated_at)
     VALUES (?,?,?,?,?,?)
@@ -991,7 +998,15 @@ function getOlmIdentity(userId) {
 }
 
 function setOlmBackup(userId, backup) {
-  db.prepare(`UPDATE olm_identity SET backup = ? WHERE user_id = ?`).run(backup || null, userId);
+  // UPSERT: backup-only uploads must land even before a full identity publish
+  // (the identity row may not exist yet on first password unlock). identity_key
+  // is NOT NULL in the schema, so an incomplete row uses empty-string stubs —
+  // getOlmIdentity handles them as "no identity published yet".
+  db.prepare(`
+    INSERT INTO olm_identity (user_id, identity_key, ed25519_key, backup, created_at, rotated_at)
+    VALUES (?, '', '', ?, ?, ?)
+    ON CONFLICT(user_id) DO UPDATE SET backup = excluded.backup
+  `).run(userId, backup || null, Date.now(), Date.now());
 }
 
 function addOlmPrekeys(userId, prekeys) {
