@@ -681,21 +681,41 @@
       });
     }
     // Incoming messages. A PreKey message (t=0) starts a session chain if none
-    // exists or if a new device/rotation occurred. If an existing baseline or
-    // live session matches the message, we decrypt through that existing session.
-    // Otherwise, we derive a new inbound session from the PreKey message.
+    // exists or if a new device/rotation occurred. Otherwise we decrypt through
+    // the LIVE session first: it carries the most advanced ratchet state (both
+    // sending and receiving chains), and ratchet-advance messages — which
+    // matches_inbound reports as "not matching" — must go through it so the
+    // advance is persisted. The BASELINE is a creation-state snapshot used only
+    // to replay history behind the live session's position; decrypting through
+    // it must never overwrite live, or the sending chain would regress and the
+    // conversation would desync (BAD_MESSAGE_KEY_ID -> "[unable to decrypt]").
     var e = JSON.parse(msg.body);
-    return loadSessionBaseline(otherIdStr).then(function (base) {
-      if (base && base.matches_inbound(e.b)) {
+    return loadSession(otherIdStr).then(function (live) {
+      if (live) {
+        var livePickle = live.pickle(PICKLE_KEY);
         try {
-          return base.decrypt(e.t, e.b);
-        } catch (_) {}
-      }
-      return loadSession(otherIdStr).then(function (live) {
-        if (live && live.matches_inbound(e.b)) {
+          var plain = live.decrypt(e.t, e.b);
+          return saveSession(otherIdStr, live).then(function () { return plain; });
+        } catch (_) {
+          // A failed decrypt must not leave the in-memory session (also used
+          // for sending replies) half-advanced: restore its last-good state.
           try {
-            var plain = live.decrypt(e.t, e.b);
-            return saveSession(otherIdStr, live).then(function () { return plain; });
+            var restored = new Olm.Session();
+            restored.unpickle(PICKLE_KEY, livePickle);
+            sessions[otherIdStr] = restored;
+          } catch (_) {}
+        }
+      }
+      return loadSessionBaseline(otherIdStr).then(function (base) {
+        if (base) {
+          try {
+            var plain2 = base.decrypt(e.t, e.b);
+            // Replaying old history: keep the (more advanced) live session.
+            // With no live session yet, promote the advanced baseline.
+            return (live
+              ? Promise.resolve(plain2)
+              : saveSession(otherIdStr, base).then(function () { return plain2; })
+            );
           } catch (_) {}
         }
         if (e.t === 0) {
@@ -711,34 +731,31 @@
               ? idbSet(STORE_OLM, 'sessionIdent:' + otherIdStr, theirCurve25519)
               : Promise.resolve();
             return identWrite.then(function () {
+              // Baseline = state at creation (before the first decrypt), so
+              // history can always be re-walked from the start of the chain.
               return saveSessionBaseline(otherIdStr, ns);
             }).then(function () {
-              return saveSession(otherIdStr, ns);
-            }).then(function () {
-              return saveAccount();
-            }).then(function () { return ns.decrypt(e.t, e.b); });
+              // Decrypt first, then persist: the saved live session must
+              // reflect the advanced ratchet or replies/reloads desync.
+              return ns.decrypt(e.t, e.b);
+            }).then(function (plain3) {
+              return saveSession(otherIdStr, ns).then(function () { return plain3; });
+            }).then(function (plain3) {
+              return saveAccount().then(function () { return plain3; });
+            });
           } catch (createErr) {
             if (base) {
-              try { return base.decrypt(e.t, e.b); } catch (_) {}
-            }
-            if (live) {
               try {
-                var pLive = live.decrypt(e.t, e.b);
-                return saveSession(otherIdStr, live).then(function () { return pLive; });
+                var pBase = base.decrypt(e.t, e.b);
+                return (live
+                  ? Promise.resolve(pBase)
+                  : saveSession(otherIdStr, base).then(function () { return pBase; })
+                );
               } catch (_) {}
             }
             requestRekeyFrom(otherIdStr);
             throw createErr;
           }
-        }
-        if (base) {
-          try { return base.decrypt(e.t, e.b); } catch (_) {}
-        }
-        if (live) {
-          try {
-            var pLive2 = live.decrypt(e.t, e.b);
-            return saveSession(otherIdStr, live).then(function () { return pLive2; });
-          } catch (_) {}
         }
         requestRekeyFrom(otherIdStr);
         throw new Error('No session for sender and message could not be decrypted.');
@@ -1071,32 +1088,64 @@
       var deliveredIds = [];
       var ops = keys.filter(function (k) { return String(k.room_id) === String(roomId) && String(k.sender_id) !== String(myId); })
         .map(function (k) {
-          return loadSession(String(k.sender_id)).then(function (s) {
+          return loadSession(String(k.sender_id)).then(function (live) {
             var env = JSON.parse(k.encrypted_key);
-            if (s && s.matches_inbound(env.b)) {
+            // Same discipline as decryptOlm: live session first so ratchet
+            // advances are persisted, baseline only for replaying old key
+            // shares (never overwriting live), and decrypt-before-persist on
+            // the fresh-session branch.
+            if (live) {
+              var livePickle = live.pickle(PICKLE_KEY);
               try {
-                return s.decrypt(env.t, env.b);
-              } catch (_) {}
-            }
-            if (env.t === 0) {
-              var ns = new Olm.Session();
-              try {
-                ns.create_inbound(account, env.b);
-                account.remove_one_time_keys(ns);
-                return saveSessionBaseline(String(k.sender_id), ns).then(function () {
-                  return saveSession(String(k.sender_id), ns);
-                }).then(function () {
-                  return saveAccount();
-                }).then(function () { return ns.decrypt(env.t, env.b); });
-              } catch (err) {
-                if (s) {
-                  try { return s.decrypt(env.t, env.b); } catch (_) {}
-                }
-                throw err;
+                var plain = live.decrypt(env.t, env.b);
+                return saveSession(String(k.sender_id), live).then(function () { return plain; });
+              } catch (_) {
+                // A failed decrypt must not leave the in-memory session (also
+                // used for sending) half-advanced: restore last-good state.
+                try {
+                  var restored = new Olm.Session();
+                  restored.unpickle(PICKLE_KEY, livePickle);
+                  sessions[String(k.sender_id)] = restored;
+                } catch (_) {}
               }
             }
-            if (!s) throw new Error('No session to decrypt room key');
-            return s.decrypt(env.t, env.b);
+            return loadSessionBaseline(String(k.sender_id)).then(function (base) {
+              if (base) {
+                try {
+                  var plain2 = base.decrypt(env.t, env.b);
+                  return (live
+                    ? Promise.resolve(plain2)
+                    : saveSession(String(k.sender_id), base).then(function () { return plain2; })
+                  );
+                } catch (_) {}
+              }
+              if (env.t === 0) {
+                var ns = new Olm.Session();
+                try {
+                  ns.create_inbound(account, env.b);
+                  account.remove_one_time_keys(ns);
+                  return saveSessionBaseline(String(k.sender_id), ns).then(function () {
+                    return ns.decrypt(env.t, env.b);
+                  }).then(function (plain3) {
+                    return saveSession(String(k.sender_id), ns).then(function () { return plain3; });
+                  }).then(function (plain3) {
+                    return saveAccount().then(function () { return plain3; });
+                  });
+                } catch (createErr) {
+                  if (base) {
+                    try {
+                      var pBase = base.decrypt(env.t, env.b);
+                      return (live
+                        ? Promise.resolve(pBase)
+                        : saveSession(String(k.sender_id), base).then(function () { return pBase; })
+                      );
+                    } catch (_) {}
+                  }
+                  throw createErr;
+                }
+              }
+              throw new Error('No session to decrypt room key');
+            });
           }).then(function (sessionKey) {
             var ig = new Olm.InboundGroupSession();
             ig.create(sessionKey);

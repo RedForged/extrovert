@@ -24,6 +24,7 @@
     "test:self-session": "node scripts/self-session-test.js",
     "test:session-reload": "node scripts/session-reload-test.js",
     "test:delete-message": "node scripts/delete-message-test.js",
+    "test:decrypt-repro": "node scripts/decrypt-repro.js",
     "test:lifecycle": "node scripts/e2ee-full-lifecycle-test.js"
   },
   "dependencies": {
