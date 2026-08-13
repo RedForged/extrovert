@@ -21,6 +21,27 @@
     <div id="push-status" style="font-size:0.8rem;color:var(--text-muted);margin-bottom:16px"></div>
     <script src="/static/settings.js" defer></script>
     <hr>
+    <h4>Active devices</h4>
+    <p style="font-size:0.85rem;color:var(--text-muted);margin:-4px 0 10px">Devices registered for end-to-end encrypted messaging.</p>
+    <% if (devices && devices.length) { %>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px">
+        <% devices.forEach(function(dev) { %>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;font-size:0.85rem">
+            <div>
+              <div style="font-weight:600;color:var(--text-normal)"><%= dev.device_name || 'Device' %></div>
+              <div style="font-size:0.75rem;color:var(--text-muted);font-family:monospace"><%= dev.device_id.slice(0, 16) %>…</div>
+            </div>
+            <form method="post" action="/settings/devices/<%= encodeURIComponent(dev.device_id) %>/delete" style="margin:0">
+              <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+              <button class="btn ghost danger" style="padding:4px 8px;font-size:0.75rem" onclick="return confirm('Revoke this device? It will no longer receive new messages.')">Revoke</button>
+            </form>
+          </div>
+        <% }); %>
+      </div>
+    <% } else { %>
+      <p class="muted" style="font-size:0.8rem;margin-bottom:14px">No active devices registered yet.</p>
+    <% } %>
+    <hr>
     <a class="btn ghost full" href="/settings/developers" style="margin-bottom:8px"><%- include('partials/icon', { name: 'key', size: 15 }) %> Developer applications</a>
     <a class="btn ghost full" href="/docs" style="margin-bottom:8px"><%- include('partials/icon', { name: 'doc', size: 15 }) %> Documentation</a>
     <a class="btn ghost full" href="/developers/docs" style="margin-bottom:8px"><%- include('partials/icon', { name: 'code', size: 15 }) %> API reference (Swagger UI)</a>

@@ -14,8 +14,9 @@ router.get('/', (req, res) => {
   if (!user) return res.redirect('/login');
   const theme = getUserTheme(user.id);
   const developerMode = getUserDeveloperMode(user.id);
+  const devices = db.getUserDevices(user.id);
   const { version } = require('../../package.json');
-  res.render('settings', { theme, version, developerMode });
+  res.render('settings', { theme, version, developerMode, devices });
 });
 
 router.post('/', (req, res) => {
@@ -24,6 +25,14 @@ router.post('/', (req, res) => {
   const theme = req.body.theme === 'light' ? 'light' : 'dark';
   setUserTheme(user.id, theme);
   setUserDeveloperMode(user.id, req.body.developer_mode === '1');
+  res.redirect('/settings');
+});
+
+// Revoke an active device
+router.post('/devices/:deviceId/delete', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.redirect('/login');
+  db.deleteUserDevice(user.id, req.params.deviceId);
   res.redirect('/settings');
 });
 

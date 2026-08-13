@@ -9,6 +9,7 @@ const {
   editMessage, deleteMessage, getEditHistory,
   setDmSecurity, getDmSecurity, ackMessagesReceived,
   setOlmIdentity, getOlmIdentity, addOlmPrekeys, countAvailablePrekeys, claimOlmPrekey, setOlmBackup, requestDmRekey, dmRekeyNeeded, clearDmRekey,
+  registerUserDevice, getUserDevices, getUserDevice, touchUserDevice, deleteUserDevice, addDevicePrekeys, countAvailableDevicePrekeys, claimDevicePrekey, claimAllDevicePrekeysForUser, setUserHistoryBackup, getUserHistoryBackup,
 } = require('../db');
 
 const router = express.Router();
@@ -59,41 +60,104 @@ router.post('/pubkey', express.json(), (req, res) => {
   res.json({ ok: true });
 });
 
-// Publish / refresh Olm (Signal-style) identity + prekey bundle.
-// Server stores PUBLIC material only; private halves stay client-side.
+// Publish / refresh Olm identity + prekey bundle (supports per-device multi-ID).
 router.post('/prekeys', express.json(), (req, res) => {
   const user = res.locals.currentUser;
   if (!user) return res.status(401).json({ error: 'not logged in' });
+  const deviceId = String(req.body.device_id || '').trim();
   const identityKey = String(req.body.identity_key || '').trim();
   const ed25519Key = String(req.body.ed25519_key || '').trim();
   const fallbackKey = String(req.body.fallback_key || '').trim() || null;
+  const deviceName = String(req.body.device_name || '').trim() || null;
   const oneTimeKeys = Array.isArray(req.body.one_time_keys) ? req.body.one_time_keys : [];
   const backup = String(req.body.backup || '').trim().slice(0, 200000) || null;
-  // Accept backup-only uploads (client pushes the password-encrypted recovery
-  // blob separately from the public identity bundle).
-  if (!identityKey && !backup) return res.status(400).json({ error: 'invalid identity' });
-  if (identityKey && (!ed25519Key || identityKey.length > 5000 || ed25519Key.length > 5000)) {
-    return res.status(400).json({ error: 'invalid identity' });
+
+  if (deviceId && identityKey && ed25519Key) {
+    registerUserDevice(user.id, deviceId, identityKey, ed25519Key, fallbackKey, deviceName);
+    if (oneTimeKeys.length) {
+      const clean = oneTimeKeys
+        .filter(k => k && k.id && k.public_key && String(k.public_key).length <= 5000)
+        .map(k => ({ id: String(k.id), public_key: String(k.public_key) }));
+      if (clean.length) addDevicePrekeys(user.id, deviceId, clean);
+    }
+  } else if (identityKey) {
+    if (!ed25519Key || identityKey.length > 5000 || ed25519Key.length > 5000) {
+      return res.status(400).json({ error: 'invalid identity' });
+    }
+    setOlmIdentity(user.id, identityKey, ed25519Key, fallbackKey);
+    if (oneTimeKeys.length) {
+      const clean = oneTimeKeys
+        .filter(k => k && k.id && k.public_key && String(k.public_key).length <= 5000)
+        .map(k => ({ id: String(k.id), public_key: String(k.public_key) }));
+      if (clean.length) addOlmPrekeys(user.id, clean);
+    }
   }
-  if (identityKey) setOlmIdentity(user.id, identityKey, ed25519Key, fallbackKey);
-  if (oneTimeKeys.length) {
-    const clean = oneTimeKeys
-      .filter(k => k && k.id && k.public_key && String(k.public_key).length <= 5000)
-      .map(k => ({ id: String(k.id), public_key: String(k.public_key) }));
-    if (clean.length) addOlmPrekeys(user.id, clean);
-  }
+
   if (backup) {
     const backupIdentity = String(req.body.backup_identity || '').trim() || null;
     setOlmBackup(user.id, backup, backupIdentity);
   }
-  res.json({ ok: true, available: countAvailablePrekeys(user.id) });
+  const avail = deviceId ? countAvailableDevicePrekeys(user.id, deviceId) : countAvailablePrekeys(user.id);
+  res.json({ ok: true, available: avail });
 });
 
-// Download the password-encrypted Olm account backup (for new-browser recovery).
-// has_identity tells the client whether an E2EE identity was ever published on
-// the server; with no backup and an existing identity, the client must prompt
-// instead of silently minting a new identity (which would break decryption of
-// every peer message).
+// Explicit device registration endpoint
+router.post('/devices/register', express.json(), (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.status(401).json({ error: 'not logged in' });
+  const deviceId = String(req.body.device_id || '').trim();
+  const identityKey = String(req.body.identity_key || '').trim();
+  const ed25519Key = String(req.body.ed25519_key || '').trim();
+  const fallbackKey = String(req.body.fallback_key || '').trim() || null;
+  const deviceName = String(req.body.device_name || '').trim() || null;
+  const oneTimeKeys = Array.isArray(req.body.one_time_keys) ? req.body.one_time_keys : [];
+  if (!deviceId || !identityKey || !ed25519Key) {
+    return res.status(400).json({ error: 'device_id, identity_key, and ed25519_key required' });
+  }
+  registerUserDevice(user.id, deviceId, identityKey, ed25519Key, fallbackKey, deviceName);
+  if (oneTimeKeys.length) {
+    const clean = oneTimeKeys
+      .filter(k => k && k.id && k.public_key && String(k.public_key).length <= 5000)
+      .map(k => ({ id: String(k.id), public_key: String(k.public_key) }));
+    if (clean.length) addDevicePrekeys(user.id, deviceId, clean);
+  }
+  res.json({ ok: true, device_id: deviceId, available: countAvailableDevicePrekeys(user.id, deviceId) });
+});
+
+// List all active devices for the current user
+router.get('/devices', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.status(401).json({ error: 'not logged in' });
+  res.json({ devices: getUserDevices(user.id) });
+});
+
+// Revoke a device
+router.delete('/devices/:deviceId', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.status(401).json({ error: 'not logged in' });
+  deleteUserDevice(user.id, req.params.deviceId);
+  res.json({ ok: true });
+});
+
+// Upload password-encrypted history backup
+router.post('/history/backup', express.json({ limit: '10mb' }), (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.status(401).json({ error: 'not logged in' });
+  const backupData = String(req.body.backup_data || '').trim();
+  if (!backupData) return res.status(400).json({ error: 'backup_data required' });
+  setUserHistoryBackup(user.id, backupData);
+  res.json({ ok: true });
+});
+
+// Download password-encrypted history backup
+router.get('/history/backup', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.status(401).json({ error: 'not logged in' });
+  const backup = getUserHistoryBackup(user.id);
+  res.json({ backup_data: backup ? backup.backup_data : null, updated_at: backup ? backup.updated_at : null });
+});
+
+// Download legacy password-encrypted Olm account backup
 router.get('/prekeys/backup', (req, res) => {
   const user = res.locals.currentUser;
   if (!user) return res.status(401).json({ error: 'not logged in' });
@@ -105,14 +169,12 @@ router.get('/prekeys/backup', (req, res) => {
 router.get('/prekeys/count', (req, res) => {
   const user = res.locals.currentUser;
   if (!user) return res.status(401).json({ error: 'not logged in' });
-  res.json({ available: countAvailablePrekeys(user.id) });
+  const deviceId = String(req.query.device_id || '').trim();
+  const available = deviceId ? countAvailableDevicePrekeys(user.id, deviceId) : countAvailablePrekeys(user.id);
+  res.json({ available });
 });
 
-// The current user's own published identity (public keys only). Lets the client
-// detect when its local account was superseded by an identity published from
-// another browser/device (or an earlier reset): messages addressed to the
-// server identity can never be decrypted by the superseded local account, and
-// the client must offer an explicit key reset instead of failing silently.
+// The current user's own published identity
 router.get('/prekeys/identity', (req, res) => {
   const user = res.locals.currentUser;
   if (!user) return res.status(401).json({ error: 'not logged in' });
@@ -120,21 +182,25 @@ router.get('/prekeys/identity', (req, res) => {
   res.json({ identity_key: id ? id.identity_key : null, ed25519_key: id ? id.ed25519_key : null });
 });
 
-// Fetch a recipient's Olm bundle (identity + one claimed one-time prekey, else fallback).
+// Fetch a recipient's Olm bundle (all active devices of recipient + sender's other devices).
 router.get('/:username/bundle', (req, res) => {
   const user = res.locals.currentUser;
   if (!user) return res.status(401).json({ error: 'not logged in' });
   const other = getUserByUsername(req.params.username);
   if (!other) return res.status(404).json({ error: 'not found' });
   if (!areMutualFollowers(user.id, other.id)) return res.status(403).json({ error: 'not mutual followers' });
-  const id = getOlmIdentity(other.id);
-  if (!id) return res.json({ identity_key: null, ed25519_key: null, one_time_key: null, fallback_key: null });
-  const otk = claimOlmPrekey(other.id);
+
+  const recipientDevices = claimAllDevicePrekeysForUser(other.id);
+  const senderDevices = claimAllDevicePrekeysForUser(user.id);
+  const primaryRecipient = recipientDevices[0] || null;
+
   res.json({
-    identity_key: id.identity_key,
-    ed25519_key: id.ed25519_key,
-    one_time_key: otk,            // { id, public_key } or null
-    fallback_key: id.fallback_key,
+    devices: recipientDevices,
+    sender_devices: senderDevices,
+    identity_key: primaryRecipient ? primaryRecipient.identity_key : null,
+    ed25519_key: primaryRecipient ? primaryRecipient.ed25519_key : null,
+    one_time_key: primaryRecipient ? primaryRecipient.one_time_key : null,
+    fallback_key: primaryRecipient ? primaryRecipient.fallback_key : null,
   });
 });
 
@@ -207,11 +273,11 @@ router.post('/:username/send', (req, res) => {
   if (!other || !areMutualFollowers(user.id, other.id)) {
     return req.xhr ? res.json({ error: 'cannot message' }) : res.redirect(back(req, '/chats'));
   }
-  const body = String(req.body.body || '').trim().slice(0, 5000);
+  const body = String(req.body.body || '').trim().slice(0, 65536);
   const keyForSender = String(req.body.key_for_sender || '').trim() || null;
   const keyForRecipient = String(req.body.key_for_recipient || '').trim() || null;
   const proto = String(req.body.proto || 'rsa').trim() === 'olm' ? 'olm' : 'rsa';
-  const senderCiphertext = String(req.body.sender_ciphertext || '').trim().slice(0, 5000) || null;
+  const senderCiphertext = String(req.body.sender_ciphertext || '').trim().slice(0, 65536) || null;
   const isSticker = body.startsWith('/uploads/stickers/');
   if (body && !isSticker) {
     if (proto !== 'olm' || !senderCiphertext) {
@@ -273,12 +339,12 @@ router.post('/:username/received', express.json(), (req, res) => {
 router.post('/:username/edit/:mid', (req, res) => {
   const user = res.locals.currentUser;
   if (!user) return req.xhr ? res.json({ error: 'not logged in' }) : res.redirect('/login');
-  const body = String(req.body.body || '').trim().slice(0, 5000);
+  const body = String(req.body.body || '').trim().slice(0, 65536);
   if (!body) return req.xhr ? res.json({ error: 'body required' }) : res.redirect(back(req, '/chats'));
   const keyForSender = String(req.body.key_for_sender || '').trim() || null;
   const keyForRecipient = String(req.body.key_for_recipient || '').trim() || null;
   const proto = String(req.body.proto || 'rsa').trim() === 'olm' ? 'olm' : 'rsa';
-  const senderCiphertext = String(req.body.sender_ciphertext || '').trim().slice(0, 5000) || null;
+  const senderCiphertext = String(req.body.sender_ciphertext || '').trim().slice(0, 65536) || null;
   if (!body.startsWith('/uploads/stickers/') && (proto !== 'olm' || !senderCiphertext)) {
     return req.xhr ? res.json({ error: 'End-to-end encryption required. All messages must be Olm-encrypted.' }) : res.status(400).send('E2EE required');
   }

@@ -1245,10 +1245,16 @@ router.get('/rooms/:id/bundle/:username', requireApiAuth('read'), (req, res) => 
   const other = db.getUserByUsername(req.params.username);
   if (!other) return errorResponse(res, 404, 'Not Found', 'User not found.');
   if (!db.isRoomMember(room.id, other.id)) return errorResponse(res, 403, 'Forbidden', 'Target is not a member.');
-  const id = db.getOlmIdentity(other.id);
-  if (!id) return errorResponse(res, 404, 'Not Found', 'Target has no encryption keys.');
-  const oneTimeKey = db.claimOlmPrekey(other.id);
-  responseEnvelope(res, { identity_key: id.identity_key, ed25519_key: id.ed25519_key, fallback_key: id.fallback_key, one_time_key: oneTimeKey });
+  const recipientDevices = db.claimAllDevicePrekeysForUser(other.id);
+  const primary = recipientDevices[0] || null;
+  if (!primary) return errorResponse(res, 404, 'Not Found', 'Target has no encryption keys.');
+  responseEnvelope(res, {
+    devices: recipientDevices,
+    identity_key: primary.identity_key,
+    ed25519_key: primary.ed25519_key,
+    fallback_key: primary.fallback_key,
+    one_time_key: primary.one_time_key
+  });
 });
 
 // ======== Announcement ========
@@ -1311,41 +1317,82 @@ router.post('/conversations/keys', requireApiAuth('write:direct'), (req, res) =>
   res.json({ data: { ok: true } });
 });
 
-// Publish / refresh Olm (Signal-style) identity + prekey bundle. Server stores
-// PUBLIC material only; private halves stay client-side. (must be before :username routes)
+// Publish / refresh Olm identity + prekey bundle (supports per-device multi-ID). (must be before :username routes)
 router.post('/conversations/prekeys', requireApiAuth('write:direct'), express.json(), (req, res) => {
+  const deviceId = String(req.body.device_id || '').trim();
   const identityKey = String(req.body.identity_key || '').trim();
   const ed25519Key = String(req.body.ed25519_key || '').trim();
   const fallbackKey = String(req.body.fallback_key || '').trim() || null;
+  const deviceName = String(req.body.device_name || '').trim() || null;
   const oneTimeKeys = Array.isArray(req.body.one_time_keys) ? req.body.one_time_keys : [];
-  if (!identityKey || !ed25519Key || identityKey.length > 5000 || ed25519Key.length > 5000) {
-    return errorResponse(res, 400, 'Bad Request', 'identity_key and ed25519_key are required (<=5000 chars).');
-  }
-  db.setOlmIdentity(req.apiUser.id, identityKey, ed25519Key, fallbackKey);
-  if (oneTimeKeys.length) {
-    const clean = oneTimeKeys
-      .filter(k => k && k.id && k.public_key && String(k.public_key).length <= 5000)
-      .map(k => ({ id: String(k.id), public_key: String(k.public_key) }));
-    if (clean.length) db.addOlmPrekeys(req.apiUser.id, clean);
-  }
   const backup = String(req.body.backup || '').trim().slice(0, 200000) || null;
+
+  if (deviceId && identityKey && ed25519Key) {
+    db.registerUserDevice(req.apiUser.id, deviceId, identityKey, ed25519Key, fallbackKey, deviceName);
+    if (oneTimeKeys.length) {
+      const clean = oneTimeKeys
+        .filter(k => k && k.id && k.public_key && String(k.public_key).length <= 5000)
+        .map(k => ({ id: String(k.id), public_key: String(k.public_key) }));
+      if (clean.length) db.addDevicePrekeys(req.apiUser.id, deviceId, clean);
+    }
+  } else if (identityKey) {
+    if (!ed25519Key || identityKey.length > 5000 || ed25519Key.length > 5000) {
+      return errorResponse(res, 400, 'Bad Request', 'identity_key and ed25519_key are required (<=5000 chars).');
+    }
+    db.setOlmIdentity(req.apiUser.id, identityKey, ed25519Key, fallbackKey);
+    if (oneTimeKeys.length) {
+      const clean = oneTimeKeys
+        .filter(k => k && k.id && k.public_key && String(k.public_key).length <= 5000)
+        .map(k => ({ id: String(k.id), public_key: String(k.public_key) }));
+      if (clean.length) db.addOlmPrekeys(req.apiUser.id, clean);
+    }
+  }
+
   if (backup) {
     const backupIdentity = String(req.body.backup_identity || '').trim() || null;
     db.setOlmBackup(req.apiUser.id, backup, backupIdentity);
   }
   db.auditLog('dm_olm_keys', req.apiUser.id, 'Published Olm identity + prekeys');
-  responseEnvelope(res, { ok: true, available: db.countAvailablePrekeys(req.apiUser.id) });
+  const avail = deviceId ? db.countAvailableDevicePrekeys(req.apiUser.id, deviceId) : db.countAvailablePrekeys(req.apiUser.id);
+  responseEnvelope(res, { ok: true, available: avail, device_id: deviceId || undefined });
 });
 
-// Download the password-encrypted Olm account backup (for new-browser recovery). (before :username)
+// List user devices (before :username)
+router.get('/conversations/devices', requireApiAuth('read:direct'), (req, res) => {
+  responseEnvelope(res, { devices: db.getUserDevices(req.apiUser.id) });
+});
+
+// Revoke a user device (before :username)
+router.delete('/conversations/devices/:deviceId', requireApiAuth('write:direct'), (req, res) => {
+  db.deleteUserDevice(req.apiUser.id, req.params.deviceId);
+  responseEnvelope(res, { ok: true });
+});
+
+// Upload password-encrypted history backup (before :username)
+router.post('/conversations/history/backup', requireApiAuth('write:direct'), express.json({ limit: '10mb' }), (req, res) => {
+  const backupData = String(req.body.backup_data || '').trim();
+  if (!backupData) return errorResponse(res, 400, 'Bad Request', 'backup_data is required.');
+  db.setUserHistoryBackup(req.apiUser.id, backupData);
+  responseEnvelope(res, { ok: true });
+});
+
+// Download password-encrypted history backup (before :username)
+router.get('/conversations/history/backup', requireApiAuth('read:direct'), (req, res) => {
+  const backup = db.getUserHistoryBackup(req.apiUser.id);
+  responseEnvelope(res, { backup_data: backup ? backup.backup_data : null, updated_at: backup ? backup.updated_at : null });
+});
+
+// Download the password-encrypted Olm account backup (for legacy recovery). (before :username)
 router.get('/conversations/prekeys/backup', requireApiAuth('read:direct'), (req, res) => {
   const id = db.getOlmIdentity(req.apiUser.id);
-  responseEnvelope(res, { backup: id ? id.backup : null });
+  responseEnvelope(res, { backup: id ? id.backup : null, has_identity: !!(id && id.identity_key) });
 });
 
 // Count of unused one-time prekeys the current user still has published. (before :username)
 router.get('/conversations/prekeys/count', requireApiAuth('read:direct'), (req, res) => {
-  responseEnvelope(res, { available: db.countAvailablePrekeys(req.apiUser.id) });
+  const deviceId = String(req.query.device_id || '').trim();
+  const avail = deviceId ? db.countAvailableDevicePrekeys(req.apiUser.id, deviceId) : db.countAvailablePrekeys(req.apiUser.id);
+  responseEnvelope(res, { available: avail });
 });
 
 // Message history with a user
@@ -1468,20 +1515,24 @@ router.post('/conversations/:username/received', requireApiAuth('write:direct'),
   responseEnvelope(res, result);
 });
 
-// Fetch a recipient's Olm bundle (identity + one claimed one-time prekey, else fallback).
+// Fetch a recipient's Olm bundle (all active devices of recipient + sender's other devices).
 router.get('/conversations/:username/bundle', requireApiAuth('read:direct'), (req, res) => {
   const other = db.getUserByUsername(req.params.username);
   if (!other) return errorResponse(res, 404, 'Not Found', 'User not found.');
   if (!db.areMutualFollowers(req.apiUser.id, other.id)) {
     return errorResponse(res, 403, 'Forbidden', 'You can only message mutual followers.');
   }
-  const id = db.getOlmIdentity(other.id);
-  if (!id) return responseEnvelope(res, { identity_key: null, ed25519_key: null, one_time_key: null, fallback_key: null });
+  const recipientDevices = db.claimAllDevicePrekeysForUser(other.id);
+  const senderDevices = db.claimAllDevicePrekeysForUser(req.apiUser.id);
+  const primaryRecipient = recipientDevices[0] || null;
+
   responseEnvelope(res, {
-    identity_key: id.identity_key,
-    ed25519_key: id.ed25519_key,
-    one_time_key: db.claimOlmPrekey(other.id),
-    fallback_key: id.fallback_key,
+    devices: recipientDevices,
+    sender_devices: senderDevices,
+    identity_key: primaryRecipient ? primaryRecipient.identity_key : null,
+    ed25519_key: primaryRecipient ? primaryRecipient.ed25519_key : null,
+    one_time_key: primaryRecipient ? primaryRecipient.one_time_key : null,
+    fallback_key: primaryRecipient ? primaryRecipient.fallback_key : null,
   });
 });
 

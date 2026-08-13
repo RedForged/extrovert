@@ -12,7 +12,7 @@ const {
   createReport,
   createJoinRequest, getJoinRequests, approveJoinRequest, rejectJoinRequest, hasPendingRequest,
   publishRoomGroupSession, getRoomGroupSession, saveRoomSessionKeys, ensureRoomSessionRecipient, getPendingRoomSessionKeys, markRoomSessionKeyDelivered, getRoomSessionRecipients, getRoomSessionEmptyKeyRecipients,
-  getOlmIdentity,
+  getOlmIdentity, claimAllDevicePrekeysForUser,
 } = require('../db');
 
 const router = express.Router();
@@ -475,11 +475,16 @@ router.get('/:id/bundle/:username', (req, res) => {
   const other = getUserByUsername(req.params.username);
   if (!other) return res.status(404).json({ error: 'not found' });
   if (!isRoomMember(room.id, other.id)) return res.status(403).json({ error: 'not a member' });
-  const id = getOlmIdentity(other.id);
-  if (!id) return res.status(404).json({ error: 'no keys' });
-  const oneTimeKey = claimOlmPrekey(other.id);
-  const fallback = id.fallback_key;
-  res.json({ identity_key: id.identity_key, ed25519_key: id.ed25519_key, fallback_key: fallback, one_time_key: oneTimeKey });
+  const recipientDevices = claimAllDevicePrekeysForUser(other.id);
+  const primary = recipientDevices[0] || null;
+  if (!primary) return res.status(404).json({ error: 'no keys' });
+  res.json({
+    devices: recipientDevices,
+    identity_key: primary.identity_key,
+    ed25519_key: primary.ed25519_key,
+    fallback_key: primary.fallback_key,
+    one_time_key: primary.one_time_key
+  });
 });
 
 // Delete a message

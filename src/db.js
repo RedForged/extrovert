@@ -380,6 +380,44 @@ try { db.exec(`
 `); } catch {}
 try { db.exec(`CREATE INDEX IF NOT EXISTS idx_olm_prekeys_user ON olm_prekeys(user_id, used)`); } catch {}
 
+// --- Multi-Device (Per-Device) Olm E2EE ---
+try { db.exec(`
+  CREATE TABLE IF NOT EXISTS user_devices (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      INTEGER NOT NULL REFERENCES users(id),
+    device_id    TEXT NOT NULL,
+    identity_key TEXT NOT NULL,
+    ed25519_key  TEXT NOT NULL,
+    fallback_key TEXT,
+    device_name  TEXT,
+    created_at   INTEGER NOT NULL,
+    last_seen    INTEGER NOT NULL,
+    UNIQUE(user_id, device_id)
+  );
+`); } catch {}
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_user_devices_user ON user_devices(user_id, last_seen)`); } catch {}
+
+try { db.exec(`
+  CREATE TABLE IF NOT EXISTS olm_device_prekeys (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL REFERENCES users(id),
+    device_id   TEXT NOT NULL,
+    key_id      TEXT NOT NULL,
+    public_key  TEXT NOT NULL,
+    used        INTEGER NOT NULL DEFAULT 0,
+    created_at  INTEGER NOT NULL
+  );
+`); } catch {}
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_olm_device_prekeys ON olm_device_prekeys(user_id, device_id, used)`); } catch {}
+
+try { db.exec(`
+  CREATE TABLE IF NOT EXISTS user_history_backup (
+    user_id     INTEGER PRIMARY KEY REFERENCES users(id),
+    backup_data TEXT NOT NULL,
+    updated_at  INTEGER NOT NULL
+  );
+`); } catch {}
+
 // Ratchet-reset requests: a recipient who could not decrypt an incoming DM
 // asks the sender to rebuild the Olm session with a fresh prekey bundle.
 try { db.exec(`
@@ -1085,6 +1123,123 @@ function clearDmRekey(requesterId, targetId) {
   db.prepare(`DELETE FROM dm_rekey_requests WHERE requester_id = ? AND target_id = ?`).run(requesterId, targetId);
 }
 
+// ---------- Multi-Device (Per-Device) Olm E2EE ----------
+function registerUserDevice(userId, deviceId, identityKey, ed25519Key, fallbackKey, deviceName) {
+  const now = Date.now();
+  const cleanId = String(deviceId || '').trim();
+  const cleanName = String(deviceName || '').trim() || null;
+  if (!cleanId) return null;
+  db.prepare(`
+    INSERT INTO user_devices (user_id, device_id, identity_key, ed25519_key, fallback_key, device_name, created_at, last_seen)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, device_id) DO UPDATE SET
+      identity_key = excluded.identity_key,
+      ed25519_key = excluded.ed25519_key,
+      fallback_key = excluded.fallback_key,
+      device_name = COALESCE(excluded.device_name, user_devices.device_name),
+      last_seen = excluded.last_seen
+  `).run(userId, cleanId, String(identityKey), String(ed25519Key), fallbackKey || null, cleanName, now, now);
+  // Also keep legacy olm_identity updated for backwards compatibility
+  setOlmIdentity(userId, identityKey, ed25519Key, fallbackKey);
+  return cleanId;
+}
+
+function getUserDevices(userId) {
+  return db.prepare(`
+    SELECT device_id, identity_key, ed25519_key, fallback_key, device_name, created_at, last_seen
+    FROM user_devices
+    WHERE user_id = ?
+    ORDER BY last_seen DESC
+  `).all(userId);
+}
+
+function getUserDevice(userId, deviceId) {
+  return db.prepare(`
+    SELECT device_id, identity_key, ed25519_key, fallback_key, device_name, created_at, last_seen
+    FROM user_devices
+    WHERE user_id = ? AND device_id = ?
+  `).get(userId, String(deviceId)) || null;
+}
+
+function touchUserDevice(userId, deviceId) {
+  db.prepare(`UPDATE user_devices SET last_seen = ? WHERE user_id = ? AND device_id = ?`).run(Date.now(), userId, String(deviceId));
+}
+
+function deleteUserDevice(userId, deviceId) {
+  db.prepare(`DELETE FROM olm_device_prekeys WHERE user_id = ? AND device_id = ?`).run(userId, String(deviceId));
+  db.prepare(`DELETE FROM user_devices WHERE user_id = ? AND device_id = ?`).run(userId, String(deviceId));
+}
+
+function addDevicePrekeys(userId, deviceId, prekeys) {
+  const now = Date.now();
+  const stmt = db.prepare(`INSERT INTO olm_device_prekeys (user_id, device_id, key_id, public_key, used, created_at) VALUES (?,?,?,?,?,?)`);
+  for (const k of prekeys) {
+    if (k && k.id && k.public_key) {
+      stmt.run(userId, String(deviceId), String(k.id), String(k.public_key), 0, now);
+    }
+  }
+}
+
+function countAvailableDevicePrekeys(userId, deviceId) {
+  const row = db.prepare(`SELECT COUNT(*) AS n FROM olm_device_prekeys WHERE user_id = ? AND device_id = ? AND used = 0`).get(userId, String(deviceId));
+  return row ? row.n : 0;
+}
+
+function claimDevicePrekey(userId, deviceId) {
+  const row = db.prepare(`SELECT id, key_id, public_key FROM olm_device_prekeys WHERE user_id = ? AND device_id = ? AND used = 0 ORDER BY id ASC LIMIT 1`).get(userId, String(deviceId));
+  if (!row) return null;
+  db.prepare(`UPDATE olm_device_prekeys SET used = 1 WHERE id = ?`).run(row.id);
+  return { id: row.key_id, public_key: row.public_key };
+}
+
+function claimAllDevicePrekeysForUser(userId) {
+  const devices = getUserDevices(userId);
+  if (!devices.length) {
+    const legacy = getOlmIdentity(userId);
+    if (legacy && legacy.identity_key) {
+      const otk = claimOlmPrekey(userId);
+      return [{
+        device_id: 'default',
+        identity_key: legacy.identity_key,
+        ed25519_key: legacy.ed25519_key,
+        device_name: 'Default Device',
+        one_time_key: otk,
+        fallback_key: legacy.fallback_key,
+      }];
+    }
+    return [];
+  }
+  const result = [];
+  for (const dev of devices) {
+    const otk = claimDevicePrekey(userId, dev.device_id);
+    result.push({
+      device_id: dev.device_id,
+      identity_key: dev.identity_key,
+      ed25519_key: dev.ed25519_key,
+      device_name: dev.device_name,
+      one_time_key: otk,
+      fallback_key: dev.fallback_key,
+    });
+  }
+  return result;
+}
+
+function setUserHistoryBackup(userId, backupData) {
+  const now = Date.now();
+  db.prepare(`
+    INSERT INTO user_history_backup (user_id, backup_data, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(user_id) DO UPDATE SET
+      backup_data = excluded.backup_data,
+      updated_at = excluded.updated_at
+  `).run(userId, String(backupData), now);
+}
+
+function getUserHistoryBackup(userId) {
+  const row = db.prepare(`SELECT backup_data, updated_at FROM user_history_backup WHERE user_id = ?`).get(userId);
+  return row ? { backup_data: row.backup_data, updated_at: row.updated_at } : null;
+}
+
 // ---------- account deletion ----------
 function deleteUser(userId) {
   // Remove every row referencing the user (FKs are enforced), in dependency
@@ -1122,6 +1277,9 @@ function deleteUser(userId) {
     db.prepare(`DELETE FROM dm_security WHERE user_id = ? OR other_id = ?`).run(userId, userId);
     db.prepare(`DELETE FROM olm_identity WHERE user_id = ?`).run(userId);
     db.prepare(`DELETE FROM olm_prekeys WHERE user_id = ?`).run(userId);
+    db.prepare(`DELETE FROM olm_device_prekeys WHERE user_id = ?`).run(userId);
+    db.prepare(`DELETE FROM user_devices WHERE user_id = ?`).run(userId);
+    db.prepare(`DELETE FROM user_history_backup WHERE user_id = ?`).run(userId);
     db.prepare(`DELETE FROM media_attachments WHERE user_id = ?`).run(userId);
     db.prepare(`DELETE FROM edit_history WHERE edited_by = ?`).run(userId);
     db.prepare(`DELETE FROM push_subscriptions WHERE user_id = ?`).run(userId);
@@ -1741,6 +1899,8 @@ module.exports = {
   setPublicKey, getPublicKey, getEncryptedPrivateKey,
   // Olm (Signal-style) E2EE
   setOlmIdentity, getOlmIdentity, setOlmBackup, addOlmPrekeys, countAvailablePrekeys, claimOlmPrekey, requestDmRekey, dmRekeyNeeded, clearDmRekey,
+  // Multi-Device Olm E2EE & History Backup
+  registerUserDevice, getUserDevices, getUserDevice, touchUserDevice, deleteUserDevice, addDevicePrekeys, countAvailableDevicePrekeys, claimDevicePrekey, claimAllDevicePrekeysForUser, setUserHistoryBackup, getUserHistoryBackup,
   // admin
   adminExists, getAllUsers, promoteUser, removeReferralBadge, banUser, unbanUser,
   // referrals
