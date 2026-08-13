@@ -283,10 +283,6 @@ function initSignaling(wss) {
     function registerSignalingClient() {
       if (registered) return;
       registered = true;
-      const existing = clients.get(user.id);
-      if (existing) {
-        try { existing.ws.close(4002, 'New connection'); } catch {}
-      }
 
       clientData = {
         ws,

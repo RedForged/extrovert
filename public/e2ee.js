@@ -934,7 +934,7 @@
     }
 
     return getOrCreateDeviceId().then(function (myDevId) {
-      var e = JSON.parse(msg.body);
+      var e = typeof msg.body === 'string' ? JSON.parse(msg.body) : msg.body;
       var cipherToDecrypt = e;
       var senderDeviceId = 'default';
 
@@ -942,6 +942,8 @@
         senderDeviceId = e.sender_device_id || 'default';
         if (e.devices[myDevId]) {
           cipherToDecrypt = e.devices[myDevId];
+        } else if (e.t !== undefined && e.b) {
+          cipherToDecrypt = { t: e.t, b: e.b };
         } else {
           var devKeys = Object.keys(e.devices);
           if (devKeys.length) cipherToDecrypt = e.devices[devKeys[0]];
