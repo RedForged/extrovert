@@ -77,6 +77,46 @@ async function main() {
   const confClientId = r.data.data.client_id;
   const confSecret = r.data.data.client_secret;
 
+  console.log('\nTEST 1b: fresh login -> consent page directly (Introvert mobile flow) works');
+  // Regression: a fresh browser login that lands STRAIGHT on the /api/ consent
+  // page (the login POST\'s `next` target, exactly what the Introvert mobile
+  // client does — it never visits a non-API page in between) must render a real
+  // CSRF token and approve. Previously the /api/* CSRF-generation skip meant
+  // the consent page rendered an empty _csrf after the session regeneration on
+  // login, and the consent POST 403'd with 'CSRF token missing or invalid.
+  // Re-open the authorization request.'
+  {
+    const jar = {};
+    async function wc(url, opts = {}) {
+      const headers = { ...(opts.headers || {}) };
+      if (jar.cookie) headers['Cookie'] = jar.cookie;
+      const r = await fetch(base + url, { ...opts, headers, redirect: 'manual' });
+      const sc = r.headers.get('set-cookie');
+      if (sc) jar.cookie = sc.split(';')[0];
+      return r;
+    }
+    const authorizePath = '/api/v1/oauth/authorize?client_id=' + confClientId + '&response_type=code&redirect_uri=' + encodeURIComponent('https://good.example/cb') + '&scope=read&state=regress';
+    const loginPage = await wc('/login?next=' + encodeURIComponent(authorizePath));
+    const loginCsrf = ((await loginPage.text()).match(/name="_csrf" value="([^"]+)"/) || [])[1] || '';
+    ok(loginCsrf.length > 0, 'login page renders a CSRF token');
+    const loginRes = await wc('/login?next=' + encodeURIComponent(authorizePath), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ username: 'alice', password: 'pw1', _csrf: loginCsrf, next: authorizePath }),
+    });
+    ok(loginRes.status === 302, 'login redirects (session regenerated)');
+    // Follow the login redirect STRAIGHT to the consent page (no non-API visit).
+    const consentHtml = await (await wc(authorizePath)).text();
+    const consentCsrf = (consentHtml.match(/name="_csrf" value="([^"]+)"/) || [])[1] || '';
+    ok(consentCsrf.length > 0, 'consent page renders a real CSRF token after fresh login (no empty _csrf)');
+    const consentRes = await wc(authorizePath, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ _csrf: consentCsrf, client_id: confClientId, redirect_uri: 'https://good.example/cb', scope: 'read', state: 'regress', approve: 'yes' }),
+    });
+    ok(consentRes.status === 302 && consentRes.headers.get('location').includes('code='), 'consent POST approves after fresh login (no CSRF 403)');
+  }
+
   console.log('\nTEST 2: authorize GET validates redirect_uri + caps scopes');
   let html = await alice.get(`/api/v1/oauth/authorize?client_id=${confClientId}&response_type=code&redirect_uri=${encodeURIComponent('https://evil.example/steal')}`);
   ok(!html.includes('evil.example'), 'GET rejects unregistered redirect_uri');

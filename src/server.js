@@ -146,9 +146,6 @@ app.use('/api', apiLimiter);
 
 // CSRF middleware — generates and validates tokens per session.
 app.use((req, res, next) => {
-  // Skip CSRF check for API routes (Bearer token auth) and multipart forms.
-  if (req.path.startsWith('/api/')) return next();
-
   // Native clients authenticate every request with a Bearer token; CSRF is
   // irrelevant when the credential isn't a cookie, and creating a session for
   // them is pointless.
@@ -156,13 +153,22 @@ app.use((req, res, next) => {
     return next();
   }
 
+  // Generate (or reuse) a session CSRF token for EVERY session — including on
+  // API routes. The OAuth consent page lives under /api/v1/oauth/authorize and
+  // renders req.session.csrfToken into its <form>, so the token must exist
+  // there even though /api/* POSTs are exempt from VALIDATION below (they
+  // authenticate via Bearer tokens). A fresh login regenerates the session and
+  // starts it without a token, and the login redirect goes straight to the
+  // consent page — skipping a non-API page — which made the consent POST fail
+  // with 'CSRF token missing or invalid. Re-open the authorization request.'
+  // (mobile login regression).
   if (!req.session.csrfToken) {
     req.session.csrfToken = crypto.randomBytes(32).toString('hex');
     console.log('CSRF: generated new token for session', req.sessionID, req.session.csrfToken);
   }
   res.locals.csrfToken = req.session.csrfToken;
 
-  // Skip CSRF check for API routes (Bearer token auth) and multipart forms.
+  // Skip CSRF validation for API routes (Bearer token auth) and multipart forms.
   if (req.path.startsWith('/api/')) return next();
 
   if (req.method === 'POST' && (
