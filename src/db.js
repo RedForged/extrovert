@@ -994,7 +994,7 @@ function setOlmIdentity(userId, identityKey, ed25519Key, fallbackKey) {
 }
 
 function getOlmIdentity(userId) {
-  return db.prepare(`SELECT identity_key, ed25519_key, fallback_key, backup FROM olm_identity WHERE user_id = ?`).get(userId) || null;
+  return db.prepare(`SELECT identity_key, ed25519_key, fallback_key, backup, rotated_at FROM olm_identity WHERE user_id = ?`).get(userId) || null;
 }
 
 function setOlmBackup(userId, backup) {
@@ -1017,13 +1017,24 @@ function addOlmPrekeys(userId, prekeys) {
 }
 
 function countAvailablePrekeys(userId) {
-  const row = db.prepare(`SELECT COUNT(*) AS n FROM olm_prekeys WHERE user_id = ? AND used = 0`).get(userId);
+  // Only count prekeys published under the current identity generation.
+  // Stale rows from a superseded identity (created before the last rotation)
+  // are never claimable, so they must not mask an empty pool either.
+  const ident = getOlmIdentity(userId);
+  const minTs = ident && ident.rotated_at ? ident.rotated_at : 0;
+  const row = db.prepare(`SELECT COUNT(*) AS n FROM olm_prekeys WHERE user_id = ? AND used = 0 AND created_at >= ?`).get(userId, minTs);
   return row ? row.n : 0;
 }
 
 // Atomically claim one unused one-time prekey for a recipient bundle.
+// Prekeys published before the recipient's last identity rotation are stale:
+// the current account cannot decrypt messages built against them, so handing
+// them out would make every message undecryptable. Only serve prekeys of the
+// current identity generation.
 function claimOlmPrekey(userId) {
-  const row = db.prepare(`SELECT id, key_id, public_key FROM olm_prekeys WHERE user_id = ? AND used = 0 ORDER BY id ASC LIMIT 1`).get(userId);
+  const ident = getOlmIdentity(userId);
+  const minTs = ident && ident.rotated_at ? ident.rotated_at : 0;
+  const row = db.prepare(`SELECT id, key_id, public_key FROM olm_prekeys WHERE user_id = ? AND used = 0 AND created_at >= ? ORDER BY id ASC LIMIT 1`).get(userId, minTs);
   if (!row) return null;
   db.prepare(`UPDATE olm_prekeys SET used = 1 WHERE id = ?`).run(row.id);
   return { id: row.key_id, public_key: row.public_key };
