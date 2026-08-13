@@ -31,8 +31,9 @@ function ok(cond, msg) {
   if (!cond) failures++;
 }
 
-// ---- Fake IndexedDB: mirrors stores STORE_OLM keys ('account', 'session:<id>',
-// 'sessionBase:<id>', 'selfOutbound', 'selfInbound', 'sessionIdent:<id>').
+// ---- Fake IndexedDB: mirrors stores STORE_OLM keys, namespaced per account
+// ('account:<uid>', 'session:<uid>:<peer>', 'sessionBase:<uid>:<peer>',
+// 'selfOutbound:<uid>', 'selfInbound:<uid>', 'sessionIdent:<uid>:<peer>').
 // The real client AES-GCM-wraps pickles with the device key; that layer is
 // transparent to protocol behavior, so we store raw pickles.
 class FakeIDB {
@@ -43,12 +44,12 @@ class FakeIDB {
 
 // ---- One simulated browser session (mirrors public/e2ee.js) ----
 class SimBrowser {
-  constructor(base, username, password, userId) {
+  constructor(base, username, password, userId, idb) {
     this.base = base;
     this.username = username;
     this.password = password;
     this.userId = userId;
-    this.idb = new FakeIDB();
+    this.idb = idb || new FakeIDB(); // shared across accounts of one browser
     this.cookie = '';
     this.csrf = '';
     this.account = null;        // Olm.Account
@@ -144,8 +145,8 @@ class SimBrowser {
   // --- self sessions (ensureSelfSessions) ---
   async ensureSelfSessions() {
     if (this.selfOutbound) return;
-    const loadedOut = await this.idb.get('selfOutbound');
-    const loadedIn = await this.idb.get('selfInbound');
+    const loadedOut = await this.idb.get('selfOutbound:' + this.userId);
+    const loadedIn = await this.idb.get('selfInbound:' + this.userId);
     if (loadedOut && loadedIn) {
       this.selfOutbound = new Olm.Session(); this.selfOutbound.unpickle(PICKLE_KEY, loadedOut);
       this.selfInbound = new Olm.Session(); this.selfInbound.unpickle(PICKLE_KEY, loadedIn);
@@ -168,19 +169,19 @@ class SimBrowser {
   }
 
   async saveAccount() {
-    await this.idb.set('account', this.account.pickle(PICKLE_KEY));
+    await this.idb.set('account:' + this.userId, this.account.pickle(PICKLE_KEY));
   }
   async saveSession(idStr, session) {
-    await this.idb.set('session:' + idStr, session.pickle(PICKLE_KEY));
+    await this.idb.set('session:' + this.userId + ':' + idStr, session.pickle(PICKLE_KEY));
   }
   async saveSessionBaseline(idStr, session) {
-    await this.idb.set('sessionBase:' + idStr, session.pickle(PICKLE_KEY));
+    await this.idb.set('sessionBase:' + this.userId + ':' + idStr, session.pickle(PICKLE_KEY));
   }
   async saveSelfSessions() {
-    if (this.selfOutbound) await this.idb.set('selfOutbound', this.selfOutbound.pickle(PICKLE_KEY));
+    if (this.selfOutbound) await this.idb.set('selfOutbound:' + this.userId, this.selfOutbound.pickle(PICKLE_KEY));
     if (this.selfInbound) {
       const inboundPickle = this.selfInboundBaseline || this.selfInbound.pickle(PICKLE_KEY);
-      await this.idb.set('selfInbound', inboundPickle);
+      await this.idb.set('selfInbound:' + this.userId, inboundPickle);
     }
   }
 
@@ -189,7 +190,7 @@ class SimBrowser {
   async getOrCreateOutboundSession(other) {
     const idStr = String(other.userId);
     if (this.sessions[idStr]) return this.sessions[idStr];
-    const livePickle = await this.idb.get('session:' + idStr);
+    const livePickle = await this.idb.get('session:' + this.userId + ':' + idStr);
     if (livePickle) {
       const s = new Olm.Session();
       s.unpickle(PICKLE_KEY, livePickle);
@@ -206,7 +207,7 @@ class SimBrowser {
     s.create_outbound(this.account, bundle.identity_key, bundle.one_time_key ? bundle.one_time_key.public_key : bundle.fallback_key);
     await this.saveSessionBaseline(idStr, s);
     await this.saveSession(idStr, s);
-    await this.idb.set('sessionIdent:' + idStr, bundle.identity_key);
+    await this.idb.set('sessionIdent:' + this.userId + ':' + idStr, bundle.identity_key);
     this.sessions[idStr] = s;
     return s;
   }
@@ -225,7 +226,7 @@ class SimBrowser {
     s.create_outbound(this.account, bundle.identity_key, bundle.one_time_key ? bundle.one_time_key.public_key : bundle.fallback_key);
     await this.saveSessionBaseline(idStr, s);
     await this.saveSession(idStr, s);
-    await this.idb.set('sessionIdent:' + idStr, bundle.identity_key);
+    await this.idb.set('sessionIdent:' + this.userId + ':' + idStr, bundle.identity_key);
     this.sessions[idStr] = s;
     return s;
   }
@@ -270,7 +271,7 @@ class SimBrowser {
       }
     }
     const e = JSON.parse(msg.body);
-    const livePickle = await this.idb.get('session:' + otherIdStr);
+    const livePickle = await this.idb.get('session:' + this.userId + ':' + otherIdStr);
     const live = livePickle ? (() => { const s = new Olm.Session(); s.unpickle(PICKLE_KEY, livePickle); return s; })() : null;
     if (live) {
       try {
@@ -279,7 +280,7 @@ class SimBrowser {
         return plain;
       } catch (_) {}
     }
-    const basePickle = await this.idb.get('sessionBase:' + otherIdStr);
+    const basePickle = await this.idb.get('sessionBase:' + this.userId + ':' + otherIdStr);
     const base = basePickle ? (() => { const s = new Olm.Session(); s.unpickle(PICKLE_KEY, basePickle); return s; })() : null;
     if (base) {
       try {
@@ -293,7 +294,7 @@ class SimBrowser {
       try {
         ns.create_inbound(this.account, e.b);
         this.account.remove_one_time_keys(ns);
-        if (theirCurve25519) await this.idb.set('sessionIdent:' + otherIdStr, theirCurve25519);
+        if (theirCurve25519) await this.idb.set('sessionIdent:' + this.userId + ':' + otherIdStr, theirCurve25519);
         await this.saveSessionBaseline(otherIdStr, ns);
         const plain = ns.decrypt(e.t, e.b);
         await this.saveSession(otherIdStr, ns);
@@ -324,7 +325,7 @@ class SimBrowser {
     this.sessions = {};
     this.selfOutbound = null;
     this.selfInbound = null;
-    const acctPickle = await this.idb.get('account');
+    const acctPickle = await this.idb.get('account:' + this.userId);
     if (acctPickle) {
       this.account = new Olm.Account();
       this.account.unpickle(PICKLE_KEY, acctPickle);
@@ -341,9 +342,11 @@ class SimBrowser {
   // mint + publish a fresh identity, recreate the self-session pair.
   async resetKeys() {
     for (const k of [...this.idb.map.keys()]) {
-      if (k === 'account') continue;
-      if (k.startsWith('session:') || k.startsWith('sessionBase:') ||
-          k.startsWith('sessionIdent:') || k.startsWith('self')) {
+      const u = String(this.userId);
+      if (k === 'account:' + u) continue;
+      if (k.startsWith('session:' + u + ':') || k.startsWith('sessionBase:' + u + ':') ||
+          k.startsWith('sessionIdent:' + u + ':') || k.startsWith('selfOutbound:' + u) ||
+          k.startsWith('selfInbound:' + u)) {
         this.idb.map.delete(k);
       }
     }
@@ -379,7 +382,7 @@ async function main() {
   await bob.initCrypto();
   // Snapshot bob's account pickle as the browser's password backup would hold
   // it (all peer one-time keys still present, self-session pair created).
-  const bobAccountBackup = await bob.idb.get('account');
+  const bobAccountBackup = await bob.idb.get('account:' + bobId);
   console.log('published identities + prekeys + self-sessions for both');
 
   const aliceCurve = alice.myIdKeys.curve25519;
@@ -446,7 +449,7 @@ async function main() {
   msgs = fetchMessages(aliceId, bobId);
   const cachedPlaintexts = new Map(); // msgId -> plaintext (as the browser's localMap)
   cachedPlaintexts.set(String(msgs[3].id), 'hello bob #4');
-  const livePickleBefore = await bob.idb.get('session:' + String(aliceId));
+  const livePickleBefore = await bob.idb.get('session:' + bobId + ':' + String(aliceId));
   let replayed = 0;
   let replayOk = true;
   for (let i = 0; i < msgs.length; i++) {
@@ -456,7 +459,7 @@ async function main() {
     replayed++;
     if (p !== 'hello bob #' + (i + 1)) replayOk = false;
   }
-  const livePickleAfter = await bob.idb.get('session:' + String(aliceId));
+  const livePickleAfter = await bob.idb.get('session:' + bobId + ':' + String(aliceId));
   ok(replayed === 4, 'all 4 messages replayed (3 via baseline crypto + 1 cache hit)');
   ok(replayOk, 'baseline-replayed plaintexts correct');
   ok(livePickleBefore === livePickleAfter, 'baseline replay did not overwrite the live session');
@@ -555,6 +558,46 @@ async function main() {
   }
   ok(guardBlocked, 'stale client publish is refused by the supersession guard');
   ok(db.getOlmIdentity(bobId).identity_key === newBobIdentity, 'server identity unchanged after the stale attempt');
+
+  console.log('\nTEST 11: multi-account — each account keeps its own crypto state');
+  // One browser, two signed-in accounts: they share the FakeIDB (as IndexedDB
+  // is shared per origin), so per-account namespacing is what keeps their
+  // identities apart. This mirrors the bug where switching accounts showed
+  // the "keys no longer match" notice: account B was loading account A's
+  // pickle from the shared store.
+  const carolId = db.createUser({ username: 'carol', passwordHash: bcrypt.hashSync('pw3', 10), displayName: 'Carol' });
+  const daveId = db.createUser({ username: 'dave', passwordHash: bcrypt.hashSync('pw4', 10), displayName: 'Dave' });
+  db.follow(carolId, daveId);
+  db.follow(daveId, carolId);
+  const sharedIdb = new FakeIDB();
+  const carolBrowser = new SimBrowser(base, 'carol', 'pw3', carolId, sharedIdb);
+  await carolBrowser.login();
+  await carolBrowser.initCrypto();
+  const carolServerCurve = db.getOlmIdentity(carolId).identity_key;
+  ok(carolServerCurve === carolBrowser.myIdKeys.curve25519, 'carol: server identity matches her local account');
+  // Dave signs in on the SAME browser (shared store) — must NOT inherit carol's keys.
+  const daveBrowser = new SimBrowser(base, 'dave', 'pw4', daveId, sharedIdb);
+  await daveBrowser.login();
+  await daveBrowser.initCrypto();
+  const daveServerCurve = db.getOlmIdentity(daveId).identity_key;
+  ok(daveServerCurve !== carolServerCurve, 'dave got his own identity, not carol\'s');
+  ok(daveServerCurve === daveBrowser.myIdKeys.curve25519, 'dave: server identity matches his local account');
+  // Switch back to carol in the same browser: her state must still be hers.
+  const carolAgain = new SimBrowser(base, 'carol', 'pw3', carolId, sharedIdb);
+  await carolAgain.login();
+  await carolAgain.reload(); // ensureReady: load account from the shared store
+  ok(carolAgain.myIdKeys.curve25519 === carolServerCurve, 'carol after switch-back: local account is still her own');
+  const carolOwn = await carolAgain.csrfFetch('/chats/prekeys/identity').then((x) => x.json());
+  ok(carolOwn.identity_key === carolAgain.myIdKeys.curve25519, 'carol after switch-back: no identity mismatch (notice stays hidden)');
+  // And messaging still works across the two accounts on the shared browser.
+  await carolAgain.sendTo(daveBrowser, 'hi dave from carol');
+  const cdMsgs = fetchMessages(carolId, daveId);
+  const cdPlain = await daveBrowser.decryptOlm(cdMsgs[0], false, String(carolId), carolServerCurve);
+  ok(cdPlain === 'hi dave from carol', 'dave decrypts carol\'s message on the shared browser -> ' + JSON.stringify(cdPlain));
+  await daveBrowser.sendTo(carolAgain, 'hi carol from dave');
+  const dcMsgs = fetchMessages(daveId, carolId);
+  const dcPlain = await carolAgain.decryptOlm(dcMsgs[0], false, String(daveId), daveServerCurve);
+  ok(dcPlain === 'hi carol from dave', 'carol decrypts dave\'s reply on the shared browser -> ' + JSON.stringify(dcPlain));
 
   console.log(failures ? '\nSOME TESTS FAILED' : '\nALL TESTS PASSED');
   process.exit(failures ? 1 : 0);

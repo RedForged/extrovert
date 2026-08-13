@@ -129,6 +129,114 @@
     });
   }
 
+  // ---- Per-account crypto scope ----
+  // All crypto state (account pickle, sessions, self-session pair) is
+  // namespaced by the ACTIVE account so the multi-account feature keeps every
+  // signed-in account's keys and sessions independent. The device key (Kd)
+  // stays shared: it is the browser's own secret that wraps every pickle.
+  function activeUserId() {
+    var meta = document.querySelector('meta[name="current-user-id"]');
+    if (meta && meta.getAttribute('content')) return String(meta.getAttribute('content'));
+    var form = document.querySelector('.chat-form');
+    return form ? String(form.getAttribute('data-current-user') || '') : '';
+  }
+  function acctKey() { return 'account:' + activeUserId(); }
+  function selfOutKey() { return 'selfOutbound:' + activeUserId(); }
+  function selfInKey() { return 'selfInbound:' + activeUserId(); }
+  function sessionKey(idStr) { return 'session:' + activeUserId() + ':' + idStr; }
+  function sessionBaseKey(idStr) { return 'sessionBase:' + activeUserId() + ':' + idStr; }
+  function sessionIdentKey(idStr) { return 'sessionIdent:' + activeUserId() + ':' + idStr; }
+  function groupOutKey(roomId) { return 'groupOut:' + activeUserId() + ':' + roomId; }
+  function groupInKey(key) { return 'groupIn:' + activeUserId() + ':' + key; }
+
+  // One-time migration: crypto state from before per-account scoping lived
+  // under unnamespaced keys ('account', 'session:<peer>', ...). Move it under
+  // the active account's namespace — but only if the legacy account actually
+  // IS the active account (its identity matches the server identity), so a
+  // second account on the same browser never inherits someone else's keys.
+  function migrateLegacyCrypto() {
+    if (USE_FILE_STORE) return Promise.resolve();
+    var uid = activeUserId();
+    if (!uid) return Promise.resolve();
+    function has(storeName, key) {
+      return openDB().then(function (db) {
+        return new Promise(function (resolve, reject) {
+          var req = db.transaction(storeName, 'readonly').objectStore(storeName).get(key);
+          req.onsuccess = function () { resolve(req.result !== undefined); };
+          req.onerror = function () { reject(req.error); };
+        });
+      });
+    }
+    function remap(storeName, mapFn) {
+      return openDB().then(function (db) {
+        return new Promise(function (resolve, reject) {
+          var tx = db.transaction(storeName, 'readwrite');
+          var store = tx.objectStore(storeName);
+          var req = store.openCursor();
+          req.onsuccess = function () {
+            var cursor = req.result;
+            if (!cursor) return;
+            var k = String(cursor.key);
+            var nk = mapFn(k);
+            if (nk && nk !== k) {
+              var getReq = store.get(nk);
+              getReq.onsuccess = function () {
+                if (getReq.result === undefined) store.put(cursor.value, nk);
+                store.delete(k);
+              };
+            }
+            cursor.continue();
+          };
+          tx.oncomplete = function () { resolve(); };
+          tx.onerror = function () { reject(tx.error); };
+        });
+      });
+    }
+    return has(STORE_OLM, 'account').then(function (legacy) {
+      if (!legacy) return;
+      return has(STORE_OLM, acctKey()).then(function (scoped) {
+        if (scoped) return;
+        // Verify the legacy account belongs to the active account before
+        // moving it: compare its identity against the published server one.
+        return idbGet(STORE_OLM, 'account').then(function (enc) {
+          return decryptWithKd(enc).then(function (pickle) {
+            var probe = new Olm.Account();
+            probe.unpickle(PICKLE_KEY, pickle);
+            return JSON.parse(probe.identity_keys()).curve25519;
+          }).catch(function () { return null; });
+        }).then(function (legacyCurve) {
+          return csrfFetch('/chats/prekeys/identity').then(function (r) { return r.json(); }).then(function (d) {
+            var serverCurve = d && d.identity_key ? d.identity_key : null;
+            if (serverCurve && legacyCurve && serverCurve !== legacyCurve) return; // belongs to another account
+            var scopedUid = uid;
+            return remap(STORE_OLM, function (k) {
+              if (k === 'account') return 'account:' + scopedUid;
+              if (k === 'selfOutbound') return 'selfOutbound:' + scopedUid;
+              if (k === 'selfInbound') return 'selfInbound:' + scopedUid;
+              if (k.indexOf('session:' + scopedUid + ':') === 0) return null;
+              if (k.indexOf('session:') === 0) return 'session:' + scopedUid + ':' + k.slice('session:'.length);
+              if (k.indexOf('sessionBase:' + scopedUid + ':') === 0) return null;
+              if (k.indexOf('sessionBase:') === 0) return 'sessionBase:' + scopedUid + ':' + k.slice('sessionBase:'.length);
+              if (k.indexOf('sessionIdent:' + scopedUid + ':') === 0) return null;
+              if (k.indexOf('sessionIdent:') === 0) return 'sessionIdent:' + scopedUid + ':' + k.slice('sessionIdent:'.length);
+              if (k.indexOf('groupOut:' + scopedUid + ':') === 0) return null;
+              if (k.indexOf('groupOut:') === 0) return 'groupOut:' + scopedUid + ':' + k.slice('groupOut:'.length);
+              if (k.indexOf('groupIn:' + scopedUid + ':') === 0) return null;
+              if (k.indexOf('groupIn:') === 0) return 'groupIn:' + scopedUid + ':' + k.slice('groupIn:'.length);
+              return null;
+            }).then(function () {
+              return remap(STORE_SECURE, function (k) {
+                if (k.indexOf('conv:' + scopedUid + ':') === 0) return null;
+                if (k.indexOf('conv:') === 0) return 'conv:' + scopedUid + ':' + k.slice('conv:'.length);
+                return null;
+              });
+            });
+          });
+        });
+      });
+    }).catch(function () {});
+  }
+
   // ---- PBKDF2 from password (legacy RSA unlock + server backup) ----
   function deriveKek(password, username) {
     var e = new TextEncoder();
@@ -204,7 +312,7 @@
   }
 
   function loadAccountFromStorage() {
-    return idbGet(STORE_OLM, 'account').then(function (enc) {
+    return idbGet(STORE_OLM, acctKey()).then(function (enc) {
       if (!enc) return null;
       return decryptWithKd(enc).then(function (pickle) {
         account = new Olm.Account();
@@ -218,12 +326,12 @@
 
   function saveAccount() {
     return encryptWithKd(account.pickle(PICKLE_KEY)).then(function (enc) {
-      return idbSet(STORE_OLM, 'account', enc);
+      return idbSet(STORE_OLM, acctKey(), enc);
     });
   }
 
   function loadSession(idStr) {
-    return idbGet(STORE_OLM, 'session:' + idStr).then(function (enc) {
+    return idbGet(STORE_OLM, sessionKey(idStr)).then(function (enc) {
       if (!enc) return null;
       return decryptWithKd(enc).then(function (pickle) {
         var s = new Olm.Session();
@@ -237,7 +345,7 @@
   function saveSession(idStr, session) {
     sessions[idStr] = session;
     return encryptWithKd(session.pickle(PICKLE_KEY)).then(function (enc) {
-      return idbSet(STORE_OLM, 'session:' + idStr, enc);
+      return idbSet(STORE_OLM, sessionKey(idStr), enc);
     });
   }
 
@@ -256,7 +364,7 @@
     fresh.unpickle(PICKLE_KEY, pickle);
     sessionBaselines[idStr] = fresh;
     return encryptWithKd(pickle).then(function (enc) {
-      return idbSet(STORE_OLM, 'sessionBase:' + idStr, enc);
+      return idbSet(STORE_OLM, sessionBaseKey(idStr), enc);
     });
   }
 
@@ -268,7 +376,7 @@
       sessionBaselines[idStr] = fresh;
       return Promise.resolve(fresh);
     }
-    return idbGet(STORE_OLM, 'sessionBase:' + idStr).then(function (enc) {
+    return idbGet(STORE_OLM, sessionBaseKey(idStr)).then(function (enc) {
       if (!enc) return null;
       return decryptWithKd(enc).then(function (pickle) {
         sessionBaselinePickles[idStr] = pickle;
@@ -312,8 +420,8 @@
       });
     }
     return Promise.all([
-      selfOutbound ? Promise.resolve(selfOutbound) : loadOne('selfOutbound').then(function (s) { selfOutbound = s; }),
-      selfInbound ? Promise.resolve(selfInbound) : loadOne('selfInbound').then(function (s) {
+      selfOutbound ? Promise.resolve(selfOutbound) : loadOne(selfOutKey()).then(function (s) { selfOutbound = s; }),
+      selfInbound ? Promise.resolve(selfInbound) : loadOne(selfInKey()).then(function (s) {
         selfInbound = s;
         // A fresh device has no self sessions yet (they're created on first
         // send); there's nothing to restore as a baseline.
@@ -325,10 +433,10 @@
 
   function saveSelfSessions() {
     var ops = [];
-    if (selfOutbound) ops.push(encryptWithKd(selfOutbound.pickle(PICKLE_KEY)).then(function (e) { return idbSet(STORE_OLM, 'selfOutbound', e); }));
+    if (selfOutbound) ops.push(encryptWithKd(selfOutbound.pickle(PICKLE_KEY)).then(function (e) { return idbSet(STORE_OLM, selfOutKey(), e); }));
     // Persist the BASELINE inbound pickle, never the advanced in-memory state.
     var inboundPickle = selfInboundBaseline || (selfInbound ? selfInbound.pickle(PICKLE_KEY) : null);
-    if (inboundPickle) ops.push(encryptWithKd(inboundPickle).then(function (e) { return idbSet(STORE_OLM, 'selfInbound', e); }));
+    if (inboundPickle) ops.push(encryptWithKd(inboundPickle).then(function (e) { return idbSet(STORE_OLM, selfInKey(), e); }));
     return Promise.all(ops);
   }
 
@@ -337,7 +445,7 @@
   // deleted from the server once BOTH users have received them. Each device
   // keeps its own copy here (encrypted with the non-extractable device key Kd),
   // so history survives server-side deletion.
-  function secureConvKey(otherIdStr) { return 'conv:' + otherIdStr; }
+  function secureConvKey(otherIdStr) { return 'conv:' + activeUserId() + ':' + otherIdStr; }
 
   function secureLoadMessages(otherIdStr) {
     return idbGet(STORE_SECURE, secureConvKey(otherIdStr)).then(function (enc) {
@@ -562,7 +670,7 @@
   // current identity (cheap GET — no prekey is claimed) and recreate the
   // session if it changed.
   function checkOutboundSessionIdentity(otherId, otherIdStr, otherUsername, existing) {
-    return idbGet(STORE_OLM, 'sessionIdent:' + otherIdStr).then(function (ident) {
+    return idbGet(STORE_OLM, sessionIdentKey(otherIdStr)).then(function (ident) {
       if (!ident) {
         sessionIdentLastCheck[otherIdStr] = Date.now();
         return checkRekeyNeeded(otherId, otherIdStr, otherUsername, existing);
@@ -633,7 +741,7 @@
       }).then(function () {
         // Remember which recipient identity this session was built against, so a
         // later identity change is detectable (see getOrCreateOutboundSession).
-        return idbSet(STORE_OLM, 'sessionIdent:' + otherIdStr, bundle.identity_key);
+        return idbSet(STORE_OLM, sessionIdentKey(otherIdStr), bundle.identity_key);
       }).then(function () { return s; });
     });
   }
@@ -746,7 +854,7 @@
             // rotation for sessions that were born here (create_inbound), not
             // only for create_outbound sessions.
             var identWrite = theirCurve25519
-              ? idbSet(STORE_OLM, 'sessionIdent:' + otherIdStr, theirCurve25519)
+              ? idbSet(STORE_OLM, sessionIdentKey(otherIdStr), theirCurve25519)
               : Promise.resolve();
             return identWrite.then(function () {
               // Baseline = state at creation (before the first decrypt), so
@@ -886,6 +994,8 @@
   function ensureReady(opts) {
     opts = opts || {};
     return getOrCreateDeviceKey().then(function () {
+      return migrateLegacyCrypto();
+    }).then(function () {
       return loadAccountFromStorage();
     }).then(function (acct) {
       if (acct) {
@@ -992,7 +1102,7 @@
 
   function loadGroupOutbound(roomId) {
     if (groupOutbound[roomId]) return Promise.resolve(groupOutbound[roomId]);
-    return idbGet(STORE_OLM, 'groupOut:' + roomId).then(function (enc) {
+    return idbGet(STORE_OLM, groupOutKey(roomId)).then(function (enc) {
       if (!enc) return null;
       return decryptWithKd(enc).then(function (json) {
         var rec = JSON.parse(json);
@@ -1008,13 +1118,13 @@
     groupOutbound[roomId] = session;
     groupOutIds[roomId] = sessionId;
     return encryptWithKd(JSON.stringify({ id: sessionId, pickle: session.pickle(PICKLE_KEY) })).then(function (enc) {
-      return idbSet(STORE_OLM, 'groupOut:' + roomId, enc);
+      return idbSet(STORE_OLM, groupOutKey(roomId), enc);
     });
   }
   function loadGroupInbound(roomId, senderId, sessionId) {
     var key = roomId + ':' + senderId + ':' + sessionId;
     if (groupInbound[key]) return Promise.resolve(groupInbound[key]);
-    return idbGet(STORE_OLM, 'groupIn:' + key).then(function (enc) {
+    return idbGet(STORE_OLM, groupInKey(key)).then(function (enc) {
       if (!enc) return null;
       return decryptWithKd(enc).then(function (pickle) {
         var s = new Olm.InboundGroupSession();
@@ -1028,7 +1138,7 @@
     var key = roomId + ':' + senderId + ':' + sessionId;
     groupInbound[key] = session;
     return encryptWithKd(session.pickle(PICKLE_KEY)).then(function (enc) {
-      return idbSet(STORE_OLM, 'groupIn:' + key, enc);
+      return idbSet(STORE_OLM, groupInKey(key), enc);
     });
   }
 
@@ -2065,8 +2175,10 @@ return fetchBackup().then(function (data) {
           var cursor = req.result;
           if (!cursor) return;
           var k = String(cursor.key);
-          if (k.indexOf('session:') === 0 || k.indexOf('sessionBase:') === 0 ||
-              k.indexOf('sessionIdent:') === 0 || k.indexOf('self') === 0) {
+          var u = activeUserId();
+          if (k.indexOf('session:' + u + ':') === 0 || k.indexOf('sessionBase:' + u + ':') === 0 ||
+              k.indexOf('sessionIdent:' + u + ':') === 0 || k.indexOf('selfOutbound:' + u) === 0 ||
+              k.indexOf('selfInbound:' + u) === 0) {
             cursor.delete();
           }
           cursor.continue();
