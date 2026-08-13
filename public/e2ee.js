@@ -914,8 +914,12 @@
             var env = typeof raw === 'string' ? JSON.parse(raw) : raw;
             if (env && env.v === 2 && env.devices && env.devices[myDevId]) {
               var targetCipher = env.devices[myDevId];
-              var devKey = activeUserId() + ':' + myDevId;
+              var senderDevId = env.sender_device_id || 'default';
+              var devKey = activeUserId() + ':' + senderDevId;
               return loadSession(devKey).then(function (live) {
+                if (!live) return loadSession(activeUserId());
+                return live;
+              }).then(function (live) {
                 if (live) {
                   try {
                     var p = live.decrypt(targetCipher.t, targetCipher.b);
@@ -924,7 +928,24 @@
                     }
                   } catch (_) {}
                 }
-                return decryptSelfFallback(msg);
+                return loadSessionBaseline(devKey).then(function (base) {
+                  if (base) {
+                    try {
+                      var pBase = base.decrypt(targetCipher.t, targetCipher.b);
+                      if (pBase) return pBase;
+                    } catch (_) {}
+                  }
+                  if (targetCipher.t === 0) {
+                    var s = new Olm.Session();
+                    try {
+                      s.create_inbound(account, targetCipher.b);
+                      account.remove_one_time_keys(s);
+                      var pNew = s.decrypt(targetCipher.t, targetCipher.b);
+                      return saveSession(devKey, s).then(function () { return saveAccount(); }).then(function () { return pNew; });
+                    } catch (_) {}
+                  }
+                  return decryptSelfFallback(msg);
+                });
               });
             }
           } catch (_) {}
@@ -2001,21 +2022,20 @@
           if (data.error) { input.disabled = false; return; }
           if (data.message) {
             addOwnMsg(plaintext, data.message);
-            // Additional Security: persist our own device copy + ack receipt so
-            // the server can delete the message once the recipient acked too.
-            if (Number(data.message.secure) === 1) {
-              securePersistMessage(otherIdStr, {
-                id: data.message.id,
-                from_id: currentUserId(),
-                created_at: data.message.created_at,
-                edited_at: data.message.edited_at || null,
-                proto: 'olm',
-                plaintext: plaintext,
-                own: true,
-              }).then(function () {
+            securePersistMessage(otherIdStr, {
+              id: data.message.id,
+              from_id: currentUserId(),
+              created_at: data.message.created_at,
+              edited_at: data.message.edited_at || null,
+              proto: 'olm',
+              plaintext: plaintext,
+              own: true,
+              msg_secure: Number(data.message.secure) === 1,
+            }).then(function () {
+              if (Number(data.message.secure) === 1) {
                 return ackSecureMessages(otherUsername, [data.message.id]);
-              });
-            }
+              }
+            });
           }
           input.value = '';
           input.disabled = false;
