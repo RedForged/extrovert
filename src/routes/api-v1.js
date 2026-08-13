@@ -1329,7 +1329,10 @@ router.post('/conversations/prekeys', requireApiAuth('write:direct'), express.js
     if (clean.length) db.addOlmPrekeys(req.apiUser.id, clean);
   }
   const backup = String(req.body.backup || '').trim().slice(0, 200000) || null;
-  if (backup) db.setOlmBackup(req.apiUser.id, backup);
+  if (backup) {
+    const backupIdentity = String(req.body.backup_identity || '').trim() || null;
+    db.setOlmBackup(req.apiUser.id, backup, backupIdentity);
+  }
   db.auditLog('dm_olm_keys', req.apiUser.id, 'Published Olm identity + prekeys');
   responseEnvelope(res, { ok: true, available: db.countAvailablePrekeys(req.apiUser.id) });
 });

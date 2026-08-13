@@ -82,7 +82,10 @@ router.post('/prekeys', express.json(), (req, res) => {
       .map(k => ({ id: String(k.id), public_key: String(k.public_key) }));
     if (clean.length) addOlmPrekeys(user.id, clean);
   }
-  if (backup) setOlmBackup(user.id, backup);
+  if (backup) {
+    const backupIdentity = String(req.body.backup_identity || '').trim() || null;
+    setOlmBackup(user.id, backup, backupIdentity);
+  }
   res.json({ ok: true, available: countAvailablePrekeys(user.id) });
 });
 

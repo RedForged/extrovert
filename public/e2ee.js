@@ -592,7 +592,10 @@
       } else {
         payload = parts[0];
       }
-      return csrfFetch(PREKEYS_URL, { method: 'POST', body: JSON.stringify({ backup: payload }) }).then(function (r) { return r.json(); });
+      return csrfFetch(PREKEYS_URL, {
+        method: 'POST',
+        body: JSON.stringify({ backup: payload, backup_identity: myIdKeys ? myIdKeys.curve25519 : undefined })
+      }).then(function (r) { return r.json(); });
     });
   }
 
@@ -1014,6 +1017,14 @@
           return fetchBackup();
         }).then(function (data) {
           if (!data.backup) {
+            if (data && data.has_identity) {
+              // An identity is published but there is no valid backup to
+              // recover: a password can't possibly help, so don't ask for
+              // one. Offer the explicit reset instead (never mint over a
+              // published identity — peers are pinned to it).
+              if (opts.onNeedsReset) opts.onNeedsReset();
+              return false;
+            }
             return createAndPublishAccount().then(function () { return uploadBackup(account.pickle(PICKLE_KEY)); });
           }
           return decryptWithKek(unwrapBackup(data.backup).account, kek).then(function (pickle) {
@@ -1023,7 +1034,14 @@
             myIdKeys = { curve25519: k.curve25519, ed25519: k.ed25519 };
             return restoreSelfSessionsFromBackup(data);
           }).then(function () { return maybeReplenishPrekeys(); });
-        }).then(function () { return saveAccount(); }).then(function () {
+        }).then(function (ok) {
+          if (ok === false) {
+            sessionStorage.removeItem(KEK_SESSION_KEY);
+            return false;
+          }
+          return saveAccount();
+        }).then(function (ok) {
+          if (ok === false) return false;
           sessionStorage.removeItem(KEK_SESSION_KEY);
           if (opts.onReady) opts.onReady();
           return true;
@@ -1038,12 +1056,12 @@
           return false;
         }
         if (data && data.has_identity) {
-          // E2EE was set up on another browser/device (identity published, no
-          // recoverable backup). Never silently mint a new identity here — the
-          // peer's session is pinned to the old one and every incoming message
-          // would become "[unable to decrypt]" forever. Ask for the password
-          // (or an explicit key reset) instead.
-          if (opts.onNeedsPassword) opts.onNeedsPassword();
+          // An identity is published but no valid backup exists on the
+          // server: a password can't possibly help, so don't ask for one.
+          // Offer the explicit reset instead (never silently mint a new
+          // identity here — the peer's session is pinned to the old one and
+          // every incoming message would become "[unable to decrypt]").
+          if (opts.onNeedsReset) opts.onNeedsReset();
           return false;
         }
         // Nothing to recover -> create a fresh identity silently. No password is
@@ -2066,7 +2084,7 @@
         return loadAccountFromStorage();
       }).then(function (acct) {
         if (acct) return loadSelfSessions();
-return fetchBackup().then(function (data) {
+        return fetchBackup().then(function (data) {
           if (data.backup) {
             return decryptWithKek(unwrapBackup(data.backup).account, kek).then(function (pickle) {
                 account = new Olm.Account();
@@ -2074,10 +2092,26 @@ return fetchBackup().then(function (data) {
                 var k = JSON.parse(account.identity_keys());
                 myIdKeys = { curve25519: k.curve25519, ed25519: k.ed25519 };
                 return restoreSelfSessionsFromBackup(data);
+              }).catch(function () {
+                throw new Error('Wrong password.');
               });
+          }
+          if (data && data.has_identity) {
+            throw new Error('No valid backup is stored on the server — use "Reset keys" below.');
           }
           return createAndPublishAccount().then(function () {
             return uploadBackup(account.pickle(PICKLE_KEY));
+          });
+        }).then(function () {
+          // Verify the restored account still matches the server's current
+          // identity; a stale backup must not silently load an account that
+          // can never decrypt anything.
+          return csrfFetch('/chats/prekeys/identity').then(function (r) { return r.json(); }).then(function (d) {
+            if (d && d.identity_key && myIdKeys && d.identity_key !== myIdKeys.curve25519) {
+              account = null;
+              myIdKeys = null;
+              throw new Error('The backup belongs to a different encryption identity — use "Reset keys" below.');
+            }
           });
         }).then(function () { return maybeReplenishPrekeys(); });
       }).then(function () {
@@ -2090,14 +2124,34 @@ return fetchBackup().then(function (data) {
     });
   }
 
-  function showUnlockOverlay(onUnlocked) {
+  // mode 'password' (default): a valid backup exists — ask for the password.
+  // mode 'reset': no valid backup exists — a password can't help; show only
+  // the reset option. "Not now" dismisses without acting; the dialog reappears
+  // on the next chat page load until local keys exist.
+  function showUnlockOverlay(onUnlocked, mode) {
     var overlay = document.getElementById('e2ee-unlock-overlay');
     if (!overlay) return;
     overlay.style.display = 'flex';
     var input = document.getElementById('e2ee-password');
     var btn = document.getElementById('e2ee-unlock-btn');
     var error = document.getElementById('e2ee-unlock-error');
-    if (!input || !btn) return;
+    var title = document.getElementById('e2ee-unlock-title');
+    var hint = overlay.querySelector('p.muted');
+    var dismiss = document.getElementById('e2ee-unlock-dismiss');
+    var resetOnly = mode === 'reset';
+    if (title) title.textContent = resetOnly ? 'Encryption Keys Missing' : 'Unlock End-to-End Encryption';
+    if (hint) hint.textContent = resetOnly
+      ? 'Your encryption keys can\'t be recovered on this device (no valid backup on the server). Reset them to start fresh — your contacts reconnect automatically on their next message.'
+      : 'Enter your password to decrypt your keys and enable secure messaging.';
+    if (dismiss) {
+      dismiss.style.display = '';
+      dismiss.onclick = function (ev) { ev.preventDefault(); overlay.style.display = 'none'; };
+    }
+    if (input && btn) {
+      input.style.display = resetOnly ? 'none' : '';
+      btn.style.display = resetOnly ? 'none' : '';
+    }
+    if (!input || !btn || resetOnly) return;
     input.focus();
 
     function doUnlock() {
@@ -2113,7 +2167,7 @@ return fetchBackup().then(function (data) {
         if (onUnlocked) onUnlocked();
       }).catch(function (err) {
         console.error('unlock failed', err);
-        if (error) { error.textContent = 'Wrong password or unlock failed.'; error.style.display = 'block'; }
+        if (error) { error.textContent = (err && err.message) || 'Wrong password or unlock failed.'; error.style.display = 'block'; }
         btn.disabled = false;
         btn.textContent = 'Unlock';
         input.value = '';
@@ -2302,6 +2356,7 @@ return fetchBackup().then(function (data) {
     initOlm().then(function () {
       return ensureReady({
         onNeedsPassword: function () { showUnlockOverlay(function () { finishChatInit(recipientId, recipientCurve, otherIdStr, otherUsername); }); },
+        onNeedsReset: function () { showUnlockOverlay(function () { finishChatInit(recipientId, recipientCurve, otherIdStr, otherUsername); }, 'reset'); },
       });
     }).then(function (ready) {
       if (ready) { finishChatInit(recipientId, recipientCurve, otherIdStr, otherUsername); }

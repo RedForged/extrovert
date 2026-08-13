@@ -1005,9 +1005,10 @@ function setOlmIdentity(userId, identityKey, ed25519Key, fallbackKey) {
     // silently starve the pool.
     db.prepare(`
       UPDATE olm_identity SET identity_key = ?, ed25519_key = ?, fallback_key = ?,
+        backup = CASE WHEN ? THEN NULL ELSE backup END,
         rotated_at = CASE WHEN ? THEN ? ELSE rotated_at END
       WHERE user_id = ?
-    `).run(identityKey, ed25519Key, fallbackKey || null, rotated ? 1 : 0, Date.now(), userId);
+    `).run(identityKey, ed25519Key, fallbackKey || null, rotated ? 1 : 0, rotated ? 1 : 0, Date.now(), userId);
     return;
   }
   db.prepare(`
@@ -1020,16 +1021,24 @@ function getOlmIdentity(userId) {
   return db.prepare(`SELECT identity_key, ed25519_key, fallback_key, backup, rotated_at FROM olm_identity WHERE user_id = ?`).get(userId) || null;
 }
 
-function setOlmBackup(userId, backup) {
+function setOlmBackup(userId, backup, backupIdentity) {
   // UPSERT: backup-only uploads must land even before a full identity publish
   // (the identity row may not exist yet on first password unlock). identity_key
   // is NOT NULL in the schema, so an incomplete row uses empty-string stubs —
   // getOlmIdentity handles them as "no identity published yet".
+  const existing = getOlmIdentity(userId);
+  if (existing && existing.identity_key && backupIdentity && backupIdentity !== existing.identity_key) {
+    // A superseded client uploaded a backup of its OLD identity after a
+    // rotation. Storing it would hand the next unlock attempt a stale account
+    // that can never match the server identity — reject it.
+    return false;
+  }
   db.prepare(`
     INSERT INTO olm_identity (user_id, identity_key, ed25519_key, backup, created_at, rotated_at)
     VALUES (?, '', '', ?, ?, ?)
     ON CONFLICT(user_id) DO UPDATE SET backup = excluded.backup
   `).run(userId, backup || null, Date.now(), Date.now());
+  return true;
 }
 
 function addOlmPrekeys(userId, prekeys) {

@@ -599,6 +599,29 @@ async function main() {
   const dcPlain = await carolAgain.decryptOlm(dcMsgs[0], false, String(daveId), daveServerCurve);
   ok(dcPlain === 'hi carol from dave', 'carol decrypts dave\'s reply on the shared browser -> ' + JSON.stringify(dcPlain));
 
+  console.log('\nTEST 12: backup lifecycle — a stale backup never survives a rotation');
+  // The unlock prompt may only appear when a VALID backup exists. Server-side
+  // contract: rotation clears the old backup; uploads carrying the superseded
+  // identity are rejected; uploads matching the current identity are stored.
+  const aliceCurveOrig = alice.myIdKeys.curve25519;
+  let bkRes = await alice.csrfFetch('/chats/prekeys', { method: 'POST', body: JSON.stringify({ backup: 'BK-OLD', backup_identity: aliceCurveOrig }) });
+  ok(bkRes.status === 200, 'backup upload under the current identity accepted');
+  let bk = await alice.csrfFetch('/chats/prekeys/backup').then((x) => x.json());
+  ok(bk.backup === 'BK-OLD' && bk.has_identity === true, 'backup stored alongside the published identity');
+  // Rotation (key reset) must invalidate the stale backup.
+  await alice.resetKeys();
+  bk = await alice.csrfFetch('/chats/prekeys/backup').then((x) => x.json());
+  ok(bk.backup === null && bk.has_identity === true, 'rotation cleared the old backup (identity still published)');
+  // A stale client re-uploading the old backup is rejected.
+  bkRes = await alice.csrfFetch('/chats/prekeys', { method: 'POST', body: JSON.stringify({ backup: 'BK-OLD', backup_identity: aliceCurveOrig }) });
+  ok(bkRes.status === 200, 'stale backup upload reaches the route');
+  bk = await alice.csrfFetch('/chats/prekeys/backup').then((x) => x.json());
+  ok(bk.backup === null, 'stale backup rejected — no valid backup exists, so the password prompt must not appear');
+  // A backup matching the current identity is stored again.
+  bkRes = await alice.csrfFetch('/chats/prekeys', { method: 'POST', body: JSON.stringify({ backup: 'BK-NEW', backup_identity: alice.myIdKeys.curve25519 }) });
+  bk = await alice.csrfFetch('/chats/prekeys/backup').then((x) => x.json());
+  ok(bk.backup === 'BK-NEW', 'current-identity backup stored — a password prompt is now legitimate');
+
   console.log(failures ? '\nSOME TESTS FAILED' : '\nALL TESTS PASSED');
   process.exit(failures ? 1 : 0);
 }
