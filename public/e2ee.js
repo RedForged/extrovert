@@ -2005,13 +2005,25 @@ return fetchBackup().then(function (data) {
   // decryption of every peer message instead.
   function resetEncryptionKeys() {
     return initOlm().then(function () { return getOrCreateDeviceKey(); }).then(function () {
+      // Drop every per-conversation session (and the self-session pair): they
+      // are pinned to the old identity and would only keep failing. Peers
+      // detect the identity rotation and rebuild their outbound sessions on
+      // their next send (checkOutboundSessionIdentity), so the conversation
+      // heals automatically.
+      return purgeOlmSessions();
+    }).then(function () {
       selfOutbound = null;
       selfInbound = null;
       selfInboundBaseline = null;
       sessions = {};
       sessionBaselinePickles = {};
       sessionBaselines = {};
+      rekeyLastCheck = {};
+      rekeyRequestedAt = {};
+      sessionIdentLastCheck = {};
       return createAndPublishAccount();
+    }).then(function () {
+      return ensureSelfSessions();
     }).then(function () {
       return uploadBackup(account.pickle(PICKLE_KEY));
     }).then(function () {
@@ -2022,13 +2034,52 @@ return fetchBackup().then(function (data) {
     });
   }
 
+  // Delete session-related pickles from STORE_OLM, keeping only the account
+  // (and Megolm room-group keys, which stay decryptable). Used by the key
+  // reset so a fresh identity starts without stale ratchets.
+  function purgeOlmSessions() {
+    if (USE_FILE_STORE) return Promise.resolve();
+    return openDB().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(STORE_OLM, 'readwrite');
+        var req = tx.objectStore(STORE_OLM).openCursor();
+        req.onsuccess = function () {
+          var cursor = req.result;
+          if (!cursor) return;
+          var k = String(cursor.key);
+          if (k.indexOf('session:') === 0 || k.indexOf('sessionBase:') === 0 ||
+              k.indexOf('sessionIdent:') === 0 || k.indexOf('self') === 0) {
+            cursor.delete();
+          }
+          cursor.continue();
+        };
+        tx.oncomplete = function () { resolve(); };
+        tx.onerror = function () { reject(tx.error); };
+      });
+    });
+  }
+
+  // Detect when the locally stored account was superseded by an identity
+  // published from another browser/device: every incoming message would fail
+  // with "[unable to decrypt]" forever, so surface the reset option.
+  function checkOwnIdentity() {
+    var notice = document.getElementById('e2ee-identity-mismatch');
+    if (!notice) return Promise.resolve();
+    return csrfFetch('/chats/prekeys/identity').then(function (r) { return r.json(); }).then(function (d) {
+      var mismatch = d && d.identity_key && myIdKeys && d.identity_key !== myIdKeys.curve25519;
+      notice.style.display = mismatch ? 'block' : 'none';
+    }).catch(function () {});
+  }
+
   function initResetLink() {
-    var link = document.getElementById('e2ee-reset-link');
-    if (!link) return;
-    link.addEventListener('click', function (ev) {
-      ev.preventDefault();
-      if (!window.confirm('Reset encryption keys? Old messages from other devices can no longer be decrypted.')) return;
-      resetEncryptionKeys();
+    var links = document.querySelectorAll('.e2ee-reset-link');
+    if (!links.length) return;
+    links.forEach(function (link) {
+      link.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        if (!window.confirm('Reset encryption keys? Old messages from other devices can no longer be decrypted.')) return;
+        resetEncryptionKeys();
+      });
     });
   }
 
@@ -2138,6 +2189,7 @@ return fetchBackup().then(function (data) {
     renderSafetyNumber(otherUsername);
     initSecurityToggle();
     initChatHandlers(recipientId, otherIdStr, otherUsername, recipientCurve);
+    checkOwnIdentity();
   }
 
   // Room pages (and any future consumer) drive Megolm through this global.

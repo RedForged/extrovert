@@ -105,6 +105,18 @@ router.get('/prekeys/count', (req, res) => {
   res.json({ available: countAvailablePrekeys(user.id) });
 });
 
+// The current user's own published identity (public keys only). Lets the client
+// detect when its local account was superseded by an identity published from
+// another browser/device (or an earlier reset): messages addressed to the
+// server identity can never be decrypted by the superseded local account, and
+// the client must offer an explicit key reset instead of failing silently.
+router.get('/prekeys/identity', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.status(401).json({ error: 'not logged in' });
+  const id = getOlmIdentity(user.id);
+  res.json({ identity_key: id ? id.identity_key : null, ed25519_key: id ? id.ed25519_key : null });
+});
+
 // Fetch a recipient's Olm bundle (identity + one claimed one-time prekey, else fallback).
 router.get('/:username/bundle', (req, res) => {
   const user = res.locals.currentUser;

@@ -325,6 +325,23 @@ class SimBrowser {
     // resetSessionBaseline(otherIdStr) per conversation; we do it in the test
     // helper when needed to stay faithful.
   }
+
+  // Simulate the explicit "Reset encryption keys" flow: purge session pickles,
+  // mint + publish a fresh identity, recreate the self-session pair.
+  async resetKeys() {
+    for (const k of [...this.idb.map.keys()]) {
+      if (k === 'account') continue;
+      if (k.startsWith('session:') || k.startsWith('sessionBase:') ||
+          k.startsWith('sessionIdent:') || k.startsWith('self')) {
+        this.idb.map.delete(k);
+      }
+    }
+    this.sessions = {};
+    this.selfOutbound = null;
+    this.selfInbound = null;
+    this.selfInboundBaseline = null;
+    await this.initCrypto();
+  }
 }
 
 async function main() {
@@ -479,6 +496,33 @@ async function main() {
   const newMsgs = fetchMessages(aliceId, bobId);
   const p5 = await fresh.decryptOlm(newMsgs[4], false, String(aliceId), aliceCurve);
   ok(p5 === 'hello bob #5', 'fresh device decrypts the rebuilt-session message -> ' + JSON.stringify(p5));
+
+  console.log('\nTEST 9: receiver key reset heals the conversation (rotation detect + rebuild)');
+  // The escape hatch for a permanently desynced device: bob resets his keys
+  // (new identity published, old sessions purged). Alice's next send detects
+  // the rotation via /chats/:username/safety and rebuilds her outbound session;
+  // the fresh PreKey message decrypts on bob's reset device.
+  const oldBobIdentity = db.getOlmIdentity(bobId).identity_key;
+  await bob.resetKeys();
+  const newBobIdentity = db.getOlmIdentity(bobId).identity_key;
+  ok(newBobIdentity !== oldBobIdentity, 'reset published a new identity server-side');
+  const safety = await alice.csrfFetch('/chats/bob/safety').then((x) => x.json());
+  ok(safety.their_curve25519 === newBobIdentity, 'safety endpoint exposes the rotated identity');
+  // /chats/prekeys/identity: bob's own view matches his local (reset) account.
+  const ownId = await bob.csrfFetch('/chats/prekeys/identity').then((x) => x.json());
+  ok(ownId.identity_key === newBobIdentity && ownId.identity_key === bob.myIdKeys.curve25519,
+    '/chats/prekeys/identity matches the local account after reset');
+  // Alice detects the rotation (mirrors checkOutboundSessionIdentity) and rebuilds.
+  await alice.rebuildOutboundSession(bob);
+  await alice.sendTo(bob, 'hello bob #6');
+  const postReset = fetchMessages(aliceId, bobId);
+  const p6 = await bob.decryptOlm(postReset[5], false, String(aliceId), alice.myIdKeys.curve25519);
+  ok(p6 === 'hello bob #6', 'bob decrypts after key reset + sender rebuild -> ' + JSON.stringify(p6));
+  // And bob can reply again on the rebuilt chain.
+  await bob.sendTo(alice, 'hello alice #3');
+  const replyMsgs = fetchMessages(bobId, aliceId);
+  const pReply = await alice.decryptOlm(replyMsgs[2], false, String(bobId), bob.myIdKeys.curve25519);
+  ok(pReply === 'hello alice #3', 'alice decrypts bob reply after reset -> ' + JSON.stringify(pReply));
 
   console.log(failures ? '\nSOME TESTS FAILED' : '\nALL TESTS PASSED');
   process.exit(failures ? 1 : 0);

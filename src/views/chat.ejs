@@ -73,6 +73,15 @@
     <div id="sticker-popup-chat" style="display:none;position:absolute;bottom:100%;right:0;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);z-index:100;box-shadow:var(--shadow)"></div>
   </form>
   <div id="chat-send-error" class="muted" style="display:none;text-align:center;font-size:0.85rem;color:var(--danger);padding:6px 0"></div>
+  <div class="muted" style="font-size:0.75rem;text-align:center;padding:6px 0">
+    Encryption problems? <a href="#" class="e2ee-reset-link" style="color:var(--text-muted);text-decoration:underline">Reset encryption keys</a>
+  </div>
+  <div id="e2ee-identity-mismatch" class="card" style="display:none;text-align:center;padding:0.9rem 1rem;margin-top:10px">
+    <p class="muted" style="margin:0;font-size:0.85rem">
+      Your local encryption keys no longer match the ones on the server, so incoming messages can't be decrypted.
+      <a href="#" class="e2ee-reset-link" style="color:var(--text-muted);text-decoration:underline">Reset encryption keys</a> to start fresh — your contacts reconnect automatically on their next message.
+    </p>
+  </div>
   <div id="dm-security-notice" class="card" style="display:<%= security.active ? 'block' : 'none' %>;text-align:center;padding:0.9rem 1rem;margin-top:10px">
     <p class="muted" style="margin:0;font-size:0.85rem"><%- include('partials/icon', { name: 'lock', size: 13 }) %> <strong>Additional Security is on.</strong> Messages are removed from the server as soon as both of you have received them — they live only on your devices.</p>
   </div>
@@ -89,7 +98,7 @@
       <input type="password" id="e2ee-password" placeholder="Password" aria-label="Password" autocomplete="current-password" style="width:100%;margin-bottom:10px">
       <button class="btn" id="e2ee-unlock-btn">Unlock</button>
       <div id="e2ee-unlock-error" style="color:var(--danger);margin-top:8px;display:none"></div>
-      <a href="#" id="e2ee-reset-link" style="display:block;margin-top:12px;font-size:0.8rem;color:var(--text-muted)">Forgot password or can't unlock? Reset keys</a>
+      <a href="#" id="e2ee-reset-link" class="e2ee-reset-link" style="display:block;margin-top:12px;font-size:0.8rem;color:var(--text-muted)">Forgot password or can't unlock? Reset keys</a>
     </div>
   </div>
 <%- include('partials/footer') %>
