@@ -164,6 +164,7 @@
   function sessionInKey(idStr) { return 'sessionIn:' + activeUserId() + ':' + idStr; }
   function sessionBaseKey(idStr) { return 'sessionBase:' + activeUserId() + ':' + idStr; }
   function sessionInBaseKey(idStr) { return 'sessionInBase:' + activeUserId() + ':' + idStr; }
+  function sessionOtkKey(idStr) { return 'sessionOtk:' + activeUserId() + ':' + idStr; }
   function sessionIdentKey(idStr) { return 'sessionIdent:' + activeUserId() + ':' + idStr; }
   function groupOutKey(roomId) { return 'groupOut:' + activeUserId() + ':' + roomId; }
   function groupInKey(key) { return 'groupIn:' + activeUserId() + ':' + key; }
@@ -826,7 +827,7 @@
 
   function getOrCreateDeviceOutboundSession(otherIdStr, deviceId, identityKey, fallbackKey, otk) {
     var fullKey = otherIdStr + ':' + deviceId;
-    var freshOtkId = otk ? (otk.id || '') : '';
+    var freshOtkId = otk ? (typeof otk === 'object' ? otk.id || '' : '') : '';
     // Session healing: rotate when the peer publishes a different fresh
     // one-time key (re-publish on login = implicit session reset) or when the
     // peer's IDENTITY changed (explicit key reset). Without this, a desynced
@@ -835,7 +836,7 @@
       if (existing) {
         var checks = [];
         if (freshOtkId) {
-          checks.push(idbGet(STORE_OLM, 'sessionOtk:' + fullKey).then(function (usedOtk) {
+          checks.push(idbGet(STORE_OLM, sessionOtkKey(fullKey)).then(function (usedOtk) {
             return !!(usedOtk && String(usedOtk) !== String(freshOtkId));
           }));
         }
@@ -848,11 +849,14 @@
         return Promise.all(checks).then(function (flags) {
           if (flags.some(Boolean)) {
             delete outboundSessions[fullKey];
+            delete inboundSessions[fullKey];
             delete sessions[fullKey];
             return Promise.all([
               idbDelete(STORE_OLM, sessionOutKey(fullKey)),
               idbDelete(STORE_OLM, sessionKey(fullKey)),
-              idbDelete(STORE_OLM, sessionBaseKey(fullKey))
+              idbDelete(STORE_OLM, sessionBaseKey(fullKey)),
+              idbDelete(STORE_OLM, sessionInKey(fullKey)),
+              idbDelete(STORE_OLM, sessionInBaseKey(fullKey))
             ]).then(function () { return null; });
           }
           return existing;
@@ -861,14 +865,16 @@
       return null;
     }).then(function (existing) {
       if (existing) return existing;
-      var theirOtk = otk ? otk.public_key : fallbackKey;
+      var theirOtk = otk ? (typeof otk === 'object' ? otk.public_key : otk) : fallbackKey;
       if (!identityKey || !theirOtk) return null;
       var s = new Olm.Session();
       s.create_outbound(account, identityKey, theirOtk);
       return saveSessionBaseline(fullKey, s).then(function () {
         return saveOutboundSession(fullKey, s);
       }).then(function () {
-        return idbSet(STORE_OLM, 'sessionOtk:' + fullKey, freshOtkId || 'fallback');
+        if (freshOtkId) {
+          return idbSet(STORE_OLM, sessionOtkKey(fullKey), freshOtkId);
+        }
       }).then(function () {
         return idbSet(STORE_OLM, sessionIdentKey(fullKey), identityKey);
       }).then(function () { return s; });
