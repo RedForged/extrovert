@@ -422,6 +422,41 @@ try {
 } catch {}
 try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_olm_device_prekeys_key ON olm_device_prekeys(user_id, device_id, key_id)`); } catch {}
 
+// Repair legacy olm_identity rows that a newer device registration clobbered:
+// the legacy identity is what single-device/older clients (and the bundle
+// fallback) encrypt to, so it must point at the FIRST registered device. When
+// it currently equals a LATER device's identity (the clobbered state), point
+// it back at the oldest device. Identities belonging to old clients with no
+// device row are left untouched.
+try {
+  db.exec(`
+    UPDATE olm_identity SET
+      identity_key = (
+        SELECT u.identity_key FROM user_devices u
+        WHERE u.user_id = olm_identity.user_id
+        ORDER BY u.created_at ASC, u.rowid ASC LIMIT 1
+      ),
+      ed25519_key = (
+        SELECT u.ed25519_key FROM user_devices u
+        WHERE u.user_id = olm_identity.user_id
+        ORDER BY u.created_at ASC, u.rowid ASC LIMIT 1
+      ),
+      fallback_key = (
+        SELECT u.fallback_key FROM user_devices u
+        WHERE u.user_id = olm_identity.user_id
+        ORDER BY u.created_at ASC, u.rowid ASC LIMIT 1
+      )
+    WHERE EXISTS (
+      SELECT 1 FROM user_devices u
+      WHERE u.user_id = olm_identity.user_id
+        AND u.identity_key = olm_identity.identity_key
+        AND u.created_at > (
+          SELECT MIN(created_at) FROM user_devices WHERE user_id = olm_identity.user_id
+        )
+    )
+  `);
+} catch {}
+
 try { db.exec(`
   CREATE TABLE IF NOT EXISTS user_history_backup (
     user_id     INTEGER PRIMARY KEY REFERENCES users(id),
