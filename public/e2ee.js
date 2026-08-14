@@ -92,6 +92,11 @@
     if (!s || !s.set) return Promise.reject(new Error('file storage bridge missing'));
     return Promise.resolve(s.set(storageKey, value));
   }
+  function fileDelete(storageKey) {
+    var s = window.ExtrovertE2EEStorage;
+    if (!s || !s.delete) return Promise.resolve(null);
+    return Promise.resolve(s.delete(storageKey));
+  }
 
   function openDB() {
     var req = indexedDB.open(DB_NAME, 2);
@@ -123,6 +128,17 @@
       return new Promise(function (resolve, reject) {
         var tx = db.transaction(storeName, 'readwrite');
         tx.objectStore(storeName).put(value, key);
+        tx.oncomplete = function () { resolve(); };
+        tx.onerror = function () { reject(tx.error); };
+      });
+    });
+  }
+  function idbDelete(storeName, key) {
+    if (USE_FILE_STORE) return fileDelete(storeName + ':' + key);
+    return openDB().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(storeName, 'readwrite');
+        tx.objectStore(storeName).delete(key);
         tx.oncomplete = function () { resolve(); };
         tx.onerror = function () { reject(tx.error); };
       });
@@ -725,8 +741,38 @@
 
   function getOrCreateDeviceOutboundSession(otherIdStr, deviceId, identityKey, fallbackKey, otk) {
     var fullKey = otherIdStr + ':' + deviceId;
-    if (sessions[fullKey]) return Promise.resolve(sessions[fullKey]);
+    var freshOtkId = otk ? (otk.id || '') : '';
+    // Session healing: rotate when the peer publishes a different fresh
+    // one-time key (re-publish on login = implicit session reset) or when the
+    // peer's IDENTITY changed (explicit key reset). Without this, a desynced
+    // ratchet is reused forever and the pair can never decrypt again.
     return loadSession(fullKey).then(function (existing) {
+      if (existing) {
+        var checks = [];
+        if (freshOtkId) {
+          checks.push(idbGet(STORE_OLM, 'sessionOtk:' + fullKey).then(function (usedOtk) {
+            return !!(usedOtk && String(usedOtk) !== String(freshOtkId));
+          }));
+        }
+        if (identityKey) {
+          checks.push(idbGet(STORE_OLM, sessionIdentKey(fullKey)).then(function (storedIdent) {
+            return !!(storedIdent && String(storedIdent) !== String(identityKey));
+          }));
+        }
+        if (!checks.length) return existing;
+        return Promise.all(checks).then(function (flags) {
+          if (flags.some(Boolean)) {
+            delete sessions[fullKey];
+            return Promise.all([
+              idbDelete(STORE_OLM, 'session:' + fullKey),
+              idbDelete(STORE_OLM, 'sessionBase:' + fullKey)
+            ]).then(function () { return null; });
+          }
+          return existing;
+        });
+      }
+      return null;
+    }).then(function (existing) {
       if (existing) return existing;
       var theirOtk = otk ? otk.public_key : fallbackKey;
       if (!identityKey || !theirOtk) return null;
@@ -734,6 +780,8 @@
       s.create_outbound(account, identityKey, theirOtk);
       return saveSessionBaseline(fullKey, s).then(function () {
         return saveSession(fullKey, s);
+      }).then(function () {
+        return idbSet(STORE_OLM, 'sessionOtk:' + fullKey, freshOtkId || 'fallback');
       }).then(function () {
         return idbSet(STORE_OLM, sessionIdentKey(fullKey), identityKey);
       }).then(function () { return s; });
