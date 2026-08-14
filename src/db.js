@@ -395,7 +395,23 @@ try { db.exec(`
     UNIQUE(user_id, device_id)
   );
 `); } catch {}
+try { db.exec(`ALTER TABLE user_devices ADD COLUMN rotated_at INTEGER`); } catch {}
 try { db.exec(`CREATE INDEX IF NOT EXISTS idx_user_devices_user ON user_devices(user_id, last_seen)`); } catch {}
+
+// One-time retroactive heal: during the identity-clobber era, devices that
+// rotated their identity kept their old one-time prekeys in the pool, and
+// senders claimed those stale keys (recipients could never consume them →
+// BAD_MESSAGE_KEY_ID → cross-device messages permanently undecryptable).
+// Purge every device prekey pool once; clients re-publish fresh keys on
+// their next login and fallback keys bridge the gap meanwhile.
+try {
+  db.exec(`CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT)`);
+  const done = db.prepare(`SELECT value FROM app_meta WHERE key = 'device_prekeys_purge_v1'`).get();
+  if (!done) {
+    db.exec(`DELETE FROM olm_device_prekeys`);
+    db.prepare(`INSERT INTO app_meta (key, value) VALUES ('device_prekeys_purge_v1', '1')`).run();
+  }
+} catch {}
 
 try { db.exec(`
   CREATE TABLE IF NOT EXISTS olm_device_prekeys (
@@ -1176,16 +1192,27 @@ function registerUserDevice(userId, deviceId, identityKey, ed25519Key, fallbackK
   const cleanId = String(deviceId || '').trim();
   const cleanName = String(deviceName || '').trim() || null;
   if (!cleanId) return null;
+  // Identity rotation guard: when a device re-registers with a DIFFERENT
+  // identity (explicit key reset / reinstall), its previously published
+  // one-time keys belong to the dead account — senders claiming them would
+  // produce messages the device can never decrypt. Purge the stale pool and
+  // stamp the rotation so claims only serve the current identity generation.
+  const prev = db.prepare(`SELECT identity_key FROM user_devices WHERE user_id = ? AND device_id = ?`).get(userId, cleanId);
+  const rotated = !!(prev && prev.identity_key !== String(identityKey));
+  if (rotated) {
+    db.prepare(`DELETE FROM olm_device_prekeys WHERE user_id = ? AND device_id = ?`).run(userId, cleanId);
+  }
   db.prepare(`
-    INSERT INTO user_devices (user_id, device_id, identity_key, ed25519_key, fallback_key, device_name, created_at, last_seen)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO user_devices (user_id, device_id, identity_key, ed25519_key, fallback_key, device_name, created_at, last_seen, rotated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id, device_id) DO UPDATE SET
       identity_key = excluded.identity_key,
       ed25519_key = excluded.ed25519_key,
       fallback_key = excluded.fallback_key,
       device_name = COALESCE(excluded.device_name, user_devices.device_name),
-      last_seen = excluded.last_seen
-  `).run(userId, cleanId, String(identityKey), String(ed25519Key), fallbackKey || null, cleanName, now, now);
+      last_seen = excluded.last_seen,
+      rotated_at = CASE WHEN excluded.rotated_at IS NOT NULL THEN excluded.rotated_at ELSE user_devices.rotated_at END
+  `).run(userId, cleanId, String(identityKey), String(ed25519Key), fallbackKey || null, cleanName, now, now, rotated ? now : null);
   // Keep the legacy olm_identity for backwards compatibility with single-device
   // clients — but ONLY seed it from the FIRST registered device. Old clients
   // (and the bundle fallback path) encrypt to that identity, so a NEW device
@@ -1241,7 +1268,12 @@ function countAvailableDevicePrekeys(userId, deviceId) {
 }
 
 function claimDevicePrekey(userId, deviceId) {
-  const row = db.prepare(`SELECT id, key_id, public_key FROM olm_device_prekeys WHERE user_id = ? AND device_id = ? AND used = 0 ORDER BY id ASC LIMIT 1`).get(userId, String(deviceId));
+  // Only serve prekeys published under the device's CURRENT identity
+  // generation — rows from a superseded identity can never be consumed by
+  // the device (its account no longer holds those keys).
+  const dev = db.prepare(`SELECT rotated_at FROM user_devices WHERE user_id = ? AND device_id = ?`).get(userId, String(deviceId));
+  const minTs = dev && dev.rotated_at ? dev.rotated_at : 0;
+  const row = db.prepare(`SELECT id, key_id, public_key FROM olm_device_prekeys WHERE user_id = ? AND device_id = ? AND used = 0 AND created_at >= ? ORDER BY id ASC LIMIT 1`).get(userId, String(deviceId), minTs);
   if (!row) return null;
   db.prepare(`UPDATE olm_device_prekeys SET used = 1 WHERE id = ?`).run(row.id);
   return { id: row.key_id, public_key: row.public_key };
