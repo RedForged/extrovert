@@ -30,6 +30,7 @@ async function main() {
   const base = 'http://localhost:' + process.env.PORT;
 
   const aliceId = db.createUser({ username: 'alice', passwordHash: bcrypt.hashSync('pw1', 10), displayName: 'Alice' });
+  db.promoteUser(aliceId);
 
   async function makeWebSession(username, password) {
     const jar = {};
@@ -297,6 +298,42 @@ async function main() {
   const evilClient = evil.data.data.client_id;
   html = await alice.get(`/api/v1/oauth/authorize?client_id=${evilClient}&response_type=code&redirect_uri=${encodeURIComponent('https://evil2.example/cb')}`);
   ok(html.includes('&lt;img') && !html.includes('<img src=x onerror'), 'consent page escapes app name');
+
+  console.log('\nTEST 12: cold login -> direct OAuth authorize redirect -> consent POST with CSRF');
+  const mobileUserId = db.createUser({ username: 'mobileuser', passwordHash: bcrypt.hashSync('pw2', 10), displayName: 'Mobile User' });
+  const mobileJar = {};
+  async function mobileReq(url, opts = {}) {
+    const headers = { ...(opts.headers || {}) };
+    if (mobileJar.cookie) headers['Cookie'] = mobileJar.cookie;
+    const res = await fetch(base + url, { ...opts, headers, redirect: 'manual' });
+    const sc = res.headers.get('set-cookie');
+    if (sc) mobileJar.cookie = sc.split(';')[0];
+    return res;
+  }
+  const oauthTarget = `/api/v1/oauth/authorize?client_id=${confClientId}&response_type=code&redirect_uri=${encodeURIComponent('https://good.example/cb')}&scope=read`;
+  const initGet = await mobileReq(oauthTarget);
+  ok(initGet.status === 302, 'unauthenticated OAuth authorize redirects to login');
+  const loginUrl = initGet.headers.get('location');
+  const loginPage = await mobileReq(loginUrl);
+  const loginCsrf = ((await loginPage.text()).match(/name="_csrf" value="([^"]+)"/) || [])[1] || '';
+  const loginPost = await mobileReq('/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: `username=mobileuser&password=pw2&_csrf=${encodeURIComponent(loginCsrf)}&next=${encodeURIComponent(oauthTarget)}`,
+  });
+  ok(loginPost.status === 302 && loginPost.headers.get('location') === oauthTarget, 'login redirects back to OAuth authorize');
+  const consentPage = await mobileReq(loginPost.headers.get('location'));
+  const consentHtml = await consentPage.text();
+  const consentCsrf = (consentHtml.match(/name="_csrf" value="([^"]+)"/) || [])[1];
+  ok(!!consentCsrf && consentCsrf.length === 64, 'consent page contains a valid non-empty CSRF token');
+  const consentPost = await mobileReq('/api/v1/oauth/authorize', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ _csrf: consentCsrf, client_id: confClientId, redirect_uri: 'https://good.example/cb', scope: 'read', approve: 'yes' }),
+  });
+  ok(consentPost.status === 302, 'consent POST succeeds and redirects to redirect_uri');
+  const finalCode = new URL(consentPost.headers.get('location')).searchParams.get('code');
+  ok(!!finalCode, 'consent redirect contains authorization code');
 
   console.log(failures ? '\nSOME TESTS FAILED' : '\nALL TESTS PASSED');
   process.exit(failures ? 1 : 0);

@@ -289,14 +289,24 @@ router.post('/:username/send', (req, res) => {
     const msgId = sendMessage(user.id, other.id, body, keyForSender, keyForRecipient, proto, senderCiphertext, secure);
     createNotification({ userId: other.id, type: 'message', actorId: user.id });
     const msg = db.prepare(`SELECT id, from_id, body, created_at, key_for_sender, key_for_recipient, proto, sender_ciphertext, secure FROM messages WHERE id = ?`).get(msgId);
-    // Live-deliver the ciphertext to the recipient's open tab(s).
+    // Live-deliver the ciphertext to the recipient's open tab(s) and sender's other devices.
     const senderId = getOlmIdentity(user.id);
     sendDmEvent(other.username, {
       message: msg,
       sender_curve: senderId ? senderId.identity_key : null,
       from_username: user.username,
       from_display: user.display_name,
+      to_username: other.username,
     });
+    if (user.username !== other.username) {
+      sendDmEvent(user.username, {
+        message: msg,
+        sender_curve: senderId ? senderId.identity_key : null,
+        from_username: user.username,
+        from_display: user.display_name,
+        to_username: other.username,
+      });
+    }
     if (req.xhr) {
       return res.json({ message: msg });
     }

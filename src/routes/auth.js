@@ -1,6 +1,7 @@
 'use strict';
 
 const express = require('express');
+const crypto = require('node:crypto');
 const bcrypt = require('bcryptjs');
 const db = require('../db');
 const { createUser, getUserByUsername, getUserByReferralCode, getUserById } = db;
@@ -88,6 +89,7 @@ router.post('/register', async (req, res) => {
       console.error('register: session regeneration failed:', err);
       return res.status(500).send('Internal server error');
     }
+    req.session.csrfToken = crypto.randomBytes(32).toString('hex');
     req.session.userId = id;
     req.session.accountIds = [id];
     res.redirect('/');
@@ -147,6 +149,7 @@ router.post('/login', (req, res) => {
       console.error('login: session regeneration failed:', err);
       return res.status(500).send('Internal server error');
     }
+    req.session.csrfToken = crypto.randomBytes(32).toString('hex');
     addAccount(req, user.id);
     if (wasSignedIn && existingIds.length > 0) {
       req.session.accountIds = existingIds.includes(user.id) ? existingIds : [...existingIds, user.id];

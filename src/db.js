@@ -1023,7 +1023,7 @@ function getConversations(userId) {
       WHERE from_id = ? OR to_id = ?
     ),
     lasts AS (
-      SELECT m.from_id, m.to_id, m.body, m.proto, m.sender_ciphertext,
+      SELECT m.id AS last_id, m.from_id, m.to_id, m.body, m.proto, m.sender_ciphertext,
              m.key_for_sender, m.key_for_recipient, m.created_at,
              ROW_NUMBER() OVER (
                PARTITION BY CASE WHEN m.from_id = ? THEN m.to_id ELSE m.from_id END
@@ -1033,7 +1033,7 @@ function getConversations(userId) {
       WHERE m.from_id = ? OR m.to_id = ?
     )
     SELECT p.other_id AS id, u.username, u.display_name, u.avatar,
-      l.from_id AS last_from, l.body AS last_message,
+      l.last_id, l.from_id AS last_from, l.body AS last_message,
       l.proto AS last_proto, l.sender_ciphertext AS last_sender_ciphertext,
       l.key_for_sender AS last_key_for_sender, l.key_for_recipient AS last_key_for_recipient,
       l.created_at AS last_at,

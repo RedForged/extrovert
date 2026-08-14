@@ -255,6 +255,10 @@ router.get('/oauth/authorize', (req, res) => {
   const signedInAccounts = accountIds.map(id => db.getUserById(id)).filter(Boolean);
   const oauthNextUrl = '/api/v1/oauth/authorize?' + new URLSearchParams(req.query).toString();
 
+  if (!req.session.csrfToken) {
+    req.session.csrfToken = crypto.randomBytes(32).toString('hex');
+  }
+
   res.render('oauth-authorize', {
     app,
     redirect_uri,
@@ -1328,6 +1332,7 @@ router.get('/conversations', requireApiAuth('read:direct'), (req, res) => {
       username: c.username,
       display_name: c.display_name,
       avatar: c.avatar,
+      last_id: c.last_id != null ? String(c.last_id) : null,
       last_message: c.last_message,
       last_at: c.last_at,
       unread: c.unread,
@@ -1511,7 +1516,17 @@ router.post('/conversations/:username/messages', requireApiAuth('write:direct'),
     sender_curve: senderId ? senderId.identity_key : null,
     from_username: apiUserRow.username,
     from_display: apiUserRow.display_name,
+    to_username: other.username,
   });
+  if (apiUserRow.username !== other.username) {
+    sendDmEvent(apiUserRow.username, {
+      message: msg,
+      sender_curve: senderId ? senderId.identity_key : null,
+      from_username: apiUserRow.username,
+      from_display: apiUserRow.display_name,
+      to_username: other.username,
+    });
+  }
 
   res.status(201).json({
     data: {
