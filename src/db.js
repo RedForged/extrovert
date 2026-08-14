@@ -409,6 +409,18 @@ try { db.exec(`
   );
 `); } catch {}
 try { db.exec(`CREATE INDEX IF NOT EXISTS idx_olm_device_prekeys ON olm_device_prekeys(user_id, device_id, used)`); } catch {}
+// Clients re-publish their still-unused one-time keys on every login (device
+// re-registration / self-healing), so the same (user, device, key) pair can be
+// uploaded repeatedly. Without a unique constraint the pool fills with
+// duplicates, one key gets claimed twice, and the second claim produces a
+// message the recipient can never decrypt. Clean existing duplicates, then
+// enforce uniqueness so re-publishing is idempotent.
+try {
+  db.exec(`DELETE FROM olm_device_prekeys WHERE id NOT IN (
+    SELECT MIN(id) FROM olm_device_prekeys GROUP BY user_id, device_id, key_id
+  )`);
+} catch {}
+try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_olm_device_prekeys_key ON olm_device_prekeys(user_id, device_id, key_id)`); } catch {}
 
 try { db.exec(`
   CREATE TABLE IF NOT EXISTS user_history_backup (
@@ -1180,7 +1192,7 @@ function deleteUserDevice(userId, deviceId) {
 
 function addDevicePrekeys(userId, deviceId, prekeys) {
   const now = Date.now();
-  const stmt = db.prepare(`INSERT INTO olm_device_prekeys (user_id, device_id, key_id, public_key, used, created_at) VALUES (?,?,?,?,?,?)`);
+  const stmt = db.prepare(`INSERT OR IGNORE INTO olm_device_prekeys (user_id, device_id, key_id, public_key, used, created_at) VALUES (?,?,?,?,?,?)`);
   for (const k of prekeys) {
     if (k && k.id && k.public_key) {
       stmt.run(userId, String(deviceId), String(k.id), String(k.public_key), 0, now);
