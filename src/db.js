@@ -1139,8 +1139,16 @@ function registerUserDevice(userId, deviceId, identityKey, ed25519Key, fallbackK
       device_name = COALESCE(excluded.device_name, user_devices.device_name),
       last_seen = excluded.last_seen
   `).run(userId, cleanId, String(identityKey), String(ed25519Key), fallbackKey || null, cleanName, now, now);
-  // Also keep legacy olm_identity updated for backwards compatibility
-  setOlmIdentity(userId, identityKey, ed25519Key, fallbackKey);
+  // Keep the legacy olm_identity for backwards compatibility with single-device
+  // clients — but ONLY seed it from the FIRST registered device. Old clients
+  // (and the bundle fallback path) encrypt to that identity, so a NEW device
+  // must never hijack it: once the phone registers after an older client, every
+  // fallback/legacy-encrypted message would target the phone and the older
+  // client could no longer decrypt anything.
+  const existing = db.prepare(`SELECT COUNT(*) AS n FROM user_devices WHERE user_id = ?`).get(userId);
+  if (!existing || existing.n <= 1) {
+    setOlmIdentity(userId, identityKey, ed25519Key, fallbackKey);
+  }
   return cleanId;
 }
 

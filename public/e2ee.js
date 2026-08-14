@@ -935,7 +935,7 @@
                       if (pBase) return pBase;
                     } catch (_) {}
                   }
-                  if (targetCipher.t === 0) {
+                  if (targetCipher.t === 0 || targetCipher.t === 2) {
                     var s = new Olm.Session();
                     try {
                       s.create_inbound(account, targetCipher.b);
@@ -1005,7 +1005,7 @@
               );
             } catch (_) {}
           }
-          if (cipherToDecrypt.t === 0) {
+          if (cipherToDecrypt.t === 0 || cipherToDecrypt.t === 2) {
             var ns = new Olm.Session();
             try {
               ns.create_inbound(account, cipherToDecrypt.b);
@@ -1372,7 +1372,7 @@
                   );
                 } catch (_) {}
               }
-              if (env.t === 0) {
+              if (env.t === 0 || env.t === 2) {
                 var ns = new Olm.Session();
                 try {
                   ns.create_inbound(account, env.b);
