@@ -59,6 +59,15 @@ function errorResponse(res, status, title, detail, type = 'about:blank') {
   });
 }
 
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function makeCursor(items, key = 'id') {
   if (!items || items.length === 0) return null;
   return Buffer.from(JSON.stringify({ [key]: items[items.length - 1][key] })).toString('base64url');
@@ -323,6 +332,41 @@ router.post('/oauth/authorize', (req, res) => {
   if (state) redirectUrl.searchParams.set('state', state);
 
   db.auditLog('oauth_code_issued', userId, `App "${app.name}" scopes: ${validScopes}`);
+
+  // Loopback redirect targets (native apps' http://localhost:PORT/callback)
+  // are unreachable from MOBILE browsers: they silently refuse to navigate to
+  // localhost, so the 302 would land on the consent page with nothing visible
+  // and the app never receives the code. Instead render a same-origin page
+  // that (a) tries the loopback redirect automatically (works on desktop and
+  // browsers that allow it) and (b) shows the authorization code for manual
+  // copy-paste into the app (works on every browser). The code is single-use
+  // server-side, so displaying it is safe.
+  const loopbackHosts = new Set(['localhost', '127.0.0.1', '::1']);
+  if (loopbackHosts.has(redirectUrl.hostname)) {
+    const dest = escapeHtml(redirectUrl.toString());
+    const theCode = escapeHtml(code);
+    res.set('Cache-Control', 'no-store');
+    return res.send(`<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="0; url=${dest}">
+<title>Authorization Successful — Introvert</title>
+<style>
+  body{background:#0c0e12;color:#f1f5f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+  .card{background:#151821;border:1px solid rgba(255,255,255,0.08);border-radius:14px;padding:28px;max-width:460px;width:90%;text-align:center;box-shadow:0 10px 30px rgba(0,0,0,0.5)}
+  h2{margin:0 0 8px;font-size:19px;color:#38bdf8}
+  p{font-size:13px;color:#94a3b8;margin:0 0 14px;line-height:1.5}
+  code{display:block;background:#0a0d12;border:1px solid rgba(56,189,248,0.35);color:#7dd3fc;border-radius:10px;padding:12px 14px;font-size:13px;word-break:break-all;user-select:all;-webkit-user-select:all;margin:0 0 14px;font-family:ui-monospace,Menlo,Consolas,monospace}
+  a{color:#38bdf8}
+</style></head>
+<body><div class="card">
+  <h2>Authorization Successful</h2>
+  <p>Introvert is connecting automatically. If it doesn't open on its own, <strong>copy the code below</strong> and paste it into the app:</p>
+  <code>${theCode}</code>
+  <p><a href="${dest}">Open Introvert</a> · <a href="https://extrovert.redforged.eu">Extrovert</a></p>
+</div></body></html>`);
+  }
+
   res.redirect(redirectUrl.toString());
 });
 

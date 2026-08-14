@@ -136,6 +136,36 @@ async function main() {
   });
   ok(post.status === 400, 'consent POST with tampered redirect_uri rejected');
 
+  console.log('\nTEST 3b: loopback redirect_uri renders a copy-paste code page (mobile native apps)');
+  // Native apps use http://localhost:PORT/callback. Mobile browsers refuse to
+  // navigate there, so the approve response for loopback URIs must be a
+  // same-origin page showing the code (with a meta-refresh auto-redirect for
+  // browsers that DO allow it) instead of a bare 302 that silently dies.
+  let nativeApp = await alice.req('/api/v1/oauth/apps', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Native app', redirect_uris: 'http://localhost:1420/oauth/callback', scopes: 'read' }),
+  }).then(async r => ({ status: r.status, data: await r.json() }));
+  ok(nativeApp.status === 201, 'native loopback app registered');
+  const nativeClientId = nativeApp.data.data.client_id;
+  const nativeAuthzPath = '/api/v1/oauth/authorize?client_id=' + nativeClientId + '&response_type=code&redirect_uri=' + encodeURIComponent('http://localhost:1420/oauth/callback') + '&scope=read&state=n1';
+  const nativeCsrf = ((await alice.get(nativeAuthzPath)).match(/name="_csrf" value="([^"]+)"/) || [])[1] || '';
+  ok(nativeCsrf.length > 0, 'native consent page renders a CSRF token');
+  post = await alice.req('/api/v1/oauth/authorize', {
+    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ _csrf: nativeCsrf, client_id: nativeClientId, redirect_uri: 'http://localhost:1420/oauth/callback', scope: 'read', state: 'n1', approve: 'yes' }),
+  });
+  const nativeBody = await post.text();
+  ok(post.status === 200 && nativeBody.includes('http-equiv="refresh"'), 'loopback approve renders a code page with auto-redirect');
+  ok(/code=[a-f0-9]{64}/.test(nativeBody), 'code page exposes the authorization code');
+  ok(nativeBody.includes('localhost:1420/oauth/callback'), 'code page points back at the app callback');
+  // And the same page must be re-usable through the normal exchange path.
+  const nativeCode = (nativeBody.match(/code=[a-f0-9]{64}/) || [''])[0].replace('code=', '');
+  const nativeTok = await fetch(base + '/api/v1/oauth/token', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ grant_type: 'authorization_code', client_id: nativeClientId, client_secret: nativeApp.data.data.client_secret, code: nativeCode, redirect_uri: 'http://localhost:1420/oauth/callback' }),
+  });
+  ok(nativeTok.status === 200, 'code shown on the page redeems normally (single-use intact)');
+
   console.log('\nTEST 4: full code flow — PKCE (S256) public-style client');
   const verifier = crypto.randomBytes(32).toString('base64url');
   const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
