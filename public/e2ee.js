@@ -160,7 +160,10 @@
   function selfOutKey() { return 'selfOutbound:' + activeUserId(); }
   function selfInKey() { return 'selfInbound:' + activeUserId(); }
   function sessionKey(idStr) { return 'session:' + activeUserId() + ':' + idStr; }
+  function sessionOutKey(idStr) { return 'sessionOut:' + activeUserId() + ':' + idStr; }
+  function sessionInKey(idStr) { return 'sessionIn:' + activeUserId() + ':' + idStr; }
   function sessionBaseKey(idStr) { return 'sessionBase:' + activeUserId() + ':' + idStr; }
+  function sessionInBaseKey(idStr) { return 'sessionInBase:' + activeUserId() + ':' + idStr; }
   function sessionIdentKey(idStr) { return 'sessionIdent:' + activeUserId() + ':' + idStr; }
   function groupOutKey(roomId) { return 'groupOut:' + activeUserId() + ':' + roomId; }
   function groupInKey(key) { return 'groupIn:' + activeUserId() + ':' + key; }
@@ -412,6 +415,88 @@
         sessionBaselines[idStr] = s;
       } catch (_) {}
     }
+  }
+
+  // --- Isolated Outbound & Inbound Session Storage ---
+  var outboundSessions = {};
+  var inboundSessions = {};
+  var inboundBaselinePickles = {};
+
+  function loadOutboundSession(fullKey) {
+    if (outboundSessions[fullKey]) return Promise.resolve(outboundSessions[fullKey]);
+    return idbGet(STORE_OLM, sessionOutKey(fullKey)).then(function (enc) {
+      if (!enc) return loadSession(fullKey);
+      return decryptWithKd(enc).then(function (pickle) {
+        var s = new Olm.Session();
+        s.unpickle(PICKLE_KEY, pickle);
+        outboundSessions[fullKey] = s;
+        return s;
+      });
+    });
+  }
+
+  function saveOutboundSession(fullKey, session) {
+    outboundSessions[fullKey] = session;
+    sessions[fullKey] = session;
+    return encryptWithKd(session.pickle(PICKLE_KEY)).then(function (enc) {
+      return Promise.all([
+        idbSet(STORE_OLM, sessionOutKey(fullKey), enc),
+        idbSet(STORE_OLM, sessionKey(fullKey), enc)
+      ]);
+    });
+  }
+
+  function loadInboundSession(fullKey) {
+    if (inboundSessions[fullKey]) return Promise.resolve(inboundSessions[fullKey]);
+    return idbGet(STORE_OLM, sessionInKey(fullKey)).then(function (enc) {
+      if (!enc) return loadSession(fullKey);
+      return decryptWithKd(enc).then(function (pickle) {
+        var s = new Olm.Session();
+        s.unpickle(PICKLE_KEY, pickle);
+        inboundSessions[fullKey] = s;
+        return s;
+      });
+    });
+  }
+
+  function saveInboundSession(fullKey, session) {
+    inboundSessions[fullKey] = session;
+    sessions[fullKey] = session;
+    return encryptWithKd(session.pickle(PICKLE_KEY)).then(function (enc) {
+      return Promise.all([
+        idbSet(STORE_OLM, sessionInKey(fullKey), enc),
+        idbSet(STORE_OLM, sessionKey(fullKey), enc)
+      ]);
+    });
+  }
+
+  function saveInboundSessionBaseline(fullKey, session) {
+    var pickle = session.pickle(PICKLE_KEY);
+    inboundBaselinePickles[fullKey] = pickle;
+    sessionBaselinePickles[fullKey] = pickle;
+    return encryptWithKd(pickle).then(function (enc) {
+      return Promise.all([
+        idbSet(STORE_OLM, sessionInBaseKey(fullKey), enc),
+        idbSet(STORE_OLM, sessionBaseKey(fullKey), enc)
+      ]);
+    });
+  }
+
+  function loadInboundSessionBaseline(fullKey) {
+    if (inboundBaselinePickles[fullKey]) {
+      var fresh = new Olm.Session();
+      fresh.unpickle(PICKLE_KEY, inboundBaselinePickles[fullKey]);
+      return Promise.resolve(fresh);
+    }
+    return idbGet(STORE_OLM, sessionInBaseKey(fullKey)).then(function (enc) {
+      if (!enc) return loadSessionBaseline(fullKey);
+      return decryptWithKd(enc).then(function (pickle) {
+        inboundBaselinePickles[fullKey] = pickle;
+        var s = new Olm.Session();
+        s.unpickle(PICKLE_KEY, pickle);
+        return s;
+      });
+    });
   }
 
   function resetSelfInboundBaseline() {
@@ -746,7 +831,7 @@
     // one-time key (re-publish on login = implicit session reset) or when the
     // peer's IDENTITY changed (explicit key reset). Without this, a desynced
     // ratchet is reused forever and the pair can never decrypt again.
-    return loadSession(fullKey).then(function (existing) {
+    return loadOutboundSession(fullKey).then(function (existing) {
       if (existing) {
         var checks = [];
         if (freshOtkId) {
@@ -762,10 +847,12 @@
         if (!checks.length) return existing;
         return Promise.all(checks).then(function (flags) {
           if (flags.some(Boolean)) {
+            delete outboundSessions[fullKey];
             delete sessions[fullKey];
             return Promise.all([
-              idbDelete(STORE_OLM, 'session:' + fullKey),
-              idbDelete(STORE_OLM, 'sessionBase:' + fullKey)
+              idbDelete(STORE_OLM, sessionOutKey(fullKey)),
+              idbDelete(STORE_OLM, sessionKey(fullKey)),
+              idbDelete(STORE_OLM, sessionBaseKey(fullKey))
             ]).then(function () { return null; });
           }
           return existing;
@@ -779,7 +866,7 @@
       var s = new Olm.Session();
       s.create_outbound(account, identityKey, theirOtk);
       return saveSessionBaseline(fullKey, s).then(function () {
-        return saveSession(fullKey, s);
+        return saveOutboundSession(fullKey, s);
       }).then(function () {
         return idbSet(STORE_OLM, 'sessionOtk:' + fullKey, freshOtkId || 'fallback');
       }).then(function () {
@@ -793,7 +880,7 @@
     if (sessions[otherIdStr]) {
       return Promise.resolve(sessions[otherIdStr]);
     }
-    return loadSession(otherIdStr).then(function (existing) {
+    return loadOutboundSession(otherIdStr).then(function (existing) {
       if (existing) return existing;
       return createOutboundSession(otherId, otherIdStr, otherUsername);
     });
@@ -811,7 +898,7 @@
       var s = new Olm.Session();
       s.create_outbound(account, idKey, otk);
       return saveSessionBaseline(otherIdStr, s).then(function () {
-        return saveSession(otherIdStr, s);
+        return saveOutboundSession(otherIdStr, s);
       }).then(function () {
         return idbSet(STORE_OLM, sessionIdentKey(otherIdStr), idKey);
       }).then(function () { return s; });
@@ -870,7 +957,7 @@
             if (!sess) return;
             var enc = sess.encrypt(plaintext);
             deviceCiphertexts[dev.device_id] = { t: enc.type, b: enc.body };
-            return saveSession(otherIdStr + ':' + dev.device_id, sess);
+            return saveOutboundSession(otherIdStr + ':' + dev.device_id, sess);
           }).catch(function (err) {
             console.warn('e2ee: error encrypting for recipient device', dev.device_id, err);
           });
@@ -886,7 +973,7 @@
             if (!sess) return;
             var enc = sess.encrypt(plaintext);
             deviceCiphertexts[dev.device_id] = { t: enc.type, b: enc.body };
-            return saveSession(activeUserId() + ':' + dev.device_id, sess);
+            return saveOutboundSession(activeUserId() + ':' + dev.device_id, sess);
           }).catch(function (err) {
             console.warn('e2ee: error encrypting for sender device', dev.device_id, err);
           });
@@ -964,35 +1051,50 @@
               var targetCipher = env.devices[myDevId];
               var senderDevId = env.sender_device_id || 'default';
               var devKey = activeUserId() + ':' + senderDevId;
-              return loadSession(devKey).then(function (live) {
-                if (!live) return loadSession(activeUserId());
-                return live;
-              }).then(function (live) {
-                if (live) {
+
+              // 1. Try Inbound Session from sender device
+              return loadInboundSession(devKey).then(function (inLive) {
+                if (!inLive) return loadInboundSession(activeUserId());
+                return inLive;
+              }).then(function (inLive) {
+                if (inLive) {
                   try {
-                    var p = live.decrypt(targetCipher.t, targetCipher.b);
+                    var p = inLive.decrypt(targetCipher.t, targetCipher.b);
                     if (p) {
-                      return saveSession(devKey, live).then(function () { return p; });
+                      return saveInboundSession(devKey, inLive).then(function () { return p; });
                     }
                   } catch (_) {}
                 }
-                return loadSessionBaseline(devKey).then(function (base) {
-                  if (base) {
+                return loadInboundSessionBaseline(devKey).then(function (inBase) {
+                  if (inBase) {
                     try {
-                      var pBase = base.decrypt(targetCipher.t, targetCipher.b);
+                      var pBase = inBase.decrypt(targetCipher.t, targetCipher.b);
                       if (pBase) return pBase;
                     } catch (_) {}
                   }
-                  if (targetCipher.t === 0 || targetCipher.t === 2) {
-                    var s = new Olm.Session();
-                    try {
-                      s.create_inbound(account, targetCipher.b);
-                      account.remove_one_time_keys(s);
-                      var pNew = s.decrypt(targetCipher.t, targetCipher.b);
-                      return saveSession(devKey, s).then(function () { return saveAccount(); }).then(function () { return pNew; });
-                    } catch (_) {}
-                  }
-                  return decryptSelfFallback(msg);
+                  // 2. Try Outbound Session
+                  return loadOutboundSession(devKey).then(function (outLive) {
+                    if (outLive) {
+                      try {
+                        var pOut = outLive.decrypt(targetCipher.t, targetCipher.b);
+                        if (pOut) {
+                          return saveOutboundSession(devKey, outLive).then(function () { return pOut; });
+                        }
+                      } catch (_) {}
+                    }
+                    if (targetCipher.t === 0 || targetCipher.t === 2) {
+                      var s = new Olm.Session();
+                      try {
+                        s.create_inbound(account, targetCipher.b);
+                        account.remove_one_time_keys(s);
+                        return saveInboundSessionBaseline(devKey, s).then(function () {
+                          var pNew = s.decrypt(targetCipher.t, targetCipher.b);
+                          return saveInboundSession(devKey, s).then(function () { return saveAccount(); }).then(function () { return pNew; });
+                        });
+                      } catch (_) {}
+                    }
+                    return decryptSelfFallback(msg);
+                  });
                 });
               });
             }
@@ -1021,73 +1123,85 @@
 
       var sessionKeyToUse = otherIdStr + ':' + senderDeviceId;
 
-      return loadSession(sessionKeyToUse).then(function (live) {
-        if (!live) return loadSession(otherIdStr);
-        return live;
-      }).then(function (live) {
-        if (live) {
-          var livePickle = live.pickle(PICKLE_KEY);
+      // 1. Try Inbound Session
+      return loadInboundSession(sessionKeyToUse).then(function (inLive) {
+        if (!inLive) return loadInboundSession(otherIdStr);
+        return inLive;
+      }).then(function (inLive) {
+        if (inLive) {
+          var livePickle = inLive.pickle(PICKLE_KEY);
           try {
-            var plain = live.decrypt(cipherToDecrypt.t, cipherToDecrypt.b);
+            var plain = inLive.decrypt(cipherToDecrypt.t, cipherToDecrypt.b);
             scheduleHistorySync();
-            return saveSession(sessionKeyToUse, live).then(function () { return plain; });
+            return saveInboundSession(sessionKeyToUse, inLive).then(function () { return plain; });
           } catch (_) {
             try {
               var restored = new Olm.Session();
               restored.unpickle(PICKLE_KEY, livePickle);
-              sessions[sessionKeyToUse] = restored;
+              inboundSessions[sessionKeyToUse] = restored;
             } catch (_) {}
           }
         }
-        return loadSessionBaseline(sessionKeyToUse).then(function (base) {
-          if (!base) return loadSessionBaseline(otherIdStr);
+        // 2. Try Inbound Baseline
+        return loadInboundSessionBaseline(sessionKeyToUse).then(function (base) {
+          if (!base) return loadInboundSessionBaseline(otherIdStr);
           return base;
         }).then(function (base) {
           if (base) {
             try {
               var plain2 = base.decrypt(cipherToDecrypt.t, cipherToDecrypt.b);
               scheduleHistorySync();
-              return (live
+              return (inLive
                 ? Promise.resolve(plain2)
-                : saveSession(sessionKeyToUse, base).then(function () { return plain2; })
+                : saveInboundSession(sessionKeyToUse, base).then(function () { return plain2; })
               );
             } catch (_) {}
           }
-          if (cipherToDecrypt.t === 0 || cipherToDecrypt.t === 2) {
-            var ns = new Olm.Session();
-            try {
-              ns.create_inbound(account, cipherToDecrypt.b);
-              account.remove_one_time_keys(ns);
-              var identWrite = theirCurve25519
-                ? idbSet(STORE_OLM, sessionIdentKey(sessionKeyToUse), theirCurve25519)
-                : Promise.resolve();
-              return identWrite.then(function () {
-                return saveSessionBaseline(sessionKeyToUse, ns);
-              }).then(function () {
-                return ns.decrypt(cipherToDecrypt.t, cipherToDecrypt.b);
-              }).then(function (plain3) {
+          // 3. Try Outbound Session
+          return loadOutboundSession(sessionKeyToUse).then(function (outLive) {
+            if (outLive) {
+              try {
+                var pOut2 = outLive.decrypt(cipherToDecrypt.t, cipherToDecrypt.b);
                 scheduleHistorySync();
-                return saveSession(sessionKeyToUse, ns).then(function () { return plain3; });
-              }).then(function (plain3) {
-                return saveAccount().then(function () { return plain3; });
-              });
-            } catch (createErr) {
-              if (base) {
-                try {
-                  var pBase = base.decrypt(cipherToDecrypt.t, cipherToDecrypt.b);
-                  scheduleHistorySync();
-                  return (live
-                    ? Promise.resolve(pBase)
-                    : saveSession(sessionKeyToUse, base).then(function () { return pBase; })
-                  );
-                } catch (_) {}
-              }
-              requestRekeyFrom(otherIdStr);
-              throw createErr;
+                return saveOutboundSession(sessionKeyToUse, outLive).then(function () { return pOut2; });
+              } catch (_) {}
             }
-          }
-          requestRekeyFrom(otherIdStr);
-          throw new Error('No session for sender and message could not be decrypted.');
+            if (cipherToDecrypt.t === 0 || cipherToDecrypt.t === 2) {
+              var ns = new Olm.Session();
+              try {
+                ns.create_inbound(account, cipherToDecrypt.b);
+                account.remove_one_time_keys(ns);
+                var identWrite = theirCurve25519
+                  ? idbSet(STORE_OLM, sessionIdentKey(sessionKeyToUse), theirCurve25519)
+                  : Promise.resolve();
+                return identWrite.then(function () {
+                  return saveInboundSessionBaseline(sessionKeyToUse, ns);
+                }).then(function () {
+                  return ns.decrypt(cipherToDecrypt.t, cipherToDecrypt.b);
+                }).then(function (plain3) {
+                  scheduleHistorySync();
+                  return saveInboundSession(sessionKeyToUse, ns).then(function () { return plain3; });
+                }).then(function (plain3) {
+                  return saveAccount().then(function () { return plain3; });
+                });
+              } catch (createErr) {
+                if (base) {
+                  try {
+                    var pBase = base.decrypt(cipherToDecrypt.t, cipherToDecrypt.b);
+                    scheduleHistorySync();
+                    return (inLive
+                      ? Promise.resolve(pBase)
+                      : saveInboundSession(sessionKeyToUse, base).then(function () { return pBase; })
+                    );
+                  } catch (_) {}
+                }
+                requestRekeyFrom(otherIdStr);
+                throw createErr;
+              }
+            }
+            requestRekeyFrom(otherIdStr);
+            throw new Error('No session for sender and message could not be decrypted.');
+          });
         });
       });
     });
