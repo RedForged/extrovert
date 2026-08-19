@@ -466,6 +466,15 @@ router.post('/oauth/token', clientAppAuth, (req, res) => {
         idTokenPayload.name = user.display_name;
         if (user.avatar) idTokenPayload.picture = `${ISSUER}${user.avatar}`;
       }
+      // `email` scope (OIDC spec): the claims are omitted entirely when the
+      // account has no address stored. email_verified lets relying parties
+      // decide whether to trust the address.
+      if (scopesSet.has('email')) {
+        if (user.email) {
+          idTokenPayload.email = user.email;
+          idTokenPayload.email_verified = !!user.email_verified_at;
+        }
+      }
       tokenResponse.id_token = signIdToken(idTokenPayload);
     }
 
@@ -558,6 +567,13 @@ router.get('/oauth/userinfo', requireApiAuth('openid'), (req, res) => {
     info.preferred_username = user.username;
     info.name = user.display_name;
     if (user.avatar) info.picture = `${ISSUER}${user.avatar}`;
+  }
+  // `email` scope (OIDC spec): omitted when the account has no address.
+  if (scopesSet.has('email')) {
+    if (user.email) {
+      info.email = user.email;
+      info.email_verified = !!user.email_verified_at;
+    }
   }
   res.json(info);
 });

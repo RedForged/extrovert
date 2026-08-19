@@ -36,7 +36,7 @@ router.get('/openid-configuration', (req, res) => {
     scopes_supported: [
       'openid', 'read', 'write', 'follow',
       'media.write', 'notifications',
-      'read:direct', 'write:direct', 'profile',
+      'read:direct', 'write:direct', 'profile', 'email',
     ],
     response_types_supported: ['code'],
     response_modes_supported: ['query'],
@@ -49,6 +49,7 @@ router.get('/openid-configuration', (req, res) => {
     claims_supported: [
       'sub', 'iss', 'aud', 'exp', 'iat', 'auth_time',
       'nonce', 'preferred_username', 'name', 'picture',
+      'email', 'email_verified',
     ],
     code_challenge_methods_supported: ['S256'],
   });

@@ -260,15 +260,16 @@ async function main() {
   const roJson = await tok.json();
   ok(tok.status === 200 && roJson.scope === 'read', 'only registered scope granted (no escalation)');
 
-  console.log('\nTEST 9: OIDC — id_token + userinfo');
-  const oidcApp = await registerApp({ name: 'OIDC app', redirect_uris: 'https://oidc.example/cb', scopes: 'read openid profile' });
+  console.log('\nTEST 9: OIDC — id_token + userinfo + email scope');
+  db.setUserEmailVerified(aliceId, 'alice@example.org', Date.now());
+  const oidcApp = await registerApp({ name: 'OIDC app', redirect_uris: 'https://oidc.example/cb', scopes: 'read openid profile email' });
   const oidcClient = oidcApp.data.data.client_id;
   const oidcSecret = oidcApp.data.data.client_secret;
   const oVerifier = crypto.randomBytes(32).toString('base64url');
   const oChallenge = crypto.createHash('sha256').update(oVerifier).digest('base64url');
   post = await alice.req('/api/v1/oauth/authorize', {
     method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ _csrf: csrfFromPage, client_id: oidcClient, redirect_uri: 'https://oidc.example/cb', scope: 'openid profile read', nonce: 'n-123', code_challenge: oChallenge, code_challenge_method: 'S256', approve: 'yes' }),
+    body: new URLSearchParams({ _csrf: csrfFromPage, client_id: oidcClient, redirect_uri: 'https://oidc.example/cb', scope: 'openid profile email read', nonce: 'n-123', code_challenge: oChallenge, code_challenge_method: 'S256', approve: 'yes' }),
   });
   const oidcCode = new URL(post.headers.get('location')).searchParams.get('code');
   tok = await fetch(base + '/api/v1/oauth/token', {
@@ -281,8 +282,48 @@ async function main() {
   const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString());
   ok(payload.iss && payload.sub && payload.aud === oidcClient && payload.nonce === 'n-123', 'id_token has iss/sub/aud/nonce');
   ok(payload.exp - payload.iat === 3600, 'id_token lifetime 1h');
+  ok(payload.email === 'alice@example.org' && payload.email_verified === true, 'id_token has email + email_verified claims (email scope)');
   const ui = await fetch(base + '/api/v1/oauth/userinfo', { headers: { Authorization: 'Bearer ' + oidcJson.access_token } }).then(r => r.json());
   ok(ui.sub === String(aliceId) && ui.name === 'Alice' && ui.preferred_username === 'alice', 'userinfo returns sub + profile claims');
+  ok(ui.email === 'alice@example.org' && ui.email_verified === true, 'userinfo has email + email_verified claims (email scope)');
+
+  // email scope omitted -> no email claims, even though the user has one.
+  const eVerifier = crypto.randomBytes(32).toString('base64url');
+  const eChallenge = crypto.createHash('sha256').update(eVerifier).digest('base64url');
+  post = await alice.req('/api/v1/oauth/authorize', {
+    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ _csrf: csrfFromPage, client_id: oidcClient, redirect_uri: 'https://oidc.example/cb', scope: 'openid read', nonce: 'n-2', code_challenge: eChallenge, code_challenge_method: 'S256', approve: 'yes' }),
+  });
+  const eCode = new URL(post.headers.get('location')).searchParams.get('code');
+  const eTok = await fetch(base + '/api/v1/oauth/token', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ grant_type: 'authorization_code', client_id: oidcClient, code: eCode, redirect_uri: 'https://oidc.example/cb', code_verifier: eVerifier }),
+  });
+  const eJson = await eTok.json();
+  const ePayload = JSON.parse(Buffer.from(eJson.id_token.split('.')[1], 'base64url').toString());
+  ok(!('email' in ePayload), 'id_token omits email claim without email scope');
+  const eUi = await fetch(base + '/api/v1/oauth/userinfo', { headers: { Authorization: 'Bearer ' + eJson.access_token } }).then(r => r.json());
+  ok(!('email' in eUi), 'userinfo omits email claim without email scope');
+
+  // User without any email + email scope -> claims omitted entirely.
+  const carolId = db.createUser({ username: 'carol', passwordHash: bcrypt.hashSync('pw', 10), displayName: 'Carol' });
+  const carol = await makeWebSession('carol', 'pw');
+  const carolPage = await carol.get(`/api/v1/oauth/authorize?client_id=${oidcClient}&response_type=code&redirect_uri=${encodeURIComponent('https://oidc.example/cb')}&scope=${encodeURIComponent('openid email')}&nonce=n-3&code_challenge=${encodeURIComponent(eChallenge)}&code_challenge_method=S256`);
+  const carolCsrf = (carolPage.match(/name="_csrf" value="([^"]+)"/) || [])[1] || carol.csrf;
+  post = await carol.req('/api/v1/oauth/authorize', {
+    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ _csrf: carolCsrf, client_id: oidcClient, redirect_uri: 'https://oidc.example/cb', scope: 'openid email', nonce: 'n-3', code_challenge: eChallenge, code_challenge_method: 'S256', approve: 'yes' }),
+  });
+  const cCode = new URL(post.headers.get('location')).searchParams.get('code');
+  const cTok = await fetch(base + '/api/v1/oauth/token', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ grant_type: 'authorization_code', client_id: oidcClient, code: cCode, redirect_uri: 'https://oidc.example/cb', code_verifier: eVerifier }),
+  });
+  const cJson = await cTok.json();
+  const cPayload = JSON.parse(Buffer.from(cJson.id_token.split('.')[1], 'base64url').toString());
+  ok(!('email' in cPayload) && !('email_verified' in cPayload), 'id_token omits email claims for account without email');
+  const cUi = await fetch(base + '/api/v1/oauth/userinfo', { headers: { Authorization: 'Bearer ' + cJson.access_token } }).then(r => r.json());
+  ok(!('email' in cUi), 'userinfo omits email claims for account without email');
 
   console.log('\nTEST 10: token revocation');
   const rev = await fetch(base + '/api/v1/oauth/revoke', {
