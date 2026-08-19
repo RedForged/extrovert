@@ -20,4 +20,10 @@
 </head>
 <body>
   <%- include('nav') %>
+  <% if (locals.verifyBanner) { %>
+    <div class="verify-banner" role="status">
+      <%- include('icon', { name: 'alert', size: 16 }) %>
+      <span>Verify your email address to unlock full access. <a href="/settings">Add or verify your email</a>.</span>
+    </div>
+  <% } %>
   <main class="wrap<%= locals.wrapClass ? ' ' + locals.wrapClass : '' %>">

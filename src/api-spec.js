@@ -403,6 +403,31 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
         responses: { '200': { description: 'Updated account' } },
       },
     },
+    '/api/v1/accounts/email': {
+      patch: {
+        summary: "Set the account's email address (sends a verification link)",
+        description: 'Owner-only. Replaces any existing address, invalidates the old verification, and emails a fresh confirmation link to the new address.',
+        tags: ['Accounts'],
+        security: [{ oauth2: ['profile'] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['email'],
+                properties: { email: { type: 'string', format: 'email', example: 'you@example.com' } },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': { description: 'Updated account with email + verification_sent: true' },
+          '400': { description: 'Invalid email address' },
+          '409': { description: 'Email address already in use' },
+        },
+      },
+    },
     '/api/v1/accounts/{id}': {
       get: {
         summary: 'View an account',

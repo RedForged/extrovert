@@ -254,13 +254,16 @@ app.use(optionalAuth);
 // Expose user data to all templates.
 app.use((req, res, next) => {
   if (res.locals.currentUser) {
-    const { countUnreadNotifications, countUnreadMessages, getUserTheme, getPendingReports, getPendingSecurityReports, getAnnouncement } = require('./db');
+    const { countUnreadNotifications, countUnreadMessages, getUserTheme, getPendingReports, getPendingSecurityReports, getAnnouncement, requireVerifiedEmail } = require('./db');
     res.locals.unreadCount = countUnreadNotifications(res.locals.currentUser.id);
     res.locals.unreadMessages = countUnreadMessages(res.locals.currentUser.id);
     res.locals.pendingReports = res.locals.currentUser.is_admin ? getPendingReports().length : 0;
     res.locals.securityReports = res.locals.currentUser.is_admin ? getPendingSecurityReports().length : 0;
     res.locals.theme = getUserTheme(res.locals.currentUser.id);
     res.locals.announcement = getAnnouncement();
+    // Show a banner when email verification is required but the account
+    // hasn't verified an address yet.
+    res.locals.verifyBanner = requireVerifiedEmail(res.locals.currentUser);
   }
   next();
 });

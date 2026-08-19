@@ -281,6 +281,22 @@ function init() {
       author_id  INTEGER REFERENCES users(id),
       updated_at INTEGER NOT NULL
     );
+
+    -- Email verification tokens (single active token per user, hashed at rest).
+    CREATE TABLE IF NOT EXISTS email_verifications (
+      user_id     INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      token_hash  TEXT NOT NULL,
+      email       TEXT NOT NULL,
+      created_at  INTEGER NOT NULL,
+      expires_at  INTEGER NOT NULL,
+      consumed_at INTEGER
+    );
+
+    -- Server-wide settings (key-value store).
+    CREATE TABLE IF NOT EXISTS server_settings (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
   `);
 }
 
@@ -313,6 +329,8 @@ try { db.exec(`ALTER TABLE users ADD COLUMN referrer_ip TEXT`); } catch {}
 try { db.exec(`ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0`); } catch {}
 try { db.exec(`ALTER TABLE users ADD COLUMN banned INTEGER NOT NULL DEFAULT 0`); } catch {}
 try { db.exec(`ALTER TABLE users ADD COLUMN avatar TEXT`); } catch {}
+try { db.exec(`ALTER TABLE users ADD COLUMN email TEXT`); } catch {}
+try { db.exec(`ALTER TABLE users ADD COLUMN email_verified_at INTEGER`); } catch {}
 try { db.exec(`ALTER TABLE rooms ADD COLUMN is_public INTEGER NOT NULL DEFAULT 1`); } catch {}
 try { db.exec(`ALTER TABLE room_channels ADD COLUMN type TEXT NOT NULL DEFAULT 'text'`); } catch {}
 try { db.exec(`ALTER TABLE posts ADD COLUMN edited_at INTEGER`); } catch {}
@@ -1926,6 +1944,168 @@ function auditLog(action, actorId, details) {
   } catch {}
 }
 
+// ---------- Email (verification) ----------
+// Email addresses are stored case-normalized (lowercased) but only when the
+// user opted in; existence of a row's email is not surfaced to other users.
+function normalizeEmail(email) {
+  if (!email) return '';
+  return String(email).trim().toLowerCase();
+}
+
+function isValidEmail(email) {
+  const e = normalizeEmail(email);
+  if (!e || e.length > 254) return false;
+  // Practical mailbox pattern (not RFC-pedantic: no validation of the domain
+  // itself, which the outbound SMTP session will fail on anyway).
+  return /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(e);
+}
+
+function getUserByEmail(email) {
+  if (!email) return null;
+  return db.prepare(`SELECT * FROM users WHERE email = ? COLLATE NOCASE`).get(normalizeEmail(email)) || null;
+}
+
+function setUserEmail(userId, email) {
+  const e = normalizeEmail(email);
+  db.prepare(`UPDATE users SET email = ? WHERE id = ?`).run(e || null, userId);
+}
+
+function setUserEmailVerified(userId, email, verifiedAt) {
+  const e = normalizeEmail(email);
+  db.prepare(`UPDATE users SET email = ?, email_verified_at = ? WHERE id = ?`).run(e || null, verifiedAt || Date.now(), userId);
+}
+
+function clearUserEmail(userId) {
+  db.prepare(`UPDATE users SET email = NULL, email_verified_at = NULL WHERE id = ?`).run(userId);
+}
+
+// One active verification per user; issuing a new one replaces the old row.
+function saveEmailVerification({ userId, tokenHash, email, expiresAt }) {
+  const now = Date.now();
+  db.prepare(`
+    INSERT INTO email_verifications (user_id, token_hash, email, created_at, expires_at) VALUES (?,?,?,?,?)
+    ON CONFLICT(user_id) DO UPDATE SET
+      token_hash = excluded.token_hash,
+      email = excluded.email,
+      created_at = excluded.created_at,
+      expires_at = excluded.expires_at,
+      consumed_at = NULL
+  `).run(userId, tokenHash, normalizeEmail(email), now, expiresAt);
+}
+
+function getEmailVerification(userId) {
+  return db.prepare(`SELECT * FROM email_verifications WHERE user_id = ?`).get(userId) || null;
+}
+
+// Atomically consume a token so a single email can only verify once.
+function consumeEmailVerification(userId, tokenHash) {
+  const res = db.prepare(`
+    UPDATE email_verifications
+    SET consumed_at = ?
+    WHERE user_id = ? AND token_hash = ? AND consumed_at IS NULL
+  `).run(Date.now(), userId, tokenHash);
+  return res.changes > 0;
+}
+
+function deleteEmailVerification(userId) {
+  db.prepare(`DELETE FROM email_verifications WHERE user_id = ?`).run(userId);
+}
+
+// ---------- Server settings (singleton) ----------
+function getSetting(key) {
+  const row = db.prepare(`SELECT value FROM server_settings WHERE key = ?`).get(key);
+  return row ? row.value : null;
+}
+
+function setSetting(key, value) {
+  // null / undefined / empty string means "unset" — the caller falls back to
+  // environment variables / built-in defaults.
+  const v = value === null || value === undefined || String(value).trim() === '' ? null : String(value);
+  if (v === null) {
+    db.prepare(`DELETE FROM server_settings WHERE key = ?`).run(key);
+    return;
+  }
+  db.prepare(`
+    INSERT INTO server_settings (key, value) VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(key, v);
+}
+
+// Email-verification enforcement policy for this instance.
+// 'off'    — email verification disabled entirely.
+// 'optional' — users may add/verify an email; nothing is gated.
+// 'required' — unverified accounts are read-only (cannot create posts or
+//              messages) until they verify an email address.
+// Precedence: admin UI (DB) → EXTV_EMAIL_POLICY env → 'off'.
+// The DB can hold an explicit 'off' too (admin chose it) — only a cleared
+// row inherits from the environment.
+function getEmailPolicy() {
+  const v = getSetting('email_verification_policy');
+  if (v === 'required' || v === 'optional' || v === 'off') return v;
+  const env = process.env.EXTV_EMAIL_POLICY;
+  return env === 'required' || env === 'optional' || env === 'off' ? env : 'off';
+}
+
+// '' or undefined clears the DB row so EXTV_EMAIL_POLICY / default applies
+// again (matching how every other mail setting works). 'off'/'optional'/
+// 'required' are stored as an explicit admin choice.
+function setEmailPolicy(policy) {
+  if (policy === 'required' || policy === 'optional' || policy === 'off') {
+    setSetting('email_verification_policy', policy);
+  } else {
+    setSetting('email_verification_policy', null);
+  }
+}
+
+function isEmailVerificationRequired() {
+  return getEmailPolicy() === 'required';
+}
+
+function requireVerifiedEmail(user) {
+  if (!isEmailVerificationRequired()) return false;
+  if (!user) return false;
+  // Admins are always exempt so a misconfiguration can't lock the owner out.
+  if (user.is_admin) return false;
+  return !user.email || !user.email_verified_at;
+}
+
+// ---------- Mail settings (admin-configurable; env vars are fallbacks) ----------
+// Every key is stored under the `mail_` prefix in server_settings. A stored
+// value takes precedence over the corresponding EXTV_MAIL_* environment
+// variable; an "unset" row (NULL) means "use the env var / built-in default".
+// This gives operators BOTH configuration surfaces: set defaults in Portainer
+// at deploy time and/or change anything live from /admin/mail.
+const MAIL_SETTING_KEYS = [
+  'mode',            // 'auto' | 'capture'
+  'relay',           // host:port SMTP relay override ('' = use MX)
+  'from',            // From-header address
+  'from_name',       // display name
+  'bounce_from',     // RFC 5321 MAIL FROM
+  'dkim_enabled',    // '1' | '0'
+  'dkim_domain',     // signing domain
+  'dkim_selector',   // DKIM selector
+  'dkim_private_key',// PEM (secret — never read back for display)
+  'starttls',        // 'opportunistic' | 'required' | 'off'
+  'outbox_fallback', // '1' | '0'
+  'timeout_ms',
+  'max_attempts',
+];
+
+function getMailSettings() {
+  const out = {};
+  const rows = db.prepare(`SELECT key, value FROM server_settings WHERE key LIKE 'mail_%'`).all();
+  for (const row of rows) out[row.key.replace(/^mail_/, '')] = row.value;
+  return out;
+}
+
+// Accepts a plain object keyed WITHOUT the mail_ prefix; null/'' deletes.
+function setMailSettings(partial) {
+  for (const [k, v] of Object.entries(partial || {})) {
+    if (!MAIL_SETTING_KEYS.includes(k)) continue;
+    setSetting('mail_' + k, v);
+  }
+}
+
 // ---------- Announcement (singleton) ----------
 // JOINs the author's username/display_name so callers don't need a second lookup.
 function getAnnouncement() {
@@ -1996,6 +2176,11 @@ module.exports = {
   addSticker, getMyStickers,
   // avatar
   setAvatar, getAvatar,
+  // email verification
+  normalizeEmail, isValidEmail, getUserByEmail, setUserEmail, setUserEmailVerified, clearUserEmail,
+  saveEmailVerification, getEmailVerification, consumeEmailVerification, deleteEmailVerification,
+  getSetting, setSetting, getEmailPolicy, setEmailPolicy, isEmailVerificationRequired, requireVerifiedEmail,
+  getMailSettings, setMailSettings, MAIL_SETTING_KEYS,
   // theme
   getUserTheme, setUserTheme, getUserDeveloperMode, setUserDeveloperMode,
   // rooms

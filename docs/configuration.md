@@ -20,6 +20,8 @@ Extrovert is configured entirely through environment variables. There is no conf
 | `VAPID_PRIVATE_KEY` | no | — | Web Push private key. |
 | `VAPID_SUBJECT` | no | `mailto:admin@extrovert.local` | VAPID contact — some push services require a `mailto:`. |
 | `SECURITY_CONTACT_EMAIL` | no | `admin@extrovert.local` | Contact shown on the responsible-disclosure page (`/security`) and in `/.well-known/security.txt`. |
+| `EXTV_EMAIL_POLICY` | no | `off` | Email verification policy: `off` / `optional` / `required` (see [docs/mail.md](mail.md)). |
+| `EXTV_MAIL_*` | no | see [docs/mail.md](mail.md) | Built-in mail server settings (From address, DKIM, relay, STARTTLS, …). Also configurable live from `/admin/mail`. |
 
 ### `.env` files
 

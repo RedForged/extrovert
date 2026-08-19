@@ -1,0 +1,136 @@
+<%- include('partials/header') %>
+  <div class="card" style="max-width:860px;margin:0 auto">
+    <div style="display:flex;align-items:center;gap:2em;margin-bottom:18px;flex-wrap:wrap">
+      <h2 style="margin:0">Admin · Mail &amp; email verification</h2>
+      <a class="btn ghost small" href="/admin" style="margin-left:auto">← Back</a>
+    </div>
+
+    <% if (locals.saved) { %><div class="flash ok">Saved — the new settings apply immediately (no restart).</div><% } %>
+    <% if (locals.error) { %><div class="flash err"><span class="flash-ico"><%- include('partials/icon', { name: 'alert', size: 18 }) %></span><span><%= error %></span></div><% } %>
+
+    <form method="post" action="/admin/mail">
+      <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+
+      <h4 style="margin-top:6px">Enforcement policy</h4>
+      <p class="muted" style="font-size:0.85rem;margin:-2px 0 8px">
+        <strong>Off</strong> — no email verification. <strong>Optional</strong> — users may add &amp; verify an email;
+        nothing is gated. <strong>Required</strong> — unverified accounts are read-only until they verify
+        (admins are always exempt).
+      </p>
+      <select name="policy" id="mail-policy">
+        <option value="" <%= !locals.storedPolicy ? 'selected' : '' %>>Inherit from EXTV_EMAIL_POLICY / default (off)</option>
+        <option value="off" <%= locals.storedPolicy === 'off' ? 'selected' : '' %>>Off (disabled)</option>
+        <option value="optional" <%= locals.storedPolicy === 'optional' ? 'selected' : '' %>>Optional</option>
+        <option value="required" <%= locals.storedPolicy === 'required' ? 'selected' : '' %>>Required (read-only until verified)</option>
+      </select>
+
+      <h4 style="margin-top:22px">Sending</h4>
+      <p class="muted" style="font-size:0.85rem;margin:-2px 0 8px">
+        Values left blank fall back to the <code>EXTV_MAIL_*</code> environment variables (e.g. set in Portainer),
+        then to the built-in default.
+      </p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 16px">
+        <div>
+          <label for="mail-from">From address</label>
+          <input type="email" id="mail-from" name="from" value="<%= stored.from || '' %>" placeholder="noreply@yourdomain.com">
+          <p class="muted" style="font-size:0.75rem;margin:-2px 0 8px">Blank = <code>noreply@<em>your-site-domain</em></code> (derived from your instance URL — no IP needed).</p>
+          <label for="mail-from-name">From name</label>
+          <input type="text" id="mail-from-name" name="from_name" value="<%= stored.from_name || '' %>" placeholder="Extrovert">
+          <label for="mail-bounce">Bounce / Return-Path address</label>
+          <input type="email" id="mail-bounce" name="bounce_from" value="<%= stored.bounce_from || '' %>" placeholder="bounces@yourdomain.com">
+        </div>
+        <div>
+          <label for="mail-mode">Mode</label>
+          <select name="mode" id="mail-mode">
+            <option value="" <%= !stored.mode ? 'selected' : '' %>>Inherit from EXTV_MAIL_MODE / default (auto)</option>
+            <option value="auto" <%= stored.mode === 'auto' ? 'selected' : '' %>>Auto — deliver via MX</option>
+            <option value="capture" <%= stored.mode === 'capture' ? 'selected' : '' %>>Capture — write .eml to data/outbox, never send</option>
+          </select>
+          <label for="mail-relay">SMTP relay override <span class="muted">(host:port)</span></label>
+          <input type="text" id="mail-relay" name="relay" value="<%= stored.relay || '' %>" placeholder="smtp.example.com:587">
+          <label for="mail-starttls">STARTTLS</label>
+          <select name="starttls" id="mail-starttls">
+            <option value="" <%= !stored.starttls ? 'selected' : '' %>>Inherit from EXTV_MAIL_STARTTLS / default (opportunistic)</option>
+            <option value="opportunistic" <%= stored.starttls === 'opportunistic' ? 'selected' : '' %>>Opportunistic (encrypt when supported)</option>
+            <option value="required" <%= stored.starttls === 'required' ? 'selected' : '' %>>Required (fail if no TLS; certs not CA-validated)</option>
+            <option value="off" <%= stored.starttls === 'off' ? 'selected' : '' %>>Off</option>
+          </select>
+        </div>
+      </div>
+
+      <h4 style="margin-top:22px">DKIM (authentication — keeps mail out of spam)</h4>
+      <p class="muted" style="font-size:0.85rem;margin:-2px 0 8px">
+        The private key below is stored in the database and never shown again. Leave it blank to keep the
+        current key (auto-generated on first send, or <code>EXTV_MAIL_DKIM_PRIVATE_KEY</code>).
+      </p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 16px">
+        <div>
+          <label for="mail-dkim">Enable DKIM signing</label>
+          <select name="dkim_enabled" id="mail-dkim">
+            <option value="" <%= !stored.dkim_enabled ? 'selected' : '' %>>Inherit from EXTV_MAIL_DKIM / default (enabled)</option>
+            <option value="1" <%= stored.dkim_enabled === '1' ? 'selected' : '' %>>Enabled</option>
+            <option value="0" <%= stored.dkim_enabled === '0' ? 'selected' : '' %>>Disabled</option>
+          </select>
+          <label for="mail-dkim-domain">DKIM domain <span class="muted">(defaults to From domain)</span></label>
+          <input type="text" id="mail-dkim-domain" name="dkim_domain" value="<%= stored.dkim_domain || '' %>" placeholder="yourdomain.com">
+        </div>
+        <div>
+          <label for="mail-dkim-selector">Selector</label>
+          <input type="text" id="mail-dkim-selector" name="dkim_selector" value="<%= stored.dkim_selector || '' %>" placeholder="extrovert">
+          <label for="mail-dkim-key">DKIM private key (PEM)</label>
+          <textarea id="mail-dkim-key" name="dkim_private_key" rows="4" placeholder="-----BEGIN PRIVATE KEY-----&#10;…&#10;-----END PRIVATE KEY-----"></textarea>
+        </div>
+      </div>
+
+      <h4 style="margin-top:22px">Reliability &amp; advanced</h4>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0 16px">
+        <div>
+          <label for="mail-timeout">Outbound timeout (ms)</label>
+          <input type="number" id="mail-timeout" name="timeout_ms" value="<%= stored.timeout_ms || '' %>" placeholder="15000">
+        </div>
+        <div>
+          <label for="mail-attempts">Max delivery attempts</label>
+          <input type="number" id="mail-attempts" name="max_attempts" value="<%= stored.max_attempts || '' %>" placeholder="3">
+        </div>
+        <div>
+          <label for="mail-fallback">Outbox fallback (.eml capture on failure)</label>
+          <select name="outbox_fallback" id="mail-fallback">
+            <option value="" <%= !stored.outbox_fallback ? 'selected' : '' %>>Inherit from EXTV_MAIL_OUTBOX_FALLBACK / default (enabled)</option>
+            <option value="1" <%= stored.outbox_fallback === '1' ? 'selected' : '' %>>Enabled (default)</option>
+            <option value="0" <%= stored.outbox_fallback === '0' ? 'selected' : '' %>>Disabled</option>
+          </select>
+        </div>
+      </div>
+
+      <button class="btn full" style="margin-top:22px">Save mail settings</button>
+    </form>
+  </div>
+
+  <div class="card" style="max-width:860px;margin:16px auto">
+    <h2>DNS records to publish</h2>
+    <p class="muted" style="font-size:0.85rem;margin:-4px 0 10px">
+      Receiving servers authenticate your mail with these records. Publish them at your DNS provider
+      (the same place your domain's other records live) so verification mail lands in the inbox —
+      not spam, not dropped. MX and reverse-DNS (PTR) records are also required for real delivery;
+      see <a href="/docs/mail">docs/mail.md</a>.
+    </p>
+    <% if (records.dkim) { %>
+      <label>DKIM — for <code><%= records.selector %>._domainkey.<%= records.domain %></code> TXT</label>
+      <textarea rows="3" readonly onclick="this.select()" style="font-family:monospace;font-size:0.8rem"><%= records.dkim %></textarea>
+    <% } else { %>
+      <p class="muted">Set a From domain / DKIM domain first to see the DKIM record.</p>
+    <% } %>
+    <% if (records.domain) { %>
+      <label>SPF — for <code><%= records.domain %></code> TXT</label>
+      <textarea rows="2" readonly onclick="this.select()" style="font-family:monospace;font-size:0.8rem"><%= records.spf %></textarea>
+      <label>DMARC — for <code>_dmarc.<%= records.domain %></code> TXT</label>
+      <textarea rows="2" readonly onclick="this.select()" style="font-family:monospace;font-size:0.8rem"><%= records.dmarc %></textarea>
+    <% } else { %>
+      <p class="muted">Set a From domain / DKIM domain first to see the SPF and DMARC records.</p>
+    <% } %>
+    <p class="muted" style="font-size:0.75rem;margin-top:10px">
+      Currently effective: From <code><%= effective.from %></code> · mode <code><%= effective.mode %></code> ·
+      STARTTLS <code><%= effective.starttls %></code> · DKIM <code><%= effective.dkim.enabled ? dkimDomain : 'off' %></code>
+    </p>
+  </div>
+<%- include('partials/footer') %>

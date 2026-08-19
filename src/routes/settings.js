@@ -3,20 +3,38 @@
 const express = require('express');
 const crypto = require('node:crypto');
 const db = require('../db');
-const { getUserTheme, setUserTheme, getUserDeveloperMode, setUserDeveloperMode, deleteUser } = db;
+const { getUserTheme, setUserTheme, getUserDeveloperMode, setUserDeveloperMode, deleteUser, isValidEmail, getUserByEmail, getEmailPolicy } = db;
 const { VALID_SCOPES } = require('../api-auth');
 const { removeAccount } = require('../accounts');
+const emailVerify = require('../email-verify');
 
 const router = express.Router();
+
+function emailStatusFor(user) {
+  return {
+    policy: getEmailPolicy(),
+    email: user.email || '',
+    verified: !!user.email_verified_at,
+    verifiedAt: user.email_verified_at,
+  };
+}
+
+function renderSettings(res, user, { mailError = null, mailSent = false } = {}) {
+  res.render('settings', {
+    theme: getUserTheme(user.id),
+    developerMode: getUserDeveloperMode(user.id),
+    devices: db.getUserDevices(user.id),
+    version: require('../../package.json').version,
+    emailStatus: emailStatusFor(user),
+    mailError,
+    mailSent,
+  });
+}
 
 router.get('/', (req, res) => {
   const user = res.locals.currentUser;
   if (!user) return res.redirect('/login');
-  const theme = getUserTheme(user.id);
-  const developerMode = getUserDeveloperMode(user.id);
-  const devices = db.getUserDevices(user.id);
-  const { version } = require('../../package.json');
-  res.render('settings', { theme, version, developerMode, devices });
+  renderSettings(res, user);
 });
 
 router.post('/', (req, res) => {
@@ -34,6 +52,57 @@ router.post('/devices/:deviceId/delete', (req, res) => {
   if (!user) return res.redirect('/login');
   db.deleteUserDevice(user.id, req.params.deviceId);
   res.redirect('/settings');
+});
+
+// Add / change email address. Changing an address always triggers a fresh
+// verification (the old verification, if any, is replaced).
+router.post('/email', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.redirect('/login');
+  if (getEmailPolicy() === 'off') return res.status(400).send('Email verification is disabled on this server.');
+
+  const email = String(req.body.email || '').trim();
+  if (!isValidEmail(email)) {
+    return renderSettings(res, user, { mailError: 'That email address doesn\'t look valid.' });
+  }
+  const existing = getUserByEmail(email);
+  if (existing && existing.id !== user.id) {
+    return renderSettings(res, user, { mailError: 'That email is already registered to another account.' });
+  }
+  // Remove any previously stored address + verification, then set the new one.
+  db.clearUserEmail(user.id);
+  db.setUserEmail(user.id, email);
+  db.deleteEmailVerification(user.id);
+  emailVerify.sendVerificationEmail({ userId: user.id, to: email, req })
+    .then(() => renderSettings(res, db.getUserById(user.id), { mailSent: true }))
+    .catch((err) => {
+      console.error('settings/email: send failed', err);
+      renderSettings(res, db.getUserById(user.id), {
+        mailError: 'Verification email could not be sent: ' + (err.message || 'unknown error') + '. Check the server\'s mail configuration.',
+      });
+    });
+});
+
+// Resend the verification email (with a 1-minute cooldown).
+router.post('/email/resend', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.redirect('/login');
+  if (!user.email) {
+    return renderSettings(res, user, { mailError: 'No email address on this account yet.' });
+  }
+  const cooldown = emailVerify.canResend(user.id);
+  if (!cooldown.allowed) {
+    const waitSec = Math.ceil(cooldown.waitMs / 1000);
+    return renderSettings(res, user, { mailError: `Please wait ${waitSec}s before requesting another email.` });
+  }
+  emailVerify.sendVerificationEmail({ userId: user.id, to: user.email, req })
+    .then(() => renderSettings(res, db.getUserById(user.id), { mailSent: true }))
+    .catch((err) => {
+      console.error('settings/email/resend: send failed', err);
+      renderSettings(res, db.getUserById(user.id), {
+        mailError: 'Verification email could not be sent: ' + (err.message || 'unknown error') + '. Check the server\'s mail configuration.',
+      });
+    });
 });
 
 // Account deletion.

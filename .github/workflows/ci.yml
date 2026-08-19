@@ -42,6 +42,9 @@ jobs:
       - name: Register captcha suite
         run: npm run test:captcha
 
+      - name: Email verification + built-in mail server suite
+        run: npm run test:email
+
   docker-build:
     name: Docker image build
     runs-on: ubuntu-latest

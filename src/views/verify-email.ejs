@@ -1,0 +1,30 @@
+<%- include('partials/header') %>
+  <div style="max-width:440px;margin:48px auto">
+    <div style="text-align:center;margin-bottom:24px">
+      <%- include('partials/rings', { size: 56, animate: true }) %>
+    </div>
+    <div class="card elevated">
+      <% if (result === 'ok') { %>
+        <h2 style="margin-top:0">Email verified ✓</h2>
+        <p class="muted">Your email address has been confirmed. Thanks for verifying — you're all set.</p>
+        <a class="btn full" href="/" style="margin-top:14px">Back to your feed</a>
+      <% } else if (result === 'already_verified') { %>
+        <h2 style="margin-top:0">Already verified</h2>
+        <p class="muted">This address was already confirmed, so nothing changed.</p>
+        <a class="btn full" href="/" style="margin-top:14px">Back to your feed</a>
+      <% } else if (result === 'expired') { %>
+        <h2 style="margin-top:0">Link expired</h2>
+        <p class="muted">This verification link has expired (they're valid for 24 hours). Head to settings to send a new one.</p>
+        <a class="btn full" href="/settings" style="margin-top:14px">Go to settings</a>
+      <% } else if (result === 'invalid') { %>
+        <h2 style="margin-top:0">Link invalid</h2>
+        <p class="muted">That verification link doesn't match the one we sent. Check you're logged in as the right account, or send a fresh one from settings.</p>
+        <a class="btn full" href="/settings" style="margin-top:14px">Go to settings</a>
+      <% } else { %>
+        <h2 style="margin-top:0">Verification link</h2>
+        <p class="muted">This page verifies your email address. You need to be logged in and open the link from the email we sent you. Head to settings to request a fresh link if needed.</p>
+        <a class="btn full" href="/settings" style="margin-top:14px">Go to settings</a>
+      <% } %>
+    </div>
+  </div>
+<%- include('partials/footer') %>

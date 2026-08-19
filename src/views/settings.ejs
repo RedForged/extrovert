@@ -1,6 +1,8 @@
 <%- include('partials/header') %>
   <div class="card" style="max-width:420px;margin:0 auto">
     <h2>Settings</h2>
+    <% if (locals.mailError) { %><div class="flash err"><span class="flash-ico"><%- include('partials/icon', { name: 'alert', size: 18 }) %></span><span><%= mailError %></span></div><% } %>
+    <% if (locals.mailSent) { %><div class="flash ok"><span class="flash-ico"><%- include('partials/icon', { name: 'check', size: 18 }) %></span><span>Verification email sent — check your inbox (and spam folder).</span></div><% } %>
     <form method="post">
       <input type="hidden" name="_csrf" value="<%= csrfToken %>">
       <label for="settings-theme">Theme</label>
@@ -14,6 +16,35 @@
       </label>
       <button class="btn full" style="margin-top:18px">Save</button>
     </form>
+    <% if (locals.emailStatus && emailStatus.policy !== 'off') { %>
+      <hr>
+      <h4>Email verification</h4>
+      <% if (emailStatus.email) { %>
+        <p style="font-size:0.85rem;margin:-2px 0 8px">
+          <span class="muted">On file:</span> <code><%= emailStatus.email %></code>
+          <% if (emailStatus.verified) { %>
+            <span class="badge" style="color:var(--ok,#3c9);font-weight:600">✓ verified</span>
+          <% } else { %>
+            <span style="color:var(--danger);font-weight:600">not yet verified</span>
+          <% } %>
+        </p>
+        <% if (!emailStatus.verified) { %>
+          <form method="post" action="/settings/email/resend" style="margin-bottom:8px">
+            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+            <button class="btn ghost full" type="submit">Re-send verification email</button>
+          </form>
+        <% } %>
+      <% } else { %>
+        <p class="muted" style="font-size:0.85rem;margin:-2px 0 8px">No email on file yet. Add one to make your account more secure and to be able to recover it.</p>
+      <% } %>
+      <form method="post" action="/settings/email">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <label for="set-email">Email <%= emailStatus.email ? '<span class="muted">(change)</span>' : '' %></label>
+        <input type="email" id="set-email" name="email" placeholder="you@example.com">
+        <button class="btn full" style="margin-top:10px"><%= emailStatus.email ? 'Update email &amp; re-verify' : 'Add email &amp; verify' %></button>
+      </form>
+      <p class="muted" style="font-size:0.75rem;margin-top:8px">We'll email a confirmation link to that address. It's used only to verify the account.</p>
+    <% } %>
     <hr>
     <h4>Call notifications</h4>
     <p style="font-size:0.85rem;color:var(--text-muted);margin:-4px 0 8px">Wake this device with a ringing notification when someone calls you, even if you've closed the app. Works on desktop and Android Chrome; iOS requires adding Extrovert to your home screen.</p>

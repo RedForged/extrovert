@@ -46,6 +46,8 @@ router.get('/create', (req, res) => {
 // Create room
 router.post('/create', (req, res) => {
   if (!res.locals.currentUser) return res.redirect('/login');
+  const { requireVerifiedEmail: gate } = require('../db');
+  if (gate(res.locals.currentUser)) return res.status(403).send('Your email address must be verified before you can create rooms.');
   const name = String(req.body.name || '').trim();
   const description = String(req.body.description || '').trim();
   const isPublic = req.body.is_public !== '0';
@@ -364,6 +366,8 @@ router.get('/:id/channels/:cid/messages', (req, res) => {
 
 router.post('/:id/channels/:cid/send', (req, res) => {
   if (!res.locals.currentUser) return res.status(401).json({ error: 'Not logged in' });
+  const { requireVerifiedEmail: gate } = require('../db');
+  if (gate(res.locals.currentUser)) return res.status(403).json({ error: 'email_unverified' });
   const room = getRoom(Number(req.params.id));
   if (!room) return res.status(404).json({ error: 'Room not found' });
   if (!isRoomMember(room.id, res.locals.currentUser.id)) return res.status(403).json({ error: 'Not a member' });

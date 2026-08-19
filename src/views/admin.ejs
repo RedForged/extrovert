@@ -2,10 +2,16 @@
   <div class="card" style="max-width:820px;margin:0 auto">
     <div style="display:flex;align-items:center;gap:2em;margin-bottom:18px;flex-wrap:wrap">
       <h2 style="margin:0">Admin · Users</h2>
-      <a class="btn small" href="/admin/announcement" style="margin-left:auto">
-        <%- include('partials/icon', { name: 'megaphone', size: 14 }) %>
-        Announcement
-      </a>
+      <span style="margin-left:auto;display:flex;gap:8px">
+        <a class="btn small" href="/admin/mail">
+          <%- include('partials/icon', { name: 'key', size: 14 }) %>
+          Mail &amp; verification
+        </a>
+        <a class="btn small" href="/admin/announcement">
+          <%- include('partials/icon', { name: 'megaphone', size: 14 }) %>
+          Announcement
+        </a>
+      </span>
     </div>
     <table class="admin-table">
       <thead>

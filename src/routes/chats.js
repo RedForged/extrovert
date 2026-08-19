@@ -269,6 +269,8 @@ router.get('/:username', (req, res) => {
 router.post('/:username/send', (req, res) => {
   const user = res.locals.currentUser;
   if (!user) return req.xhr ? res.json({ error: 'not logged in' }) : res.redirect('/login');
+  const { requireVerifiedEmail: gate } = require('../db');
+  if (gate(user)) return req.xhr ? res.json({ error: 'email_unverified' }) : res.status(403).send('Your email address must be verified before you can send messages.');
   const other = getUserByUsername(req.params.username);
   if (!other || !areMutualFollowers(user.id, other.id)) {
     return req.xhr ? res.json({ error: 'cannot message' }) : res.redirect(back(req, '/chats'));

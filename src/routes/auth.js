@@ -4,21 +4,22 @@ const express = require('express');
 const crypto = require('node:crypto');
 const bcrypt = require('bcryptjs');
 const db = require('../db');
-const { createUser, getUserByUsername, getUserByReferralCode, getUserById } = db;
+const { createUser, getUserByUsername, getUserByReferralCode, getUserById, isValidEmail, getEmailPolicy, isEmailVerificationRequired } = db;
 const { adminExists } = db;
 const { getAccountIds, getSignedInAccounts, addAccount, setActiveAccount, removeAccount } = require('../accounts');
 const captcha = require('../captcha');
+const emailVerify = require('../email-verify');
 
 const router = express.Router();
 
 router.get('/register', (req, res) => {
   if (req.session.userId) return res.redirect('/');
   const ref = String(req.query.ref || '').trim();
-  // Generate the captcha challenge now (server-side state only — the answer is
+// Generate the captcha challenge now (server-side state only — the answer is
   // never in the HTML). The <img src="/register/captcha"> the view embeds
   // regenerates it on load, which is the state the POST is verified against.
   captcha.generate(req);
-  res.render('register', { error: null, ref });
+  res.render('register', { error: null, ref, emailRequired: isEmailVerificationRequired(), enteredEmail: '' });
 });
 
 // Fresh captcha image for the widget (SVG). Session-bound, so the cookie jar
@@ -47,21 +48,41 @@ router.post('/register', async (req, res) => {
   const password = String(req.body.password || '');
   const displayName = String(req.body.displayName || '').trim() || username;
   const ref = String(req.body.ref || req.query.ref || '').trim();
+  const email = String(req.body.email || '').trim();
+  const emailRequired = isEmailVerificationRequired();
 
   if (!/^[a-zA-Z0-9_]{3,20}$/.test(username)) {
     captcha.generate(req);
-    return res.render('register', { error: 'Username must be 3-20 letters, numbers, or underscores.', ref });
+    return res.render('register', { error: 'Username must be 3-20 letters, numbers, or underscores.', ref, emailRequired, enteredEmail: email });
   }
   // Policy: at least 12 characters; at most 72 BYTES (bcrypt truncates at 72
   // bytes, so longer input would silently collide with its own prefix — a
   // byte limit prevents that while keeping full Unicode/emoji support).
   if (password.length < 12 || Buffer.byteLength(password, 'utf8') > 72) {
     captcha.generate(req);
-    return res.render('register', { error: 'Password must be at least 12 characters and at most 72 bytes (multi-byte characters such as emoji count more).', ref });
+    return res.render('register', { error: 'Password must be at least 12 characters and at most 72 bytes (multi-byte characters such as emoji count more).', ref, emailRequired, enteredEmail: email });
   }
   if (getUserByUsername(username)) {
     captcha.generate(req);
-    return res.render('register', { error: 'That username is taken — try another.', ref });
+    return res.render('register', { error: 'That username is taken — try another.', ref, emailRequired, enteredEmail: email });
+  }
+  // Email: optional unless the server policy makes it required. When provided
+  // it must be well-formed and not already in use (addresses are treated case-
+  // insensitively, so two people can't claim the same mailbox).
+  if (email) {
+    if (!isValidEmail(email)) {
+      captcha.generate(req);
+      return res.render('register', { error: 'That email address doesn\'t look valid.', ref, emailRequired, enteredEmail: email });
+    }
+    if (db.getUserByEmail(email)) {
+      // Keep the message generic (no registration oracle): if the address is
+      // taken, telling the user to log in is enough without confirming it.
+      captcha.generate(req);
+      return res.render('register', { error: 'That email can\'t be used. If you already have an account, try logging in.', ref, emailRequired, enteredEmail: email });
+    }
+  } else if (emailRequired) {
+    captcha.generate(req);
+    return res.render('register', { error: 'This server requires a verified email address to create an account.', ref, emailRequired, enteredEmail: email });
   }
 
   // Handle referral.
@@ -74,7 +95,7 @@ router.post('/register', async (req, res) => {
       // Anti-farming: reject if same IP as referrer's stored IP.
       if (refIp && registrantIp === refIp) {
         captcha.generate(req);
-        return res.render('register', { error: "You can't use a referral from your own network.", ref });
+        return res.render('register', { error: "You can't use a referral from your own network.", ref, emailRequired, enteredEmail: email });
       }
       referredBy = referrer.id;
     }
@@ -82,9 +103,13 @@ router.post('/register', async (req, res) => {
 
   const hash = bcrypt.hashSync(password, 10);
   const id = createUser({ username, passwordHash: hash, displayName, referredBy, referrerIp: registrantIp });
+  if (email) {
+    db.setUserEmail(id, email);
+  }
+
   // Regenerate the session so a pre-planted cookie cannot be fixed onto the
   // freshly created account.
-  req.session.regenerate((err) => {
+  req.session.regenerate(async (err) => {
     if (err) {
       console.error('register: session regeneration failed:', err);
       return res.status(500).send('Internal server error');
@@ -92,6 +117,13 @@ router.post('/register', async (req, res) => {
     req.session.csrfToken = crypto.randomBytes(32).toString('hex');
     req.session.userId = id;
     req.session.accountIds = [id];
+    // Kick off the verification email (async — never block signup on mail,
+    // and never expose whether delivery succeeded/failed to the user).
+    if (email) {
+      emailVerify.sendVerificationEmail({ userId: id, to: email, req }).catch((e) => {
+        console.error('register: verification email failed:', e && e.message);
+      });
+    }
     res.redirect('/');
   });
 });
@@ -106,6 +138,20 @@ router.get('/login', (req, res) => {
     next: req.query.next || '',
     addMode,
     signedInAccounts: req.session.userId ? getSignedInAccounts(req) : [],
+  });
+});
+
+// Email verification link landing — consumes the token and confirms.
+router.get('/verify-email', async (req, res) => {
+  const token = String(req.query.token || '');
+  const userId = req.session.userId;
+  if (!userId) {
+    return res.status(400).render('login', { error: 'Please log in first, then open the verification link again. If you\'re already logged in, the link should work.', next: '' });
+  }
+  const result = emailVerify.verify(userId, token);
+  res.render('verify-email', {
+    result, // 'ok' | 'expired' | 'invalid' | 'no_token' | 'already_verified'
+    tokenPresent: !!token,
   });
 });
 

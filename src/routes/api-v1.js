@@ -68,6 +68,16 @@ function escapeHtml(str) {
     .replace(/'/g, '&#39;');
 }
 
+// Policy gate for write interactions: on 'required' instances, unverified
+// accounts are read-only (can't like/comment/reblog via the API either).
+function requireVerifiedApiWrite(req, res, next) {
+  if (db.requireVerifiedEmail(req.apiUser)) {
+    return errorResponse(res, 403, 'Forbidden',
+      'Email verification required before interacting. Use PATCH /api/v1/accounts/email to set and verify an address.');
+  }
+  next();
+}
+
 function makeCursor(items, key = 'id') {
   if (!items || items.length === 0) return null;
   return Buffer.from(JSON.stringify({ [key]: items[items.length - 1][key] })).toString('base64url');
@@ -82,6 +92,7 @@ function decodeCursor(cursor) {
 }
 
 function serializeAccount(user, currentUserId) {
+  const isSelf = currentUserId ? currentUserId === user.id : false;
   return {
     id: String(user.id),
     username: user.username,
@@ -93,7 +104,11 @@ function serializeAccount(user, currentUserId) {
     followers_count: db.countFollowers(user.id),
     following_count: db.countFollowing(user.id),
     is_following: currentUserId ? db.isFollowing(currentUserId, user.id) : false,
-    is_self: currentUserId ? currentUserId === user.id : false,
+    is_self: isSelf,
+    // Email info is only ever exposed to the account owner (never in public
+    // profiles), matching how Mastodon-style APIs gate account details.
+    email_verified: isSelf ? !!user.email_verified_at : null,
+    email_required: isSelf ? db.isEmailVerificationRequired() : null,
   };
 }
 
@@ -584,6 +599,36 @@ router.patch('/accounts/update_credentials', requireApiAuth('profile'), (req, re
   responseEnvelope(res, serializeAccount(req.apiUser, req.apiUser.id));
 });
 
+// Update the account's email address (sends a verification link) — owner only.
+// Mirrors the web /settings/email route: blocked entirely when the server has
+// email verification switched off.
+router.patch('/accounts/email', requireApiAuth('profile'), (req, res) => {
+  if (db.getEmailPolicy() === 'off') {
+    return errorResponse(res, 400, 'Bad Request', 'Email verification is disabled on this server.');
+  }
+  const { email } = req.body || {};
+  if (typeof email !== 'string') {
+    return errorResponse(res, 400, 'Bad Request', 'email is required.');
+  }
+  const addr = email.trim();
+  if (!db.isValidEmail(addr)) {
+    return errorResponse(res, 400, 'Bad Request', 'Invalid email address.');
+  }
+  const existing = db.getUserByEmail(addr);
+  if (existing && existing.id !== req.apiUser.id) {
+    return errorResponse(res, 409, 'Conflict', 'That email address is already in use.');
+  }
+  db.clearUserEmail(req.apiUser.id);
+  db.setUserEmail(req.apiUser.id, addr);
+  db.deleteEmailVerification(req.apiUser.id);
+  // Fire-and-forget the verification email; the API returns immediately.
+  require('../email-verify').sendVerificationEmail({ userId: req.apiUser.id, to: addr, req })
+    .catch((e) => console.error('api accounts/email: send failed', e && e.message));
+  db.auditLog('email_updated', req.apiUser.id, 'Email changed via API');
+  const u = db.getUserById(req.apiUser.id);
+  responseEnvelope(res, { ...serializeAccount(u, u.id), email: u.email, verification_sent: true });
+});
+
 // Avatar upload via API
 router.post('/accounts/avatar', requireApiAuth('profile'), avatarUpload.single('avatar'), async (req, res) => {
   if (!req.file) return errorResponse(res, 400, 'Bad Request', 'No file uploaded. Use multipart/form-data with field "avatar".');
@@ -688,6 +733,10 @@ router.post('/accounts/:id/unfollow', requireApiAuth('follow'), (req, res) => {
 // ======== Statuses ========
 
 router.post('/statuses', requireApiAuth('write'), upload.single('media'), (req, res) => {
+  // Policy gate: 'required' instances block posting until the email is verified.
+  if (db.requireVerifiedEmail(req.apiUser)) {
+    return errorResponse(res, 403, 'Forbidden', 'Email verification required before posting. Use PATCH /api/v1/accounts/email to set and verify an address.');
+  }
   const idempotencyKey = req.headers['idempotency-key'];
   if (idempotencyKey) {
     const cached = db.getIdempotencyKey(idempotencyKey);
@@ -754,7 +803,7 @@ router.delete('/statuses/:id', requireApiAuth('write'), (req, res) => {
   res.json({ data: { ok: true } });
 });
 
-router.post('/statuses/:id/favourite', requireApiAuth('write'), (req, res) => {
+router.post('/statuses/:id/favourite', requireApiAuth('write'), requireVerifiedApiWrite, (req, res) => {
   const post = resolveVisiblePost(parseInt(req.params.id, 10), req.apiUser.id);
   if (!post) return errorResponse(res, 404, 'Not Found', 'Post not found.');
 
@@ -778,7 +827,7 @@ router.post('/statuses/:id/unfavourite', requireApiAuth('write'), (req, res) => 
   responseEnvelope(res, serializePost(post, author, req.apiUser.id));
 });
 
-router.post('/statuses/:id/reblog', requireApiAuth('write'), (req, res) => {
+router.post('/statuses/:id/reblog', requireApiAuth('write'), requireVerifiedApiWrite, (req, res) => {
   const post = resolveVisiblePost(parseInt(req.params.id, 10), req.apiUser.id);
   if (!post) return errorResponse(res, 404, 'Not Found', 'Post not found.');
   if (post.user_id === req.apiUser.id) return errorResponse(res, 400, 'Bad Request', 'Cannot repost your own post.');
@@ -812,7 +861,7 @@ router.get('/statuses/:id/context', requireApiAuth('read'), (req, res) => {
 });
 
 // Comment on a post (same behavior as the web form).
-router.post('/statuses/:id/comment', requireApiAuth('write'), (req, res) => {
+router.post('/statuses/:id/comment', requireApiAuth('write'), requireVerifiedApiWrite, (req, res) => {
   const post = resolveVisiblePost(parseInt(req.params.id, 10), req.apiUser.id);
   if (!post) return errorResponse(res, 404, 'Not Found', 'Post not found.');
   const body = String(req.body.body || '').trim();
@@ -1187,7 +1236,7 @@ router.get('/rooms/:id/channels/:cid/messages', requireApiAuth('read'), (req, re
   });
 });
 
-router.post('/rooms/:id/channels/:cid/messages', requireApiAuth('write'), (req, res) => {
+router.post('/rooms/:id/channels/:cid/messages', requireApiAuth('write'), requireVerifiedApiWrite, (req, res) => {
   const room = db.getRoom(parseInt(req.params.id, 10));
   if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
   if (!db.isRoomMember(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'Not a member.');
@@ -1484,7 +1533,7 @@ router.get('/conversations/:username', requireApiAuth('read:direct'), (req, res)
 });
 
 // Send a message
-router.post('/conversations/:username/messages', requireApiAuth('write:direct'), (req, res) => {
+router.post('/conversations/:username/messages', requireApiAuth('write:direct'), requireVerifiedApiWrite, (req, res) => {
   const other = db.getUserByUsername(req.params.username);
   if (!other) return errorResponse(res, 404, 'Not Found', 'User not found.');
   if (!db.areMutualFollowers(req.apiUser.id, other.id)) {

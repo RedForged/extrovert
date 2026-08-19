@@ -56,6 +56,8 @@ function back(req, fallback = '/') {
 router.post('/', upload.single('media'), (req, res) => {
   const user = res.locals.currentUser;
   if (!user) return res.redirect('/login');
+  const { requireVerifiedEmail: gate } = require('../db');
+  if (gate(user)) return res.status(403).send('Your email address must be verified before you can post. Visit /settings to verify it.');
   const token = req.body._csrf || req.headers['x-csrf-token'];
   if (!token || token !== req.session.csrfToken) {
     return res.status(403).send('CSRF validation failed');
@@ -99,6 +101,8 @@ function resolveVisibleContent(req, res) {
 router.post('/:id/like', (req, res) => {
   const ctx = resolveVisibleContent(req, res);
   if (!ctx) return req.xhr ? res.json({ error: 'not found' }) : res.redirect(back(req, '/'));
+  const { requireVerifiedEmail: gate } = require('../db');
+  if (gate(ctx.user)) return req.xhr ? res.json({ error: 'email_unverified' }) : res.status(403).send('Your email address must be verified before you can like posts.');
   const liked = toggleLike(ctx.user.id, ctx.content.id);
   if (liked && ctx.content.user_id !== ctx.user.id) {
     createNotification({ userId: ctx.content.user_id, type: 'like', actorId: ctx.user.id, postId: ctx.content.id });
@@ -111,6 +115,8 @@ router.post('/:id/like', (req, res) => {
 router.post('/:id/comment', (req, res) => {
   const ctx = resolveVisibleContent(req, res);
   if (!ctx) return req.xhr ? res.json({ error: 'not found' }) : res.redirect(back(req, '/'));
+  const { requireVerifiedEmail: gate } = require('../db');
+  if (gate(ctx.user)) return req.xhr ? res.json({ error: 'email_unverified' }) : res.status(403).send('Your email address must be verified before you can comment.');
   const body = String(req.body.body || '').trim();
   if (body) {
     const commentId = addComment(ctx.user.id, ctx.content.id, body.slice(0, 1000));
@@ -206,6 +212,8 @@ router.get('/:id', (req, res) => {
 router.post('/:id/share', (req, res) => {
   const ctx = resolveVisibleContent(req, res);
   if (!ctx) return req.xhr ? res.json({ error: 'not found' }) : res.redirect(back(req, '/'));
+  const { requireVerifiedEmail: gate } = require('../db');
+  if (gate(ctx.user)) return req.xhr ? res.json({ error: 'email_unverified' }) : res.status(403).send('Your email address must be verified before you can share.');
   if (ctx.content.user_id !== ctx.user.id) {
     sharePost(ctx.user.id, ctx.content.id);
     createNotification({ userId: ctx.content.user_id, type: 'share', actorId: ctx.user.id, postId: ctx.content.id });
@@ -219,6 +227,8 @@ router.post('/:id/share', (req, res) => {
 router.post('/:id/repost', (req, res) => {
   const ctx = resolveVisibleContent(req, res);
   if (!ctx) return req.xhr ? res.json({ error: 'not found' }) : res.redirect(back(req, '/'));
+  const { requireVerifiedEmail: gate } = require('../db');
+  if (gate(ctx.user)) return req.xhr ? res.json({ error: 'email_unverified' }) : res.status(403).send('Your email address must be verified before you can repost.');
   if (ctx.content.user_id === ctx.user.id) return req.xhr ? res.json({ ok: false, reason: 'own' }) : res.redirect(back(req, '/'));
   if (!hasReposted(ctx.user.id, ctx.content.id)) {
     createPost({ userId: ctx.user.id, type: 'repost', repostOfId: ctx.content.id });

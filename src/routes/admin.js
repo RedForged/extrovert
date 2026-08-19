@@ -1,7 +1,7 @@
 'use strict';
 
 const express = require('express');
-const { getAllUsers, getUserById, removeReferralBadge, banUser, unbanUser, deleteUser, getAllRooms, deleteRoom, getPendingReports, getReport, resolveReport, dismissReport, promoteUser, getAnnouncement, setAnnouncement, clearAnnouncement, getSecurityReports, markSecurityReportHandled } = require('../db');
+const { getAllUsers, getUserById, removeReferralBadge, banUser, unbanUser, deleteUser, getAllRooms, deleteRoom, getPendingReports, getReport, resolveReport, dismissReport, promoteUser, getAnnouncement, setAnnouncement, clearAnnouncement, getSecurityReports, markSecurityReportHandled, getSetting } = require('../db');
 
 const router = express.Router();
 
@@ -127,6 +127,67 @@ router.post('/announcement', requireAdmin, (req, res) => {
 router.post('/announcement/clear', requireAdmin, (req, res) => {
   clearAnnouncement();
   res.redirect('/admin');
+});
+
+// ---------- Mail / email-verification admin panel ----------
+const mailer = require('../mailer');
+const { getMailSettings, setMailSettings, getEmailPolicy, setEmailPolicy } = require('../db');
+
+// The DKIM signer domain shown in the panel (DKIM domain or the From domain).
+function dkimDomainOf(eff) {
+  return eff.dkim.domain || (eff.from && eff.from.includes('@') ? eff.from.split('@')[1] : '');
+}
+
+function renderMailPanel(res, { error = null, saved = false } = {}) {
+  const effective = mailer.reloadConfig();
+  res.render('admin-mail', {
+    stored: getMailSettings(),
+    // The raw DB value (null = inherit from env/default) — used so the panel
+    // can show "Inherit" as selected; `policy` below is the effective value.
+    storedPolicy: getSetting('email_verification_policy'),
+    records: mailer.dnsRecords(),
+    policy: getEmailPolicy(),
+    effective,
+    dkimDomain: dkimDomainOf(effective),
+    error,
+    saved,
+  });
+}
+
+router.get('/mail', requireAdmin, (req, res) => {
+  renderMailPanel(res);
+});
+
+router.post('/mail', requireAdmin, (req, res) => {
+  const b = req.body || {};
+  try {
+    // Policy + mail settings. Empty inputs unset the DB value, returning
+    // control to the environment variable (Portainer) / built-in default.
+    setEmailPolicy(String(b.policy || '').trim());
+    setMailSettings({
+      mode: String(b.mode || '').trim(),
+      relay: String(b.relay || '').trim(),
+      from: String(b.from || '').trim(),
+      from_name: String(b.from_name || '').trim(),
+      bounce_from: String(b.bounce_from || '').trim(),
+      dkim_enabled: String(b.dkim_enabled || '').trim(),
+      dkim_domain: String(b.dkim_domain || '').trim(),
+      dkim_selector: String(b.dkim_selector || '').trim(),
+      starttls: String(b.starttls || '').trim(),
+      outbox_fallback: String(b.outbox_fallback || '').trim(),
+      timeout_ms: String(b.timeout_ms || '').trim(),
+      max_attempts: String(b.max_attempts || '').trim(),
+    });
+    // DKIM private key: only overwrite when the admin pastes a new one; an
+    // empty field leaves the existing key (DB or env) untouched.
+    const newKey = String(b.dkim_private_key || '').trim();
+    if (newKey) setMailSettings({ dkim_private_key: newKey });
+
+    renderMailPanel(res, { saved: true });
+  } catch (err) {
+    console.error('admin/mail: save failed', err);
+    renderMailPanel(res, { error: 'Failed to save: ' + (err.message || err) });
+  }
 });
 
 module.exports = router;
