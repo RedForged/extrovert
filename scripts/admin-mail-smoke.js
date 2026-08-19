@@ -86,6 +86,7 @@ const app = require('../src/server');
       dkim_domain: 'example.org',
       dkim_selector: 'extrovert',
       starttls: 'opportunistic',
+      spf_ip: '203.0.113.10',
     }),
     redirect: 'manual',
   });
@@ -99,6 +100,8 @@ const app = require('../src/server');
   assert.strictEqual(cfg.from, 'hello@example.org', 'from persisted + effective');
   assert.strictEqual(cfg.dkim.domain, 'example.org', 'dkim domain persisted');
   assert.strictEqual(db.getEmailPolicy(), 'optional', 'policy persisted');
+  assert.strictEqual(cfg.spfIp, '203.0.113.10', 'spf_ip persisted');
+  assert.strictEqual(mailer.dnsRecords().spf, 'v=spf1 mx a ip4:203.0.113.10 -all', 'SPF record filled with the IP');
 
   console.log('ADMIN MAIL SMOKE: ALL PASS');
   server.close();

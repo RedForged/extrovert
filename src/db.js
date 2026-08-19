@@ -2081,6 +2081,7 @@ const MAIL_SETTING_KEYS = [
   'from',            // From-header address
   'from_name',       // display name
   'bounce_from',     // RFC 5321 MAIL FROM
+  'spf_ip',          // public IP of the sending server (fills the SPF record)
   'dkim_enabled',    // '1' | '0'
   'dkim_domain',     // signing domain
   'dkim_selector',   // DKIM selector

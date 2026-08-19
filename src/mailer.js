@@ -165,6 +165,12 @@ function resolveConfig(stored) {
     },
     // Administrative contact for DMARC/bounce records (RFC 5321 MAIL FROM).
     bounceFrom: pick(s, 'bounce_from', 'EXTV_MAIL_BOUNCE_FROM', ENV_DEFAULTS.bounceFrom),
+    // Public IP of the mail-sending server — fills the ip4: mechanism in the
+    // SPF record the admin publishes. Validated to be a real IPv4/IPv6.
+    spfIp: (() => {
+      const raw = String(pick(s, 'spf_ip', 'EXTV_MAIL_SPF_IP', '') || '').trim();
+      return net.isIP(raw) ? raw : '';
+    })(),
     // STARTTLS security level: 'opportunistic' | 'required' | 'off'.
     // Anything else from env/DB falls back to 'opportunistic'.
     starttls: starttlsRaw === 'off' || starttlsRaw === 'required' ? starttlsRaw : 'opportunistic',
@@ -899,10 +905,19 @@ function dnsRecords(req) {
   // domain, point it at the derived public domain instead.
   const contact = isPublicDomain(cfgDomain) ? (CFG.bounceFrom || CFG.from) : `noreply@${domain}`;
   const dkim = dkimTxtRecord();
+  // The SPF value needs the sending server's public IP. It cannot be derived
+  // from the request (that's the admin's browser); the admin sets it in the
+  // panel, otherwise the placeholder stays and the record must be completed
+  // by hand. IPv6 is fine as ip6:.
+  const spf = domain
+    ? (CFG.spfIp
+      ? `v=spf1 mx a ip${net.isIP(CFG.spfIp) === 6 ? '6' : '4'}:${CFG.spfIp} -all`
+      : `v=spf1 mx a ip4:<your-server-ip> -all`)
+    : null;
   return {
     dkim,
     dmarc: dmarcRecord(domain || 'example.com', contact),
-    spf: domain ? `v=spf1 mx a ip4:<your-server-ip> -all` : null,
+    spf,
     selector: CFG.dkim.selector,
     domain: domain || '',
     isFallback,

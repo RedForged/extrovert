@@ -172,6 +172,7 @@ router.post('/mail', requireAdmin, (req, res) => {
       from: String(b.from || '').trim(),
       from_name: String(b.from_name || '').trim(),
       bounce_from: String(b.bounce_from || '').trim(),
+      spf_ip: String(b.spf_ip || '').trim(),
       dkim_enabled: String(b.dkim_enabled || '').trim(),
       dkim_domain: String(b.dkim_domain || '').trim(),
       dkim_selector: String(b.dkim_selector || '').trim(),

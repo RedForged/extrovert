@@ -98,6 +98,7 @@ All of these can be set from `/admin/mail` (admin UI) or as env vars:
 | `EXTV_MAIL_FROM` | `noreply@<your-domain>` | From address (derived from the instance URL) |
 | `EXTV_MAIL_FROM_NAME` | `Extrovert` | Display name |
 | `EXTV_MAIL_BOUNCE_FROM` | — | Return-Path / MAIL FROM |
+| `EXTV_MAIL_SPF_IP` | — | Public IP of the sending server (fills the SPF record) |
 | `EXTV_MAIL_STARTTLS` | `opportunistic` | `opportunistic` / `required` / `off` |
 | `EXTV_MAIL_DKIM` | `1` | DKIM signing on/off (`1`/`0`) |
 | `EXTV_MAIL_DKIM_DOMAIN` | From domain | DKIM signing domain |
