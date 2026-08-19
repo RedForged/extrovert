@@ -108,23 +108,31 @@
 
   <div class="card" style="max-width:860px;margin:16px auto">
     <h2>DNS records to publish</h2>
+    <% if (locals.records && records.isFallback) { %>
+      <div class="flash err"><span class="flash-ico"><%- include('partials/icon', { name: 'alert', size: 18 }) %></span><span>
+        <strong><code><%= records.domain %></code> is not a real public domain</strong> — it's the built-in
+        fallback. Set a <strong>From address</strong> on a domain you control (e.g.
+        <code>noreply@yourdomain.com</code>) above and save, and these records will use that domain instead.
+      </span></div>
+    <% } %>
     <p class="muted" style="font-size:0.85rem;margin:-4px 0 10px">
-      Receiving servers authenticate your mail with these records. Publish them at your DNS provider
-      (the same place your domain's other records live) so verification mail lands in the inbox —
-      not spam, not dropped. MX and reverse-DNS (PTR) records are also required for real delivery;
-      see <a href="/docs/mail">docs/mail.md</a>.
+      All three are plain <strong>TXT</strong> records — use your provider's regular
+      "TXT Record" type (Namecheap, Cloudflare, etc.). Hosts are shown in full; if your provider
+      appends your domain automatically, enter the host <em>without</em> the
+      <code>.<%= records.domain %></code> suffix. MX is only for receiving and is not needed —
+      Extrovert only sends. See <a href="/docs/mail">docs/mail.md</a> for the full setup.
     </p>
     <% if (records.dkim) { %>
-      <label>DKIM — for <code><%= records.selector %>._domainkey.<%= records.domain %></code> TXT</label>
-      <textarea rows="3" readonly onclick="this.select()" style="font-family:monospace;font-size:0.8rem"><%= records.dkim %></textarea>
+      <label>DKIM — TXT, host <code><%= records.selector %>._domainkey.<%= records.domain %></code></label>
+      <textarea rows="4" readonly onclick="this.select()" style="font-family:monospace;font-size:0.8rem">"<%= records.dkim %>"</textarea>
     <% } else { %>
       <p class="muted">Set a From domain / DKIM domain first to see the DKIM record.</p>
     <% } %>
     <% if (records.domain) { %>
-      <label>SPF — for <code><%= records.domain %></code> TXT</label>
-      <textarea rows="2" readonly onclick="this.select()" style="font-family:monospace;font-size:0.8rem"><%= records.spf %></textarea>
-      <label>DMARC — for <code>_dmarc.<%= records.domain %></code> TXT</label>
-      <textarea rows="2" readonly onclick="this.select()" style="font-family:monospace;font-size:0.8rem"><%= records.dmarc %></textarea>
+      <label>SPF — TXT, host <code><%= records.domain %></code></label>
+      <textarea rows="2" readonly onclick="this.select()" style="font-family:monospace;font-size:0.8rem">"<%= records.spf %>"</textarea>
+      <label>DMARC — TXT, host <code>_dmarc.<%= records.domain %></code></label>
+      <textarea rows="3" readonly onclick="this.select()" style="font-family:monospace;font-size:0.8rem">"<%= records.dmarc %>"</textarea>
     <% } else { %>
       <p class="muted">Set a From domain / DKIM domain first to see the SPF and DMARC records.</p>
     <% } %>

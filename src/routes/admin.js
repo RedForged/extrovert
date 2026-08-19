@@ -138,14 +138,16 @@ function dkimDomainOf(eff) {
   return eff.dkim.domain || (eff.from && eff.from.includes('@') ? eff.from.split('@')[1] : '');
 }
 
-function renderMailPanel(res, { error = null, saved = false } = {}) {
+function renderMailPanel(req, res, { error = null, saved = false } = {}) {
   const effective = mailer.reloadConfig();
   res.render('admin-mail', {
     stored: getMailSettings(),
     // The raw DB value (null = inherit from env/default) — used so the panel
     // can show "Inherit" as selected; `policy` below is the effective value.
     storedPolicy: getSetting('email_verification_policy'),
-    records: mailer.dnsRecords(),
+    // Pass the request so the DNS card can derive the real public host when
+    // no From/DKIM domain is configured yet (instead of .local).
+    records: mailer.dnsRecords(req),
     policy: getEmailPolicy(),
     effective,
     dkimDomain: dkimDomainOf(effective),
@@ -155,7 +157,7 @@ function renderMailPanel(res, { error = null, saved = false } = {}) {
 }
 
 router.get('/mail', requireAdmin, (req, res) => {
-  renderMailPanel(res);
+  renderMailPanel(req, res);
 });
 
 router.post('/mail', requireAdmin, (req, res) => {
@@ -183,10 +185,10 @@ router.post('/mail', requireAdmin, (req, res) => {
     const newKey = String(b.dkim_private_key || '').trim();
     if (newKey) setMailSettings({ dkim_private_key: newKey });
 
-    renderMailPanel(res, { saved: true });
+    renderMailPanel(req, res, { saved: true });
   } catch (err) {
     console.error('admin/mail: save failed', err);
-    renderMailPanel(res, { error: 'Failed to save: ' + (err.message || err) });
+    renderMailPanel(req, res, { error: 'Failed to save: ' + (err.message || err) });
   }
 });
 

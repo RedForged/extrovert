@@ -52,6 +52,25 @@ const app = require('../src/server');
   assert.strictEqual(g.status, 200, 'admin/mail GET 200');
   assert(html.includes('Admin · Mail'), 'panel heading');
 
+  // DNS card: with a real public host the records must use that domain and be
+  // quoted TXT snippets (Namecheap-style); with an internal host a fallback
+  // warning must show instead of useless .local records.
+  const dns = await fetch(base + '/admin/mail', {
+    headers: { cookie: sessCookie, 'x-forwarded-host': 'extrovert.example.org' },
+  });
+  const dnsHtml = await dns.text();
+  assert(!dnsHtml.includes('not a real public domain'), 'no fallback warning with public host');
+  assert(dnsHtml.includes('host <code>extrovert._domainkey.extrovert.example.org</code>'), 'DKIM host uses request domain');
+  assert(dnsHtml.includes('host <code>_dmarc.extrovert.example.org</code>'), 'DMARC host uses request domain');
+  assert(dnsHtml.includes('"v=DKIM1; k=rsa; p='), 'DKIM value shown quoted');
+  assert(dnsHtml.includes('"v=spf1 mx a ip4:&lt;your-server-ip&gt; -all"'), 'SPF value shown quoted');
+
+  const dns2 = await fetch(base + '/admin/mail', {
+    headers: { cookie: sessCookie, 'x-forwarded-host': '127.0.0.1:3000' },
+  });
+  const dns2Html = await dns2.text();
+  assert(dns2Html.includes('not a real public domain'), 'fallback warning shows for internal host');
+
   // POST settings via the session csrf.
   const csrf2 = (await (await fetch(base + '/admin/mail', { headers: { cookie: sessCookie } })).text()).match(/name="csrf-token" content="([^"]+)"/)[1];
   const post = await fetch(base + '/admin/mail', {

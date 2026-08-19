@@ -251,14 +251,37 @@ function dkimPublicKeyRecord() {
     if (!CFG.dkim.privateKeyPem) return null;
     const pub = crypto.createPublicKey(CFG.dkim.privateKeyPem);
     const der = pub.export({ type: 'spki', format: 'der' });
-    // Strip the SPKI header to leave the RSA public key (SubjectPublicKeyInfo
-    // 2048-bit RSA is a fixed-length prefix).
+    // Walk the SPKI structure to the inner RSAPublicKey (RFC 5280:
+    // SEQUENCE { algorithm SEQUENCE, BIT STRING { RSAPublicKey } }). The
+    // DKIM 'p=' tag MUST be the DER RSAPublicKey itself (RFC 6376 §3.6.1) —
+    // NOT the whole SPKI, which strict verifiers reject.
     let offset = 0;
-    const seq = der[offset]; offset += 1;
-    if (seq !== 0x30) return null;
-    const len = der[offset]; offset += 1;
-    if ((len & 0x80) === 0x80) offset += len & 0x7f;
+    const readLen = () => {
+      let l = der[offset]; offset += 1;
+      if ((l & 0x80) === 0x80) {
+        const n = l & 0x7f;
+        l = 0;
+        for (let i = 0; i < n; i++) { l = l * 256 + der[offset]; offset += 1; }
+      }
+      return l;
+    };
+    const expect = (tag) => {
+      const t = der[offset]; offset += 1;
+      if (t !== tag) throw new Error('unexpected DER tag 0x' + t.toString(16));
+      return readLen();
+    };
+    expect(0x30);                      // SPKI SEQUENCE
+    // NOTE: do NOT write `offset += expect(...)` — compound assignment reads
+    // the LHS value before the RHS runs, so the increments inside the walker
+    // would be lost. Two statements on purpose.
+    const algLen = expect(0x30);       // algorithm SEQUENCE (OID + NULL)
+    offset += algLen;                  // skip its content
+    expect(0x03);                      // BIT STRING
+    offset += 1;                       // unused-bits byte
     const pk = der.subarray(offset);
+    // Sanity: RSAPublicKey is SEQUENCE { INTEGER modulus, INTEGER exponent } —
+    // pk = 30 <len> 02 <len> <modulus> ...
+    if (pk[0] !== 0x30 || pk[4] !== 0x02) throw new Error('RSAPublicKey parse failed');
     return pk.toString('base64');
   } catch (err) {
     log('error', 'DKIM public key export failed: ' + err.message);
@@ -832,29 +855,57 @@ function startCatcher(port = 2525) {
 // record; the delivered mail itself is unaffected either way.
 // ---------------------------------------------------------------------------
 
-function dmarcRecord() {
+function dmarcRecord(domain, contact) {
   reloadConfig();
-  const domain = CFG.dkim.domain || domainOf(CFG.from) || 'example.com';
+  const d = domain || CFG.dkim.domain || domainOf(CFG.from) || 'example.com';
+  const c = contact || CFG.bounceFrom || CFG.from;
   // p=quarantine is the sanest default for an instance that verifies email:
   // unauthenticated mail from the domain lands in spam rather than being
   // outright rejected, so real users still get their verification link.
-  return `v=DMARC1; p=quarantine; adkim=s; aspf=s; rua=mailto:${CFG.bounceFrom || CFG.from}; fo=1`;
+  return `v=DMARC1; p=quarantine; adkim=s; aspf=s; rua=mailto:${c}; fo=1`;
+}
+
+// Is a domain a real, publishable public name? The built-in fallback
+// (extrovert.local) and other RFC 2606/6761 reserved names are NOT — records
+// for them are useless and would be actively harmful to publish.
+function isPublicDomain(domain) {
+  const lower = String(domain || '').trim().toLowerCase();
+  if (!lower || !lower.includes('.')) return false;
+  if (/\.(local|test|invalid|example|internal)$/.test(lower)) return false;
+  if (lower === 'localhost' || net.isIP(lower)) return false;
+  return true;
+}
+
+// The instance's real public host from the incoming request — used when the
+// effective config domain is the non-public fallback (e.g. fresh install
+// without OIDC_ISSUER), so the admin panel can still show usable records.
+function requestDomain(req) {
+  if (!req || !req.headers) return '';
+  const raw = req.headers['x-forwarded-host'] || req.headers.host || (req.get && req.get('host')) || '';
+  const h = String(raw).split(',')[0].split(':')[0].trim().toLowerCase();
+  return isPublicDomain(h) ? h : '';
 }
 
 // DNS records the operator must publish for DKIM/DMARC authentication to
 // work — surfaced in the admin mail panel as copy-paste TXT snippets.
-function dnsRecords() {
+// `req` is optional; when present and the configured domain is the non-public
+// fallback, the records are derived from the request's real host instead.
+function dnsRecords(req) {
   reloadConfig();
+  const cfgDomain = CFG.dkim.domain || domainOf(CFG.from);
+  const domain = isPublicDomain(cfgDomain) ? cfgDomain : requestDomain(req);
+  const isFallback = !isPublicDomain(domain);
+  // The DMARC rua must be a real address; if the From is on the fallback
+  // domain, point it at the derived public domain instead.
+  const contact = isPublicDomain(cfgDomain) ? (CFG.bounceFrom || CFG.from) : `noreply@${domain}`;
   const dkim = dkimTxtRecord();
-  const dmarc = dmarcRecord();
-  const domain = CFG.dkim.domain || domainOf(CFG.from);
-  const spf = domain ? `v=spf1 mx a ip4:<your-server-ip> -all` : null;
   return {
     dkim,
-    dmarc,
-    spf,
+    dmarc: dmarcRecord(domain || 'example.com', contact),
+    spf: domain ? `v=spf1 mx a ip4:<your-server-ip> -all` : null,
     selector: CFG.dkim.selector,
-    domain,
+    domain: domain || '',
+    isFallback,
   };
 }
 
