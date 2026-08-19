@@ -63,7 +63,7 @@ const app = require('../src/server');
   assert(dnsHtml.includes('host <code>extrovert._domainkey.extrovert.example.org</code>'), 'DKIM host uses request domain');
   assert(dnsHtml.includes('host <code>_dmarc.extrovert.example.org</code>'), 'DMARC host uses request domain');
   assert(dnsHtml.includes('"v=DKIM1; k=rsa; p='), 'DKIM value shown quoted');
-  assert(dnsHtml.includes('"v=spf1 mx a ip4:&lt;your-server-ip&gt; -all"'), 'SPF value shown quoted');
+  assert(dnsHtml.includes('"v=spf1 mx a -all"'), 'SPF default uses domain mechanisms only');
 
   const dns2 = await fetch(base + '/admin/mail', {
     headers: { cookie: sessCookie, 'x-forwarded-host': '127.0.0.1:3000' },

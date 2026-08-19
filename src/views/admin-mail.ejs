@@ -77,11 +77,12 @@
         <div>
           <label for="mail-dkim-selector">Selector</label>
           <input type="text" id="mail-dkim-selector" name="dkim_selector" value="<%= stored.dkim_selector || '' %>" placeholder="extrovert">
-          <label for="mail-spf-ip">Server public IP <span class="muted">(fills the SPF record)</span></label>
+          <label for="mail-spf-ip">Server public IP <span class="muted">(optional — adds ip4: to SPF)</span></label>
           <input type="text" id="mail-spf-ip" name="spf_ip" value="<%= stored.spf_ip || '' %>" placeholder="203.0.113.10">
           <p class="muted" style="font-size:0.75rem;margin-top:4px">
-            The public IP that sends this instance's mail. It can't be detected from here — look it up at
-            your hosting provider (or <code>curl ifconfig.me</code> on the server).
+            Usually <em>not needed</em>: the default SPF is <code>v=spf1 mx a -all</code>, and the
+            <code>a</code> mechanism already authorizes your domain's A record (this server). Only set this
+            if the sending machine's IP is <em>not</em> the domain's A record (e.g. a separate VPS).
           </p>
           <label for="mail-dkim-key">DKIM private key (PEM)</label>
           <textarea id="mail-dkim-key" name="dkim_private_key" rows="4" placeholder="-----BEGIN PRIVATE KEY-----&#10;…&#10;-----END PRIVATE KEY-----"></textarea>

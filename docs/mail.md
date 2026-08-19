@@ -44,8 +44,7 @@ receiving servers actually check. Publish all four:
 
 | Record | Name | Type | Value |
 |---|---|---|---|
-| MX | `example.com` | MX | `10 mail.example.com` (or your mail host) |
-| SPF | `example.com` | TXT | `v=spf1 mx a ip4:<your-server-ip> -all` |
+| SPF | `example.com` | TXT | `v=spf1 mx a -all` (the `a`/`mx` mechanisms authorize the domain's own A/MX records — no IP needed in the typical setup) |
 | DKIM | `<selector>._domainkey.example.com` | TXT | shown in `/admin/mail` (auto-generated key) |
 | DMARC | `_dmarc.example.com` | TXT | shown in `/admin/mail` |
 
@@ -98,7 +97,7 @@ All of these can be set from `/admin/mail` (admin UI) or as env vars:
 | `EXTV_MAIL_FROM` | `noreply@<your-domain>` | From address (derived from the instance URL) |
 | `EXTV_MAIL_FROM_NAME` | `Extrovert` | Display name |
 | `EXTV_MAIL_BOUNCE_FROM` | — | Return-Path / MAIL FROM |
-| `EXTV_MAIL_SPF_IP` | — | Public IP of the sending server (fills the SPF record) |
+| `EXTV_MAIL_SPF_IP` | — | Sender IP for the SPF record (adds `ip4:`; optional — `a`/`mx` mechanisms suffice when the domain's A record is the sending server) |
 | `EXTV_MAIL_STARTTLS` | `opportunistic` | `opportunistic` / `required` / `off` |
 | `EXTV_MAIL_DKIM` | `1` | DKIM signing on/off (`1`/`0`) |
 | `EXTV_MAIL_DKIM_DOMAIN` | From domain | DKIM signing domain |

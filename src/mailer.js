@@ -905,14 +905,15 @@ function dnsRecords(req) {
   // domain, point it at the derived public domain instead.
   const contact = isPublicDomain(cfgDomain) ? (CFG.bounceFrom || CFG.from) : `noreply@${domain}`;
   const dkim = dkimTxtRecord();
-  // The SPF value needs the sending server's public IP. It cannot be derived
-  // from the request (that's the admin's browser); the admin sets it in the
-  // panel, otherwise the placeholder stays and the record must be completed
-  // by hand. IPv6 is fine as ip6:.
+  // SPF ultimately authorizes by IP, but the `mx a` mechanisms resolve the
+  // domain for us — the domain's A record (this very instance) is the
+  // sending server in the typical setup, so no IP is needed. The admin can
+  // add an explicit ip4:/ip6: via the panel IP field when the sender is on a
+  // different machine than the domain's A record.
   const spf = domain
     ? (CFG.spfIp
       ? `v=spf1 mx a ip${net.isIP(CFG.spfIp) === 6 ? '6' : '4'}:${CFG.spfIp} -all`
-      : `v=spf1 mx a ip4:<your-server-ip> -all`)
+      : `v=spf1 mx a -all`)
     : null;
   return {
     dkim,
