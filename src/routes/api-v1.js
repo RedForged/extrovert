@@ -470,10 +470,10 @@ router.post('/oauth/token', clientAppAuth, (req, res) => {
       // account has no address stored. email_verified lets relying parties
       // decide whether to trust the address.
       if (scopesSet.has('email')) {
-        if (user.email) {
-          idTokenPayload.email = user.email;
-          idTokenPayload.email_verified = !!user.email_verified_at;
-        }
+        // Always a strict JSON boolean (Headscale & other clients unmarshal
+        // it into a Go bool — a missing claim would silently read false).
+        idTokenPayload.email_verified = !!user.email_verified_at;
+        if (user.email) idTokenPayload.email = user.email;
       }
       tokenResponse.id_token = signIdToken(idTokenPayload);
     }
@@ -570,10 +570,9 @@ router.get('/oauth/userinfo', requireApiAuth('openid'), (req, res) => {
   }
   // `email` scope (OIDC spec): omitted when the account has no address.
   if (scopesSet.has('email')) {
-    if (user.email) {
-      info.email = user.email;
-      info.email_verified = !!user.email_verified_at;
-    }
+    // Strict JSON boolean even without an email — see id_token note.
+    info.email_verified = !!user.email_verified_at;
+    if (user.email) info.email = user.email;
   }
   res.json(info);
 });

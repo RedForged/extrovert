@@ -321,9 +321,30 @@ async function main() {
   });
   const cJson = await cTok.json();
   const cPayload = JSON.parse(Buffer.from(cJson.id_token.split('.')[1], 'base64url').toString());
-  ok(!('email' in cPayload) && !('email_verified' in cPayload), 'id_token omits email claims for account without email');
+  ok(!('email' in cPayload) && cPayload.email_verified === false, 'no-email account: id_token omits email but email_verified is a boolean false');
   const cUi = await fetch(base + '/api/v1/oauth/userinfo', { headers: { Authorization: 'Bearer ' + cJson.access_token } }).then(r => r.json());
-  ok(!('email' in cUi), 'userinfo omits email claims for account without email');
+  ok(!('email' in cUi) && cUi.email_verified === false, 'no-email account: userinfo omits email but email_verified is a boolean false');
+
+  // Unverified email + email scope -> email present, email_verified boolean false.
+  const daveId = db.createUser({ username: 'dave', passwordHash: bcrypt.hashSync('pw', 10), displayName: 'Dave' });
+  db.setUserEmail(daveId, 'dave@example.org');
+  const dave = await makeWebSession('dave', 'pw');
+  const davePage = await dave.get(`/api/v1/oauth/authorize?client_id=${oidcClient}&response_type=code&redirect_uri=${encodeURIComponent('https://oidc.example/cb')}&scope=${encodeURIComponent('openid email')}&nonce=n-4&code_challenge=${encodeURIComponent(eChallenge)}&code_challenge_method=S256`);
+  const daveCsrf = (davePage.match(/name="_csrf" value="([^"]+)"/) || [])[1] || dave.csrf;
+  post = await dave.req('/api/v1/oauth/authorize', {
+    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ _csrf: daveCsrf, client_id: oidcClient, redirect_uri: 'https://oidc.example/cb', scope: 'openid email', nonce: 'n-4', code_challenge: eChallenge, code_challenge_method: 'S256', approve: 'yes' }),
+  });
+  const dCode = new URL(post.headers.get('location')).searchParams.get('code');
+  const dTok = await fetch(base + '/api/v1/oauth/token', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ grant_type: 'authorization_code', client_id: oidcClient, code: dCode, redirect_uri: 'https://oidc.example/cb', code_verifier: eVerifier }),
+  });
+  const dJson = await dTok.json();
+  const dPayload = JSON.parse(Buffer.from(dJson.id_token.split('.')[1], 'base64url').toString());
+  ok(dPayload.email === 'dave@example.org' && dPayload.email_verified === false, 'unverified email: id_token has email + email_verified boolean false');
+  const dUi = await fetch(base + '/api/v1/oauth/userinfo', { headers: { Authorization: 'Bearer ' + dJson.access_token } }).then(r => r.json());
+  ok(dUi.email === 'dave@example.org' && dUi.email_verified === false, 'unverified email: userinfo has email + email_verified boolean false');
 
   console.log('\nTEST 10: token revocation');
   const rev = await fetch(base + '/api/v1/oauth/revoke', {
