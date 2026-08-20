@@ -26,6 +26,11 @@
   </div>
 
   <div class="chat-messages">
+    <% if (typeof hasOlder !== 'undefined' && hasOlder && messages.length) { %>
+      <div class="center" style="padding:0.5rem">
+        <a class="btn ghost" href="/chats/<%= encodeURIComponent(other.username) %>?before=<%= messages[0].id %>">Load older messages</a>
+      </div>
+    <% } %>
     <% if (messages.length === 0) { %>
       <div class="center muted" style="padding:2rem">No messages yet — say hello.</div>
     <% } else { %>

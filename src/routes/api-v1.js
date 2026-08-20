@@ -1260,19 +1260,22 @@ router.post('/rooms/:id/channels/:cid/messages', requireApiAuth('write'), requir
 
   const body = String(req.body.body || '').trim();
   const proto = String(req.body.proto || 'plain').trim() === 'megolm' ? 'megolm' : 'plain';
-  const ciphertext = String(req.body.ciphertext || '').trim().slice(0, 20000) || null;
+  const ciphertextRaw = String(req.body.ciphertext || '').trim();
   const groupSessionId = String(req.body.group_session_id || '').trim() || null;
   const isSticker = body.startsWith('/uploads/stickers/');
   if (!isSticker) {
-    if (!body && !ciphertext) return errorResponse(res, 400, 'Bad Request', 'body or ciphertext is required.');
-    if (proto !== 'megolm' || !ciphertext || !groupSessionId) {
+    if (!body && !ciphertextRaw) return errorResponse(res, 400, 'Bad Request', 'body or ciphertext is required.');
+    if (body.length > 20000 || ciphertextRaw.length > 20000) {
+      return errorResponse(res, 400, 'Bad Request', 'Message is too long.');
+    }
+    if (proto !== 'megolm' || !ciphertextRaw || !groupSessionId) {
       return errorResponse(res, 400, 'Bad Request', 'End-to-end encryption required. Room messages must be Megolm-encrypted.');
     }
-    const gs = db.getRoomGroupSession(room.id, req.apiUser.id);
-    if (!gs || String(gs.id) !== groupSessionId) {
+    if (!db.isRoomGroupSessionUsable(room.id, req.apiUser.id, groupSessionId)) {
       return errorResponse(res, 400, 'Bad Request', 'Unknown group session.');
     }
   }
+  const ciphertext = ciphertextRaw || null;
   const msgId = db.sendRoomMessage(channel.id, req.apiUser.id, isSticker ? body : '', proto, ciphertext, isSticker ? null : groupSessionId);
   res.status(201).json({ data: { id: String(msgId) } });
 });
@@ -1303,7 +1306,8 @@ router.post('/rooms/:id/session', requireApiAuth('write'), (req, res) => {
   const keys = Array.isArray(req.body.keys) ? req.body.keys : [];
   const memberIds = Array.isArray(req.body.member_ids) ? req.body.member_ids.map(Number) : [];
   const rotate = req.body.rotate === true || req.body.rotate === 'true';
-  const sessionId = db.publishRoomGroupSession(room.id, req.apiUser.id, rotate);
+  const senderDeviceId = String(req.body.sender_device_id || '').trim().slice(0, 100);
+  const sessionId = db.publishRoomGroupSession(room.id, req.apiUser.id, senderDeviceId, rotate);
   const roomMembers = new Set(db.getRoomMembers(room.id).map(m => m.user_id));
   for (const k of keys) {
     const rid = Number(k.recipient_id);
@@ -1344,12 +1348,14 @@ router.get('/rooms/:id/session/status', requireApiAuth('read'), (req, res) => {
   const room = db.getRoom(parseInt(req.params.id, 10));
   if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
   if (!db.isRoomMember(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'Not a member.');
-  const gs = db.getRoomGroupSession(room.id, req.apiUser.id);
+  const deviceId = String(req.query.device_id || '').trim().slice(0, 100);
+  const gs = db.getRoomGroupSession(room.id, req.apiUser.id, deviceId);
   if (!gs) return responseEnvelope(res, { session_id: null, recipients: [], empty_keys_for: [] });
   responseEnvelope(res, { session_id: gs.id, recipients: db.getRoomSessionRecipients(gs.id), empty_keys_for: db.getRoomSessionEmptyKeyRecipients(gs.id) });
 });
 
-// Room-scoped prekey bundle (no mutual-follower requirement).
+// Room-scoped prekey bundle (no mutual-follower requirement). READ-ONLY: the
+// one_time_key is an unclaimed preview (?claim=1 keeps the legacy behavior).
 router.get('/rooms/:id/bundle/:username', requireApiAuth('read'), (req, res) => {
   const room = db.getRoom(parseInt(req.params.id, 10));
   if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
@@ -1357,7 +1363,8 @@ router.get('/rooms/:id/bundle/:username', requireApiAuth('read'), (req, res) => 
   const other = db.getUserByUsername(req.params.username);
   if (!other) return errorResponse(res, 404, 'Not Found', 'User not found.');
   if (!db.isRoomMember(room.id, other.id)) return errorResponse(res, 403, 'Forbidden', 'Target is not a member.');
-  const recipientDevices = db.claimAllDevicePrekeysForUser(other.id);
+  const bundlesFor = req.query.claim === '1' ? db.claimAllDevicePrekeysForUser : db.getAllDeviceBundlesForUser;
+  const recipientDevices = bundlesFor(other.id);
   const primary = recipientDevices[0] || null;
   if (!primary) return errorResponse(res, 404, 'Not Found', 'Target has no encryption keys.');
   responseEnvelope(res, {
@@ -1367,6 +1374,22 @@ router.get('/rooms/:id/bundle/:username', requireApiAuth('read'), (req, res) => 
     fallback_key: primary.fallback_key,
     one_time_key: primary.one_time_key
   });
+});
+
+// Claim one one-time prekey per listed device of a room member (session-key
+// wrapping establishes a new 1:1 session).
+router.post('/rooms/:id/claim/:username', requireApiAuth('write'), express.json(), (req, res) => {
+  const room = db.getRoom(parseInt(req.params.id, 10));
+  if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
+  if (!db.isRoomMember(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'Not a member.');
+  const other = db.getUserByUsername(req.params.username);
+  if (!other) return errorResponse(res, 404, 'Not Found', 'User not found.');
+  if (!db.isRoomMember(room.id, other.id)) return errorResponse(res, 403, 'Forbidden', 'Target is not a member.');
+  const deviceIds = Array.isArray(req.body.device_ids)
+    ? [...new Set(req.body.device_ids.map(x => String(x || '').trim()).filter(Boolean))].slice(0, 50)
+    : null;
+  const devices = deviceIds ? db.claimAllDevicePrekeysForUser(other.id, deviceIds) : [];
+  responseEnvelope(res, { devices });
 });
 
 // ======== Announcement ========
@@ -1463,7 +1486,8 @@ router.post('/conversations/prekeys', requireApiAuth('write:direct'), express.js
 
   if (backup) {
     const backupIdentity = String(req.body.backup_identity || '').trim() || null;
-    db.setOlmBackup(req.apiUser.id, backup, backupIdentity);
+    const kekSalt = String(req.body.kek_salt || '').trim().slice(0, 200) || null;
+    db.setOlmBackup(req.apiUser.id, backup, backupIdentity, kekSalt);
   }
   db.auditLog('dm_olm_keys', req.apiUser.id, 'Published Olm identity + prekeys');
   const avail = deviceId ? db.countAvailableDevicePrekeys(req.apiUser.id, deviceId) : db.countAvailablePrekeys(req.apiUser.id);
@@ -1498,7 +1522,7 @@ router.get('/conversations/history/backup', requireApiAuth('read:direct'), (req,
 // Download the password-encrypted Olm account backup (for legacy recovery). (before :username)
 router.get('/conversations/prekeys/backup', requireApiAuth('read:direct'), (req, res) => {
   const id = db.getOlmIdentity(req.apiUser.id);
-  responseEnvelope(res, { backup: id ? id.backup : null, has_identity: !!(id && id.identity_key) });
+  responseEnvelope(res, { backup: id ? id.backup : null, has_identity: !!(id && id.identity_key), salt: id ? id.kek_salt || null : null });
 });
 
 // Count of unused one-time prekeys the current user still has published. (before :username)
@@ -1555,13 +1579,18 @@ router.post('/conversations/:username/messages', requireApiAuth('write:direct'),
     return errorResponse(res, 403, 'Forbidden', 'You can only message mutual followers.');
   }
 
-  const body = String(req.body.body || '').trim().slice(0, 5000);
+  const body = String(req.body.body || '').trim();
   if (!body) return errorResponse(res, 400, 'Bad Request', 'body is required.');
+  // Reject oversize: slicing a ciphertext corrupts it (the web client allows
+  // up to 65536 — multi-device Olm envelopes are larger than the old 5000 cap).
+  if (body.length > 65536) return errorResponse(res, 400, 'Bad Request', 'body is too long.');
 
   const keyForSender = String(req.body.key_for_sender || '').trim() || null;
   const keyForRecipient = String(req.body.key_for_recipient || '').trim() || null;
   const proto = String(req.body.proto || 'rsa').trim() === 'olm' ? 'olm' : 'rsa';
-  const senderCiphertext = String(req.body.sender_ciphertext || '').trim().slice(0, 5000) || null;
+  const senderCiphertextRaw = String(req.body.sender_ciphertext || '').trim();
+  if (senderCiphertextRaw.length > 65536) return errorResponse(res, 400, 'Bad Request', 'sender_ciphertext is too long.');
+  const senderCiphertext = senderCiphertextRaw || null;
 
   if (!body.startsWith('/uploads/stickers/')) {
     if (proto !== 'olm' || !senderCiphertext) {
@@ -1638,15 +1667,17 @@ router.post('/conversations/:username/received', requireApiAuth('write:direct'),
   responseEnvelope(res, result);
 });
 
-// Fetch a recipient's Olm bundle (all active devices of recipient + sender's other devices).
+// Fetch a recipient's Olm bundle (all active devices of recipient + sender's
+// other devices). READ-ONLY: unclaimed OTK preview (?claim=1 = legacy behavior).
 router.get('/conversations/:username/bundle', requireApiAuth('read:direct'), (req, res) => {
   const other = db.getUserByUsername(req.params.username);
   if (!other) return errorResponse(res, 404, 'Not Found', 'User not found.');
   if (!db.areMutualFollowers(req.apiUser.id, other.id)) {
     return errorResponse(res, 403, 'Forbidden', 'You can only message mutual followers.');
   }
-  const recipientDevices = db.claimAllDevicePrekeysForUser(other.id);
-  const senderDevices = db.claimAllDevicePrekeysForUser(req.apiUser.id);
+  const bundlesFor = req.query.claim === '1' ? db.claimAllDevicePrekeysForUser : db.getAllDeviceBundlesForUser;
+  const recipientDevices = bundlesFor(other.id);
+  const senderDevices = bundlesFor(req.apiUser.id);
   const primaryRecipient = recipientDevices[0] || null;
 
   responseEnvelope(res, {
@@ -1655,7 +1686,32 @@ router.get('/conversations/:username/bundle', requireApiAuth('read:direct'), (re
     identity_key: primaryRecipient ? primaryRecipient.identity_key : null,
     ed25519_key: primaryRecipient ? primaryRecipient.ed25519_key : null,
     one_time_key: primaryRecipient ? primaryRecipient.one_time_key : null,
-    fallback_key: primaryRecipient ? primaryRecipient.fallback_key : null,
+     fallback_key: primaryRecipient ? primaryRecipient.fallback_key : null,
+  });
+});
+
+// Claim one one-time prekey per device — exactly once per new session.
+router.post('/conversations/:username/claim', requireApiAuth('write:direct'), express.json(), (req, res) => {
+  const other = db.getUserByUsername(req.params.username);
+  if (!other) return errorResponse(res, 404, 'Not Found', 'User not found.');
+  if (!db.areMutualFollowers(req.apiUser.id, other.id)) {
+    return errorResponse(res, 403, 'Forbidden', 'You can only message mutual followers.');
+  }
+  const cleanIds = (v) => Array.isArray(v)
+    ? [...new Set(v.map(x => String(x || '').trim()).filter(Boolean))].slice(0, 50)
+    : null;
+  const deviceIds = cleanIds(req.body.device_ids);
+  const senderDeviceIds = cleanIds(req.body.sender_device_ids);
+  const devices = deviceIds ? db.claimAllDevicePrekeysForUser(other.id, deviceIds) : [];
+  const senderDevices = senderDeviceIds ? db.claimAllDevicePrekeysForUser(req.apiUser.id, senderDeviceIds) : [];
+  const primary = devices[0] || null;
+  responseEnvelope(res, {
+    devices,
+    sender_devices: senderDevices,
+    identity_key: primary ? primary.identity_key : null,
+    ed25519_key: primary ? primary.ed25519_key : null,
+    one_time_key: primary ? primary.one_time_key : null,
+    fallback_key: primary ? primary.fallback_key : null,
   });
 });
 
@@ -1690,12 +1746,15 @@ router.get('/conversations/:username/keys', requireApiAuth('read:direct'), (req,
 
 // Edit a message
 router.patch('/messages/:id', requireApiAuth('write:direct'), (req, res) => {
-  const body = String(req.body.body || '').trim().slice(0, 5000);
+  const body = String(req.body.body || '').trim();
   if (!body) return errorResponse(res, 400, 'Bad Request', 'body is required.');
+  if (body.length > 65536) return errorResponse(res, 400, 'Bad Request', 'body is too long.');
   const keyForSender = String(req.body.key_for_sender || '').trim() || null;
   const keyForRecipient = String(req.body.key_for_recipient || '').trim() || null;
   const proto = String(req.body.proto || 'rsa').trim() === 'olm' ? 'olm' : 'rsa';
-  const senderCiphertext = String(req.body.sender_ciphertext || '').trim().slice(0, 5000) || null;
+  const senderCiphertextRaw = String(req.body.sender_ciphertext || '').trim();
+  if (senderCiphertextRaw.length > 65536) return errorResponse(res, 400, 'Bad Request', 'sender_ciphertext is too long.');
+  const senderCiphertext = senderCiphertextRaw || null;
   if (!body.startsWith('/uploads/stickers/') && (proto !== 'olm' || !senderCiphertext)) {
     return errorResponse(res, 400, 'Bad Request', 'End-to-end encryption required. All messages must be Olm-encrypted.');
   }

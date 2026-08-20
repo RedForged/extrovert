@@ -385,6 +385,10 @@ try { db.exec(`
   );
 `); } catch {}
 try { db.exec(`ALTER TABLE olm_identity ADD COLUMN backup TEXT`); } catch {}
+// Random per-account PBKDF2 salt for the password-derived backup KEK (the old
+// username salt was predictable and enabled precomputation). NULL = the backup
+// was encrypted with the legacy username-salt derivation.
+try { db.exec(`ALTER TABLE olm_identity ADD COLUMN kek_salt TEXT`); } catch {}
 // One-time prekeys (Curve25519 publics only). Claimed (used=1) on bundle fetch.
 try { db.exec(`
   CREATE TABLE IF NOT EXISTS olm_prekeys (
@@ -515,16 +519,44 @@ try { db.exec(`
 try { db.exec(`ALTER TABLE room_messages ADD COLUMN proto TEXT NOT NULL DEFAULT 'plain'`); } catch {}
 try { db.exec(`ALTER TABLE room_messages ADD COLUMN ciphertext TEXT`); } catch {}
 try { db.exec(`ALTER TABLE room_messages ADD COLUMN group_session_id TEXT`); } catch {}
-// One active Megolm session per (room, sender). Private half lives client-side.
+// Megolm sessions per (room, sender, sender device). Private half lives client-side.
+// History is kept (no UNIQUE constraint): rotation must not destroy session keys
+// that were queued for members who haven't fetched them yet — otherwise those
+// members lose the ability to decrypt everything sent under the old session.
 try { db.exec(`
   CREATE TABLE IF NOT EXISTS room_group_sessions (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     room_id    INTEGER NOT NULL REFERENCES rooms(id),
     sender_id  INTEGER NOT NULL REFERENCES users(id),
-    created_at INTEGER NOT NULL,
-    UNIQUE(room_id, sender_id)
+    device_id  TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL
   );
 `); } catch {}
+// One-time rebuild for databases created before the UNIQUE(room_id, sender_id)
+// constraint was dropped (SQLite cannot drop constraints in place).
+try {
+  const gsTbl = db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'room_group_sessions'`).get();
+  if (gsTbl && (!/device_id/.test(gsTbl.sql) || /UNIQUE/i.test(gsTbl.sql))) {
+    db.exec('PRAGMA foreign_keys = OFF');
+    db.exec(`
+      CREATE TABLE room_group_sessions_new (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        room_id    INTEGER NOT NULL REFERENCES rooms(id),
+        sender_id  INTEGER NOT NULL REFERENCES users(id),
+        device_id  TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL
+      );
+      INSERT INTO room_group_sessions_new (id, room_id, sender_id, device_id, created_at)
+        SELECT id, room_id, sender_id, '', created_at FROM room_group_sessions;
+      DROP TABLE room_group_sessions;
+      ALTER TABLE room_group_sessions_new RENAME TO room_group_sessions;
+    `);
+    db.exec('PRAGMA foreign_keys = ON');
+  }
+} catch (e) {
+  try { db.exec('PRAGMA foreign_keys = ON'); } catch {}
+}
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_room_gs_sender ON room_group_sessions(room_id, sender_id, device_id)`); } catch {}
 // Pending encrypted session keys awaiting delivery to each recipient.
 // encrypted_key is the Megolm session key wrapped in the recipient's 1:1 Olm session.
 try { db.exec(`
@@ -1065,16 +1097,21 @@ function getConversations(userId) {
   `).all(userId, userId, userId, userId, userId, userId, userId, userId, userId);
 }
 
-function getMessages(userId, otherId, limit = 100) {
-  return db.prepare(`
+// Newest N messages (older history via id cursor). Fetching the OLDEST N used to
+// hide the recent end of any conversation longer than the page size.
+function getMessages(userId, otherId, limit = 100, beforeId = null) {
+  const where = `
     SELECT m.*, u.username, u.display_name
     FROM messages m
     JOIN users u ON u.id = m.from_id
-    WHERE (m.from_id = ? AND m.to_id = ?)
-       OR (m.from_id = ? AND m.to_id = ?)
-    ORDER BY m.created_at ASC
-    LIMIT ?
-  `).all(userId, otherId, otherId, userId, limit);
+    WHERE ((m.from_id = ? AND m.to_id = ?) OR (m.from_id = ? AND m.to_id = ?))
+  `;
+  if (beforeId) {
+    return db.prepare(where + ` AND m.id < ? ORDER BY m.created_at DESC, m.id DESC LIMIT ?`)
+      .all(userId, otherId, otherId, userId, beforeId, limit).reverse();
+  }
+  return db.prepare(where + ` ORDER BY m.created_at DESC, m.id DESC LIMIT ?`)
+    .all(userId, otherId, otherId, userId, limit).reverse();
 }
 
 function countUnreadMessages(userId) {
@@ -1137,10 +1174,10 @@ function setOlmIdentity(userId, identityKey, ed25519Key, fallbackKey) {
 }
 
 function getOlmIdentity(userId) {
-  return db.prepare(`SELECT identity_key, ed25519_key, fallback_key, backup, rotated_at FROM olm_identity WHERE user_id = ?`).get(userId) || null;
+  return db.prepare(`SELECT identity_key, ed25519_key, fallback_key, backup, kek_salt, rotated_at FROM olm_identity WHERE user_id = ?`).get(userId) || null;
 }
 
-function setOlmBackup(userId, backup, backupIdentity) {
+function setOlmBackup(userId, backup, backupIdentity, kekSalt = null) {
   // UPSERT: backup-only uploads must land even before a full identity publish
   // (the identity row may not exist yet on first password unlock). identity_key
   // is NOT NULL in the schema, so an incomplete row uses empty-string stubs —
@@ -1152,11 +1189,18 @@ function setOlmBackup(userId, backup, backupIdentity) {
     // that can never match the server identity — reject it.
     return false;
   }
+  if (backup && !kekSalt && existing && existing.kek_salt) {
+    // A legacy (unsalted) upload must never clobber a salted backup: the stored
+    // salt would no longer match the stored ciphertext and recovery would break.
+    return false;
+  }
+  // Backup and salt always move together (both NULL or both set).
+  const salt = backup ? (kekSalt || null) : null;
   db.prepare(`
-    INSERT INTO olm_identity (user_id, identity_key, ed25519_key, backup, created_at, rotated_at)
-    VALUES (?, '', '', ?, ?, ?)
-    ON CONFLICT(user_id) DO UPDATE SET backup = excluded.backup
-  `).run(userId, backup || null, Date.now(), Date.now());
+    INSERT INTO olm_identity (user_id, identity_key, ed25519_key, backup, kek_salt, created_at, rotated_at)
+    VALUES (?, '', '', ?, ?, ?, ?)
+    ON CONFLICT(user_id) DO UPDATE SET backup = excluded.backup, kek_salt = excluded.kek_salt
+  `).run(userId, backup || null, salt, Date.now(), Date.now());
   return true;
 }
 
@@ -1297,34 +1341,81 @@ function claimDevicePrekey(userId, deviceId) {
   return { id: row.key_id, public_key: row.public_key };
 }
 
-function claimAllDevicePrekeysForUser(userId) {
+// Non-destructive prekey previews: the first unused key WITHOUT claiming it.
+// Bundle reads must never burn one-time prekeys — claiming happens only when a
+// sender actually establishes a session (claimAllDevicePrekeysForUser).
+function peekOlmPrekey(userId) {
+  const ident = getOlmIdentity(userId);
+  const minTs = ident && ident.rotated_at ? ident.rotated_at : 0;
+  const row = db.prepare(`SELECT key_id, public_key FROM olm_prekeys WHERE user_id = ? AND used = 0 AND created_at >= ? ORDER BY id ASC LIMIT 1`).get(userId, minTs);
+  return row ? { id: row.key_id, public_key: row.public_key } : null;
+}
+
+function peekDevicePrekey(userId, deviceId) {
+  const dev = db.prepare(`SELECT rotated_at FROM user_devices WHERE user_id = ? AND device_id = ?`).get(userId, String(deviceId));
+  const minTs = dev && dev.rotated_at ? dev.rotated_at : 0;
+  const row = db.prepare(`SELECT key_id, public_key FROM olm_device_prekeys WHERE user_id = ? AND device_id = ? AND used = 0 AND created_at >= ? ORDER BY id ASC LIMIT 1`).get(userId, String(deviceId), minTs);
+  return row ? { id: row.key_id, public_key: row.public_key } : null;
+}
+
+function deviceBundleRow(userId, dev, otk) {
+  return {
+    device_id: dev.device_id,
+    identity_key: dev.identity_key,
+    ed25519_key: dev.ed25519_key,
+    device_name: dev.device_name,
+    one_time_key: otk,
+    fallback_key: dev.fallback_key,
+  };
+}
+
+// Read-only view of every device bundle (identity + fallback + UNCLAIMED OTK preview).
+function getAllDeviceBundlesForUser(userId) {
   const devices = getUserDevices(userId);
   if (!devices.length) {
     const legacy = getOlmIdentity(userId);
     if (legacy && legacy.identity_key) {
-      const otk = claimOlmPrekey(userId);
-      return [{
+      return [deviceBundleRow(userId, {
         device_id: 'default',
         identity_key: legacy.identity_key,
         ed25519_key: legacy.ed25519_key,
         device_name: 'Default Device',
-        one_time_key: otk,
         fallback_key: legacy.fallback_key,
-      }];
+      }, peekOlmPrekey(userId))];
+    }
+    return [];
+  }
+  return devices.map(dev => deviceBundleRow(userId, dev, peekDevicePrekey(userId, dev.device_id)));
+}
+
+// Claim one one-time prekey per device — invoked ONLY when a sender establishes
+// a new session. `onlyDeviceIds` restricts the claim to specific devices
+// (null = every device, which is what burned pools on every bundle read).
+function claimAllDevicePrekeysForUser(userId, onlyDeviceIds = null) {
+  const filter = Array.isArray(onlyDeviceIds) && onlyDeviceIds.length
+    ? new Set(onlyDeviceIds.map(String))
+    : null;
+  const devices = getUserDevices(userId);
+  if (!devices.length) {
+    if (filter && !filter.has('default')) return [];
+    const legacy = getOlmIdentity(userId);
+    if (legacy && legacy.identity_key) {
+      const otk = claimOlmPrekey(userId);
+      return [deviceBundleRow(userId, {
+        device_id: 'default',
+        identity_key: legacy.identity_key,
+        ed25519_key: legacy.ed25519_key,
+        device_name: 'Default Device',
+        fallback_key: legacy.fallback_key,
+      }, otk)];
     }
     return [];
   }
   const result = [];
   for (const dev of devices) {
+    if (filter && !filter.has(dev.device_id)) continue;
     const otk = claimDevicePrekey(userId, dev.device_id);
-    result.push({
-      device_id: dev.device_id,
-      identity_key: dev.identity_key,
-      ed25519_key: dev.ed25519_key,
-      device_name: dev.device_name,
-      one_time_key: otk,
-      fallback_key: dev.fallback_key,
-    });
+    result.push(deviceBundleRow(userId, dev, otk));
   }
   return result;
 }
@@ -1591,21 +1682,46 @@ function sendRoomMessage(channelId, userId, body, proto, ciphertext, groupSessio
 }
 
 // ---------- Megolm room group sessions ----------
-// rotate=true deletes the existing (room, sender) session so a fresh id is issued.
-function publishRoomGroupSession(roomId, senderId, rotate) {
-  if (rotate) {
-    const existing = db.prepare(`SELECT id FROM room_group_sessions WHERE room_id = ? AND sender_id = ?`).get(roomId, senderId);
-    if (existing) {
-      db.prepare(`DELETE FROM room_group_session_keys WHERE session_id = ?`).run(existing.id);
-      db.prepare(`DELETE FROM room_group_sessions WHERE id = ?`).run(existing.id);
+// Sessions are keyed by (room, sender, sender device) and HISTORY IS KEPT:
+// rotating issues a fresh session id but never deletes the previous one while
+// any of its encrypted keys are still awaiting delivery — destroying them made
+// the not-yet-synced member lose every message sent under the old session.
+// Superseded sessions whose keys are fully delivered are pruned (their rows are
+// only needed for key delivery; message decryption lives client-side).
+function pruneSupersededRoomGroupSessions(roomId, senderId, deviceId) {
+  const rows = db.prepare(`SELECT id FROM room_group_sessions WHERE room_id = ? AND sender_id = ? AND device_id = ? ORDER BY id DESC`).all(roomId, senderId, String(deviceId || ''));
+  for (let i = 1; i < rows.length; i++) {
+    const pending = db.prepare(`SELECT COUNT(*) AS n FROM room_group_session_keys WHERE session_id = ? AND delivered = 0`).get(rows[i].id).n;
+    if (!pending) {
+      db.prepare(`DELETE FROM room_group_session_keys WHERE session_id = ?`).run(rows[i].id);
+      db.prepare(`DELETE FROM room_group_sessions WHERE id = ?`).run(rows[i].id);
     }
   }
-  db.prepare(`INSERT OR IGNORE INTO room_group_sessions (room_id, sender_id, created_at) VALUES (?,?,?)`).run(roomId, senderId, Date.now());
-  const row = db.prepare(`SELECT id FROM room_group_sessions WHERE room_id = ? AND sender_id = ?`).get(roomId, senderId);
-  return row.id;
 }
-function getRoomGroupSession(roomId, senderId) {
-  return db.prepare(`SELECT id FROM room_group_sessions WHERE room_id = ? AND sender_id = ?`).get(roomId, senderId) || null;
+
+function publishRoomGroupSession(roomId, senderId, deviceId, rotate) {
+  const devId = String(deviceId || '');
+  if (!rotate) {
+    const existing = getRoomGroupSession(roomId, senderId, devId);
+    if (existing) return existing.id;
+  } else {
+    pruneSupersededRoomGroupSessions(roomId, senderId, devId);
+  }
+  const res = db.prepare(`INSERT INTO room_group_sessions (room_id, sender_id, device_id, created_at) VALUES (?,?,?,?)`).run(roomId, senderId, devId, Date.now());
+  return res.lastInsertRowid;
+}
+// The newest session for (room, sender, device).
+function getRoomGroupSession(roomId, senderId, deviceId = '') {
+  return db.prepare(`SELECT id FROM room_group_sessions WHERE room_id = ? AND sender_id = ? AND device_id = ? ORDER BY id DESC LIMIT 1`).get(roomId, senderId, String(deviceId || '')) || null;
+}
+// Sending is allowed with the device's newest session, or with a superseded one
+// whose keys are still pending delivery (rotation grace period).
+function isRoomGroupSessionUsable(roomId, senderId, sessionId) {
+  const row = db.prepare(`SELECT id, device_id FROM room_group_sessions WHERE id = ? AND room_id = ? AND sender_id = ?`).get(Number(sessionId), roomId, senderId);
+  if (!row) return false;
+  const latest = getRoomGroupSession(roomId, senderId, row.device_id);
+  if (latest && latest.id === row.id) return true;
+  return db.prepare(`SELECT COUNT(*) AS n FROM room_group_session_keys WHERE session_id = ? AND delivered = 0`).get(row.id).n > 0;
 }
 // Upsert: re-sharing replaces the key and re-queues delivery.
 function saveRoomSessionKeys(sessionId, recipientId, encryptedKey) {
@@ -2166,9 +2282,9 @@ module.exports = {
   // E2EE
   setPublicKey, getPublicKey, getEncryptedPrivateKey,
   // Olm (Signal-style) E2EE
-  setOlmIdentity, getOlmIdentity, setOlmBackup, addOlmPrekeys, countAvailablePrekeys, claimOlmPrekey, requestDmRekey, dmRekeyNeeded, clearDmRekey,
+  setOlmIdentity, getOlmIdentity, setOlmBackup, addOlmPrekeys, countAvailablePrekeys, claimOlmPrekey, peekOlmPrekey, requestDmRekey, dmRekeyNeeded, clearDmRekey,
   // Multi-Device Olm E2EE & History Backup
-  registerUserDevice, getUserDevices, getUserDevice, touchUserDevice, deleteUserDevice, addDevicePrekeys, countAvailableDevicePrekeys, claimDevicePrekey, claimAllDevicePrekeysForUser, setUserHistoryBackup, getUserHistoryBackup,
+  registerUserDevice, getUserDevices, getUserDevice, touchUserDevice, deleteUserDevice, addDevicePrekeys, countAvailableDevicePrekeys, claimDevicePrekey, peekDevicePrekey, getAllDeviceBundlesForUser, claimAllDevicePrekeysForUser, setUserHistoryBackup, getUserHistoryBackup,
   // admin
   adminExists, getAllUsers, promoteUser, removeReferralBadge, banUser, unbanUser,
   // referrals
@@ -2190,7 +2306,7 @@ module.exports = {
   createRoomRole, getRoomRole, getRoomRoles, updateRoomRole, deleteRoomRole, transferFounder,
   createRoomChannel, getRoomChannel, getRoomChannels, updateRoomChannel, deleteRoomChannel,
   getRoomMessages, sendRoomMessage, deleteRoomMessage, joinDefaultRole, hasRoomPermission,
-  publishRoomGroupSession, getRoomGroupSession, saveRoomSessionKeys, ensureRoomSessionRecipient, getPendingRoomSessionKeys, markRoomSessionKeyDelivered, getRoomSessionRecipients, getRoomSessionEmptyKeyRecipients,
+  publishRoomGroupSession, getRoomGroupSession, isRoomGroupSessionUsable, pruneSupersededRoomGroupSessions, saveRoomSessionKeys, ensureRoomSessionRecipient, getPendingRoomSessionKeys, markRoomSessionKeyDelivered, getRoomSessionRecipients, getRoomSessionEmptyKeyRecipients,
   // reports
   createReport, getPendingReports, getReport, resolveReport, dismissReport,
   // security reports (private responsible-disclosure inbox)

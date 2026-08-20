@@ -43,6 +43,38 @@
   var REKEY_CHECK_MS = (NATIVE_CFG && NATIVE_CFG.rekeyCheckMs) || 15000;
   var rekeyLastCheck = {};
   var rekeyRequestedAt = {};
+  // A recipient that failed to decrypt can ask the sender to rebuild. The
+  // sender polls /rekey/needed before reusing a session and, on a hit, drops
+  // its outbound sessions so the next send is a fresh PreKey; it acks after.
+  var pendingRekeyAcks = {};
+  // Throttle rekey *requests* (recipient side) so a long burst of undecryptable
+  // messages doesn't spam the peer.
+  var REKEY_REQUEST_INTERVAL_MS = 5 * 60 * 1000;
+
+  // Bundle reads are cached briefly so encryptOlm doesn't hit the server on
+  // every send (the device list + identity are stable for minutes at a time).
+  // One-time keys are claimed separately, only when a session is established.
+  var BUNDLE_CACHE_MS = 5 * 60 * 1000;
+  var bundleCache = {};
+  var roomBundleCache = {};
+
+  // Serialize encrypt/decrypt per session object so concurrent sends can't
+  // reuse a ratchet counter (which would be AES-GCM key+nonce reuse). The lock
+  // also reloads session state from storage on every op, so in-memory copies
+  // never drift out of sync with what was persisted.
+  var sessionLocks = {};
+  function withSessionLock(key, fn) {
+    var prev = sessionLocks[key] || Promise.resolve();
+    var run = prev.then(function () { return fn(); }, function () { return fn(); });
+    sessionLocks[key] = run.then(function () {}, function () {});
+    return run;
+  }
+
+  function newSaltB64() {
+    var bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    return uint8ToB64(bytes);
+  }
 
   // Runtime state
   var olmInitPromise = null;
@@ -57,6 +89,7 @@
   // history and old sent messages become undecryptable after a reload.
   var selfInboundBaseline = null;
   var kek = null;              // transient password-derived key (recovery only)
+  var kekSalt = null;          // b64 PBKDF2 salt used to derive `kek` (v2); null = legacy username-salt
   var legacyPrivateKey = null; // RSA key for decrypting old proto='rsa' messages
 
   // ---- base64 / text ----
@@ -263,6 +296,19 @@
     return crypto.subtle.importKey('raw', e.encode(password), 'PBKDF2', false, ['deriveKey']).then(function (k) {
       return crypto.subtle.deriveKey(
         { name: 'PBKDF2', salt: e.encode(username.toLowerCase()), iterations: 600000, hash: 'SHA-256' },
+        k, { name: 'AES-GCM', length: 256 }, false, ['wrapKey', 'unwrapKey', 'encrypt', 'decrypt']
+      );
+    });
+  }
+
+  // V2 derivation: random per-account salt defeats precomputation of the
+  // username-salted key (the old salt was public and predictable).
+  function deriveKekWithSalt(password, saltB64) {
+    var e = new TextEncoder();
+    var salt = b64ToUint8(saltB64);
+    return crypto.subtle.importKey('raw', e.encode(password), 'PBKDF2', false, ['deriveKey']).then(function (k) {
+      return crypto.subtle.deriveKey(
+        { name: 'PBKDF2', salt: salt, iterations: 600000, hash: 'SHA-256' },
         k, { name: 'AES-GCM', length: 256 }, false, ['wrapKey', 'unwrapKey', 'encrypt', 'decrypt']
       );
     });
@@ -713,7 +759,7 @@
       }
       return csrfFetch(PREKEYS_URL, {
         method: 'POST',
-        body: JSON.stringify({ backup: payload, backup_identity: myIdKeys ? myIdKeys.curve25519 : undefined })
+        body: JSON.stringify({ backup: payload, backup_identity: myIdKeys ? myIdKeys.curve25519 : undefined, kek_salt: kekSalt || undefined })
       }).then(function (r) { return r.json(); });
     });
   }
@@ -818,97 +864,209 @@
     });
   }
 
+  // Bundle read (cached, NON-destructive): identity + fallback + unclaimed OTK
+  // preview. Claiming happens only via claimPrekeys(), once per new session.
   function fetchBundle(otherUsername) {
-    return e2eeFetch('/chats/' + encodeURIComponent(otherUsername) + '/bundle').then(function (r) { return r.json(); });
+    var c = bundleCache[otherUsername];
+    if (c && Date.now() - c.ts < BUNDLE_CACHE_MS) return Promise.resolve(c);
+    return e2eeFetch('/chats/' + encodeURIComponent(otherUsername) + '/bundle').then(function (r) { return r.json(); }).then(function (b) {
+      if (b && (b.devices || b.identity_key)) { b.ts = Date.now(); bundleCache[otherUsername] = b; }
+      return b;
+    });
   }
 
-  var OUTBOUND_SESSION_CHECK_MS = (NATIVE_CFG && NATIVE_CFG.sessionCheckMs) || 5 * 60 * 1000;
-  var sessionIdentLastCheck = {};
+  function claimPrekeys(otherUsername, deviceIds, senderDeviceIds) {
+    var body = {};
+    if (deviceIds && deviceIds.length) body.device_ids = deviceIds;
+    if (senderDeviceIds && senderDeviceIds.length) body.sender_device_ids = senderDeviceIds;
+    return csrfFetch('/chats/' + encodeURIComponent(otherUsername) + '/claim', {
+      method: 'POST',
+      body: JSON.stringify(body)
+    }).then(function (r) { return r.json(); });
+  }
 
-  function getOrCreateDeviceOutboundSession(otherIdStr, deviceId, identityKey, fallbackKey, otk) {
-    var fullKey = otherIdStr + ':' + deviceId;
-    var freshOtkId = otk ? (typeof otk === 'object' ? otk.id || '' : '') : '';
-    // Session healing: rotate when the peer publishes a different fresh
-    // one-time key (re-publish on login = implicit session reset) or when the
-    // peer's IDENTITY changed (explicit key reset). Without this, a desynced
-    // ratchet is reused forever and the pair can never decrypt again.
-    return loadOutboundSession(fullKey).then(function (existing) {
-      if (existing) {
-        var checks = [];
-        if (freshOtkId) {
-          checks.push(idbGet(STORE_OLM, sessionOtkKey(fullKey)).then(function (usedOtk) {
-            return !!(usedOtk && String(usedOtk) !== String(freshOtkId));
-          }));
-        }
-        if (identityKey) {
-          checks.push(idbGet(STORE_OLM, sessionIdentKey(fullKey)).then(function (storedIdent) {
-            return !!(storedIdent && String(storedIdent) !== String(identityKey));
-          }));
-        }
-        if (!checks.length) return existing;
-        return Promise.all(checks).then(function (flags) {
-          if (flags.some(Boolean)) {
-            delete outboundSessions[fullKey];
-            delete inboundSessions[fullKey];
-            delete sessions[fullKey];
-            return Promise.all([
-              idbDelete(STORE_OLM, sessionOutKey(fullKey)),
-              idbDelete(STORE_OLM, sessionKey(fullKey)),
-              idbDelete(STORE_OLM, sessionBaseKey(fullKey)),
-              idbDelete(STORE_OLM, sessionInKey(fullKey)),
-              idbDelete(STORE_OLM, sessionInBaseKey(fullKey))
-            ]).then(function () { return null; });
-          }
-          return existing;
+  function findDevice(list, devId) {
+    if (!list) return null;
+    for (var i = 0; i < list.length; i++) {
+      if (String(list[i].device_id) === String(devId)) return list[i];
+    }
+    return null;
+  }
+
+  // Freshly load a session pickle from storage (never trust a long-lived
+  // in-memory copy across async boundaries — two concurrent ops would both
+  // advance the same cached object). Outbound loads skip ambiguous slots that
+  // could hold an inbound pickle: encrypting with the wrong chain sends garbage.
+  function loadOutboundSessionFresh(fullKey) {
+    return idbGet(STORE_OLM, sessionOutKey(fullKey)).then(function (enc) {
+      if (enc) return decryptWithKd(enc).then(unpickleSession);
+      // Legacy single-target session for ':default' senders.
+      if (String(fullKey).indexOf(':') !== -1) {
+        var peer = String(fullKey).split(':')[0];
+        return idbGet(STORE_OLM, sessionOutKey(peer)).then(function (enc2) {
+          if (!enc2) return null;
+          return decryptWithKd(enc2).then(unpickleSession);
         });
+      }
+      return null;
+    });
+  }
+  function loadInboundSessionFresh(fullKey) {
+    return idbGet(STORE_OLM, sessionInKey(fullKey)).then(function (enc) {
+      if (enc) return decryptWithKd(enc).then(unpickleSession);
+      // Ambiguous scoped slot (inbound or outbound pickle — last writer wins):
+      // a wrong-chain decrypt simply fails and the ladder moves on.
+      return idbGet(STORE_OLM, sessionKey(fullKey)).then(function (enc2) {
+        if (enc2) return decryptWithKd(enc2).then(unpickleSession);
+        if (String(fullKey).indexOf(':') !== -1) {
+          var peer = String(fullKey).split(':')[0];
+          return idbGet(STORE_OLM, sessionInKey(peer)).then(function (enc3) {
+            if (!enc3) return null;
+            return decryptWithKd(enc3).then(unpickleSession);
+          });
+        }
+        return null;
+      });
+    });
+  }
+  function unpickleSession(pickle) {
+    if (!pickle) return null;
+    var s = new Olm.Session();
+    s.unpickle(PICKLE_KEY, pickle);
+    return s;
+  }
+  function safeUnpickle(pickle) {
+    try {
+      var s = new Olm.Session();
+      s.unpickle(PICKLE_KEY, pickle);
+      return s;
+    } catch (_) { return null; }
+  }
+
+  // Drop ONLY the outbound session for a device (and the OTK/identity markers).
+  // Inbound sessions and baselines are NEVER touched on an outbound rebuild —
+  // a peer's other device/tab may still send on the old chain, and deleting the
+  // inbound side is what made conversations permanently undecryptable.
+  function dropOutboundSession(fullKey) {
+    delete outboundSessions[fullKey];
+    delete sessions[fullKey];
+    return Promise.all([
+      idbDelete(STORE_OLM, sessionOutKey(fullKey)),
+      idbDelete(STORE_OLM, sessionOtkKey(fullKey)),
+    ]);
+  }
+
+  // Establish or reuse an outbound session for one (peer, device). Rotates ONLY
+  // on an explicit identity-key change (a real key reset), never because the
+  // unclaimed OTK preview differs — every bundle read used to return a
+  // different OTK, which made this fire on every send and churned the ratchet.
+  // `claimForDevice(devId)` returns a claimed bundle for that one device.
+  function getOrEstablishOutboundSession(fullKey, dev, claimForDevice) {
+    return loadOutboundSessionFresh(fullKey).then(function (existing) {
+      if (existing) {
+        if (dev && dev.identity_key) {
+          return idbGet(STORE_OLM, sessionIdentKey(fullKey)).then(function (storedIdent) {
+            if (storedIdent && String(storedIdent) !== String(dev.identity_key)) {
+              return dropOutboundSession(fullKey).then(function () { return null; });
+            }
+            return existing;
+          });
+        }
+        return existing;
       }
       return null;
     }).then(function (existing) {
       if (existing) return existing;
-      var theirOtk = otk ? (typeof otk === 'object' ? otk.public_key : otk) : fallbackKey;
-      if (!identityKey || !theirOtk) return null;
-      var s = new Olm.Session();
-      s.create_outbound(account, identityKey, theirOtk);
-      return saveSessionBaseline(fullKey, s).then(function () {
-        return saveOutboundSession(fullKey, s);
-      }).then(function () {
-        if (freshOtkId) {
-          return idbSet(STORE_OLM, sessionOtkKey(fullKey), freshOtkId);
+      return claimForDevice(dev.device_id).catch(function () { return null; }).then(function (claimed) {
+        var idKey = claimed && claimed.identity_key ? claimed.identity_key : (dev ? dev.identity_key : null);
+        var otk = claimed && claimed.one_time_key ? claimed.one_time_key.public_key : (claimed ? claimed.fallback_key : (dev ? dev.fallback_key : null));
+        if (!idKey || !otk) return null;
+        var s = new Olm.Session();
+        s.create_outbound(account, idKey, otk);
+        return saveSessionBaseline(fullKey, s).then(function () {
+          return saveOutboundSession(fullKey, s);
+        }).then(function () {
+          return idbSet(STORE_OLM, sessionIdentKey(fullKey), idKey);
+        }).then(function () { return s; });
+      });
+    });
+  }
+
+  // --- Inbound baseline history (per session) ---
+  // The receiving chain advances as messages decrypt, so a reloaded live
+  // session can't replay older messages. We keep a small list of creation-state
+  // baselines per (peer, device) instead of one overwritable slot — rotating
+  // every message used to overwrite the only baseline that could replay history.
+  function inboundBaseListKey(fullKey) { return 'sessionInBaseList:' + activeUserId() + ':' + fullKey; }
+
+  function addInboundBaseline(fullKey, session) {
+    var pickle = session.pickle(PICKLE_KEY);
+    // Keep the legacy single-slot writes for older code paths + fallback.
+    inboundBaselinePickles[fullKey] = pickle;
+    sessionBaselinePickles[fullKey] = pickle;
+    return Promise.all([
+      encryptWithKd(pickle).then(function (enc) {
+        return Promise.all([
+          idbSet(STORE_OLM, sessionInBaseKey(fullKey), enc),
+          idbSet(STORE_OLM, sessionBaseKey(fullKey), enc),
+        ]);
+      }),
+      idbGet(STORE_OLM, inboundBaseListKey(fullKey)).then(function (enc) {
+        var arr = [];
+        if (enc) {
+          return decryptWithKd(enc).then(function (json) {
+            try { arr = JSON.parse(json); } catch (_) { arr = []; }
+            return Array.isArray(arr) ? arr : [];
+          }).catch(function () { return []; });
         }
-      }).then(function () {
-        return idbSet(STORE_OLM, sessionIdentKey(fullKey), identityKey);
-      }).then(function () { return s; });
-    });
+        return arr;
+      }).then(function (arr) {
+        if (arr.length && arr[0] === pickle) return arr; // dedupe
+        arr.unshift(pickle);
+        arr = arr.slice(0, 10);
+        return encryptWithKd(JSON.stringify(arr)).then(function (enc) {
+          return idbSet(STORE_OLM, inboundBaseListKey(fullKey), enc);
+        }).then(function () { return arr; });
+      })
+    ]).then(function () { return session; });
   }
 
-  // Legacy single-target session getter
-  function getOrCreateOutboundSession(otherId, otherIdStr, otherUsername) {
-    if (sessions[otherIdStr]) {
-      return Promise.resolve(sessions[otherIdStr]);
-    }
-    return loadOutboundSession(otherIdStr).then(function (existing) {
-      if (existing) return existing;
-      return createOutboundSession(otherId, otherIdStr, otherUsername);
-    });
-  }
-
-  function createOutboundSession(otherId, otherIdStr, otherUsername) {
-    return fetchBundle(otherUsername).then(function (bundle) {
-      var recipientDevices = bundle.devices || [];
-      var dev = recipientDevices[0] || null;
-      var idKey = dev ? dev.identity_key : bundle.identity_key;
-      var otk = dev ? (dev.one_time_key ? dev.one_time_key.public_key : dev.fallback_key) : (bundle.one_time_key ? bundle.one_time_key.public_key : bundle.fallback_key);
-      if (!idKey || !otk) {
-        throw new Error('Recipient has no encryption keys yet.');
+  function loadInboundBaselines(fullKey) {
+    return idbGet(STORE_OLM, inboundBaseListKey(fullKey)).then(function (enc) {
+      if (enc) {
+        return decryptWithKd(enc).then(function (json) {
+          var arr;
+          try { arr = JSON.parse(json); } catch (_) { arr = []; }
+          if (!Array.isArray(arr)) arr = [];
+          var out = [];
+          for (var i = 0; i < arr.length; i++) {
+            var s = safeUnpickle(arr[i]);
+            if (s) out.push(s);
+          }
+          return out;
+        }).catch(function () { return []; });
       }
-      var s = new Olm.Session();
-      s.create_outbound(account, idKey, otk);
-      return saveSessionBaseline(otherIdStr, s).then(function () {
-        return saveOutboundSession(otherIdStr, s);
-      }).then(function () {
-        return idbSet(STORE_OLM, sessionIdentKey(otherIdStr), idKey);
-      }).then(function () { return s; });
+      // No list yet — fall back to the legacy single-slot baseline.
+      return loadInboundSessionBaseline(fullKey).then(function (s) {
+        return s ? [s] : loadSessionBaseline(fullKey).then(function (s2) { return s2 ? [s2] : []; });
+      });
     });
+  }
+
+  // Ask the peer to rebuild the Olm session. Throttled so a long failure burst
+  // doesn't flood. Always best-effort: a network error must not mask the real
+  // decrypt failure that triggered it.
+  function requestRekeyFrom(otherIdStr) {
+    var uid = String(otherIdStr);
+    var now = Date.now();
+    if (rekeyRequestedAt[uid] && now - rekeyRequestedAt[uid] < REKEY_REQUEST_INTERVAL_MS) return Promise.resolve();
+    rekeyRequestedAt[uid] = now;
+    try {
+      return csrfFetch(REKEY_REQUEST_URL, {
+        method: 'POST',
+        body: JSON.stringify({ other_id: Number(uid) })
+      }).catch(function () {});
+    } catch (_) { return Promise.resolve(); }
   }
 
   // Self-session: lets the sender encrypt/decrypt their own sent copies.
@@ -934,10 +1092,71 @@
   }
 
   // Multi-device fan-out DM encryption
+  // Sender-side rekey heal: before reusing an outbound session, check whether the
+  // peer asked us to rebuild. A hit drops our outbound sessions to every device
+  // of the peer (keeping inbound state) so the next send is a fresh PreKey.
+  function maybeRekeyBeforeSend(otherIdStr, otherUsername) {
+    var now = Date.now();
+    if (rekeyLastCheck[otherIdStr] && now - rekeyLastCheck[otherIdStr] < REKEY_CHECK_MS) {
+      return Promise.resolve(false);
+    }
+    rekeyLastCheck[otherIdStr] = now;
+    return csrfFetch(REKEY_NEEDED_URL + '?requester_id=' + encodeURIComponent(otherIdStr))
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d || !d.needed) return false;
+        return fetchBundle(otherUsername).then(function (bundle) {
+          var devs = bundle.devices || [];
+          return Promise.all(devs.map(function (dev) {
+            return dropOutboundSession(otherIdStr + ':' + dev.device_id);
+          })).then(function () {
+            pendingRekeyAcks[otherIdStr] = true;
+            return true;
+          });
+        });
+      }).catch(function () { return false; });
+  }
+
+  function maybeAckRekey(otherIdStr) {
+    if (!pendingRekeyAcks[otherIdStr]) return Promise.resolve();
+    delete pendingRekeyAcks[otherIdStr];
+    return csrfFetch(REKEY_ACK_URL, {
+      method: 'POST',
+      body: JSON.stringify({ requester_id: Number(otherIdStr) })
+    }).catch(function () {});
+  }
+
+  function encryptForDevice(ownerIdStr, otherUsername, dev, plaintext, sink, isSenderDevice) {
+    var fullKey = ownerIdStr + ':' + dev.device_id;
+    return withSessionLock('sess:' + fullKey, function () {
+      return getOrEstablishOutboundSession(fullKey, dev, function (devId) {
+        var body = isSenderDevice
+          ? { sender_device_ids: [devId] }
+          : { device_ids: [devId] };
+        return claimPrekeys(otherUsername, body.device_ids, body.sender_device_ids).then(function (d) {
+          return findDevice(isSenderDevice ? d.sender_devices : d.devices, devId);
+        });
+      }).then(function (sess) {
+        if (!sess) return;
+        var enc = sess.encrypt(plaintext);
+        sink[dev.device_id] = { t: enc.type, b: enc.body };
+        return saveOutboundSession(fullKey, sess);
+      });
+    }).catch(function (err) {
+      console.warn('e2ee: error encrypting for device', dev.device_id, err);
+    });
+  }
+
+  // Multi-device fan-out DM encryption. The bundle is read once (cached,
+  // non-destructive); sessions are reused; one-time keys are claimed only when a
+  // device has no session yet. Self-session is locked separately so two
+  // concurrent sends can't reuse its ratchet counter.
   function encryptOlm(plaintext, otherId, otherIdStr, otherUsername) {
     return getOrCreateDeviceId().then(function (myDevId) {
-      return fetchBundle(otherUsername).then(function (bundle) {
-        var recipientDevices = bundle.devices || [];
+      return maybeRekeyBeforeSend(otherIdStr, otherUsername).then(function () {
+        return fetchBundle(otherUsername);
+      }).then(function (bundle) {
+        var recipientDevices = (bundle.devices || []).slice();
         var senderDevices = bundle.sender_devices || [];
         if (!recipientDevices.length && bundle.identity_key) {
           recipientDevices = [{
@@ -953,44 +1172,20 @@
         }
 
         var deviceCiphertexts = {};
-        var ops = [];
-
-        // Encrypt for each active recipient device
-        recipientDevices.forEach(function (dev) {
-          var p = getOrCreateDeviceOutboundSession(
-            otherIdStr, dev.device_id, dev.identity_key, dev.fallback_key, dev.one_time_key
-          ).then(function (sess) {
-            if (!sess) return;
-            var enc = sess.encrypt(plaintext);
-            deviceCiphertexts[dev.device_id] = { t: enc.type, b: enc.body };
-            return saveOutboundSession(otherIdStr + ':' + dev.device_id, sess);
-          }).catch(function (err) {
-            console.warn('e2ee: error encrypting for recipient device', dev.device_id, err);
-          });
-          ops.push(p);
+        var ops = recipientDevices.map(function (dev) {
+          return encryptForDevice(otherIdStr, otherUsername, dev, plaintext, deviceCiphertexts, false);
         });
-
-        // Encrypt for sender's other devices
         senderDevices.forEach(function (dev) {
           if (dev.device_id === myDevId) return;
-          var p = getOrCreateDeviceOutboundSession(
-            activeUserId(), dev.device_id, dev.identity_key, dev.fallback_key, dev.one_time_key
-          ).then(function (sess) {
-            if (!sess) return;
-            var enc = sess.encrypt(plaintext);
-            deviceCiphertexts[dev.device_id] = { t: enc.type, b: enc.body };
-            return saveOutboundSession(activeUserId() + ':' + dev.device_id, sess);
-          }).catch(function (err) {
-            console.warn('e2ee: error encrypting for sender device', dev.device_id, err);
-          });
-          ops.push(p);
+          ops.push(encryptForDevice(activeUserId(), otherUsername, dev, plaintext, deviceCiphertexts, true));
         });
 
-        // Self-session encryption for local history and backwards compatibility
-        var selfOp = ensureSelfSessions().then(function () {
-          var selfEnc = selfOutbound.encrypt(plaintext);
-          return saveSelfSessions().then(function () {
-            return { t: selfEnc.type, b: selfEnc.body };
+        var selfOp = withSessionLock('self', function () {
+          return ensureSelfSessions().then(function () {
+            var selfEnc = selfOutbound.encrypt(plaintext);
+            return saveSelfSessions().then(function () {
+              return { t: selfEnc.type, b: selfEnc.body };
+            });
           });
         });
 
@@ -998,7 +1193,6 @@
           var selfEncRes = results[1];
           var primaryKey = (recipientDevices[0] && recipientDevices[0].device_id) || 'default';
           var primaryCipher = deviceCiphertexts[primaryKey] || { t: 1, b: '' };
-
           var envelope = {
             v: 2,
             sender_device_id: myDevId,
@@ -1007,210 +1201,170 @@
             b: primaryCipher.b,
           };
           scheduleHistorySync();
-          return {
-            recipientCipher: JSON.stringify(envelope),
-            senderCipher: JSON.stringify(selfEncRes),
-          };
+          return maybeAckRekey(otherIdStr).then(function () {
+            return {
+              recipientCipher: JSON.stringify(envelope),
+              senderCipher: JSON.stringify(selfEncRes),
+            };
+          });
         });
       });
     });
   }
 
   // Multi-device DM Decryption
+  // Own-message decrypt: try the self-session only. A previous-session message
+  // is a real failure state, NOT a fake "plaintext" string persisted as a real
+  // message. Run under the self-session lock so it can't race encryptOlm.
   function decryptSelfFallback(msg) {
     var rawSelf = msg.sender_ciphertext || msg.body;
-    if (!rawSelf) return Promise.resolve('');
+    if (!rawSelf) return Promise.reject(new Error('no self ciphertext'));
+    var env2;
     try {
-      var env2 = typeof rawSelf === 'string' ? JSON.parse(rawSelf) : rawSelf;
-      if (!env2 || env2.t === undefined || !env2.b) {
-        return Promise.resolve(typeof msg.body === 'string' ? msg.body : '');
-      }
+      env2 = typeof rawSelf === 'string' ? JSON.parse(rawSelf) : rawSelf;
+    } catch (_) { return Promise.reject(new Error('malformed self ciphertext')); }
+    if (!env2 || env2.t === undefined || !env2.b) {
+      return Promise.reject(new Error('malformed self ciphertext'));
+    }
+    return withSessionLock('self', function () {
       return loadSelfSessions().then(function () {
-        if (!selfInbound) return typeof msg.body === 'string' ? msg.body : '';
+        if (!selfInbound) throw new Error('no self session');
+        var livePickle = selfInbound.pickle(PICKLE_KEY);
         try {
-          var p = selfInbound.decrypt(env2.t, env2.b);
-          return p || '';
+          return selfInbound.decrypt(env2.t, env2.b);
         } catch (err) {
           if (selfInboundBaseline) {
             resetSelfInboundBaseline();
-            try {
-              var p2 = selfInbound.decrypt(env2.t, env2.b);
-              return p2 || '';
-            } catch (_) {}
+            try { return selfInbound.decrypt(env2.t, env2.b); } catch (_) {}
           }
-          return '[Unable to decrypt — encrypted for previous session]';
+          // Restore last-good state so the failed attempt didn't advance it.
+          var restored = safeUnpickle(livePickle);
+          if (restored) selfInbound = restored;
+          throw new Error('Unable to decrypt — encrypted for previous session');
         }
       });
-    } catch (_) {
-      return Promise.resolve(typeof msg.body === 'string' ? msg.body : '');
-    }
+    });
+  }
+
+  function pickCipher(e, myDevId) {
+    if (!e || e.v !== 2 || !e.devices) return e;
+    if (e.devices[myDevId]) return e.devices[myDevId];
+    if (e.t !== undefined && e.b) return { t: e.t, b: e.b };
+    var ks = Object.keys(e.devices);
+    if (ks.length) return e.devices[ks[0]];
+    return e;
+  }
+
+  // The decrypt ladder, run under a per-(peer,device) lock so parallel decrypts
+  // can't both advance the same session. Every session is loaded fresh from
+  // storage and snapshotted before use; a failed decrypt restores the snapshot
+  // so the in-memory copy never drifts into an inconsistent state.
+  function decryptCipherLadder(cipher, fullKey, theirCurve, opts) {
+    opts = opts || {};
+    return loadInboundSessionFresh(fullKey).then(function (inLive) {
+      if (inLive) {
+        var livePickle = inLive.pickle(PICKLE_KEY);
+        try {
+          var plain = inLive.decrypt(cipher.t, cipher.b);
+          scheduleHistorySync();
+          return saveInboundSession(fullKey, inLive).then(function () { return plain; });
+        } catch (_) {
+          inboundSessions[fullKey] = safeUnpickle(livePickle);
+        }
+      }
+      return loadInboundBaselines(fullKey).then(function (bases) {
+        for (var i = 0; i < bases.length; i++) {
+          try {
+            var plain2 = bases[i].decrypt(cipher.t, cipher.b);
+            scheduleHistorySync();
+            return inLive
+              ? Promise.resolve(plain2)
+              : saveInboundSession(fullKey, bases[i]).then(function () { return plain2; });
+          } catch (_) {}
+        }
+        return loadOutboundSessionFresh(fullKey).then(function (outLive) {
+          if (outLive) {
+            var outPickle = outLive.pickle(PICKLE_KEY);
+            try {
+              var pOut = outLive.decrypt(cipher.t, cipher.b);
+              scheduleHistorySync();
+              return saveOutboundSession(fullKey, outLive).then(function () { return pOut; });
+            } catch (_) {
+              outboundSessions[fullKey] = safeUnpickle(outPickle);
+            }
+          }
+          if (cipher.t === 0 || cipher.t === 2) {
+            var ns = new Olm.Session();
+            try {
+              ns.create_inbound(account, cipher.b);
+              account.remove_one_time_keys(ns);
+              var identWrite = theirCurve
+                ? idbSet(STORE_OLM, sessionIdentKey(fullKey), theirCurve)
+                : Promise.resolve();
+              return identWrite.then(function () {
+                return addInboundBaseline(fullKey, ns);
+              }).then(function () {
+                return ns.decrypt(cipher.t, cipher.b);
+              }).then(function (plain3) {
+                scheduleHistorySync();
+                return saveInboundSession(fullKey, ns).then(function () { return plain3; });
+              }).then(function (plain3) {
+                return saveAccount().then(function () { return plain3; });
+              });
+            } catch (createErr) {
+              if (!opts.noRekey) requestRekeyFrom(String(fullKey).split(':')[0]);
+              throw createErr;
+            }
+          }
+          if (!opts.noRekey) requestRekeyFrom(String(fullKey).split(':')[0]);
+          throw new Error('No session for sender and message could not be decrypted.');
+        });
+      });
+    });
+  }
+
+  function decryptOlmEnvelope(e, otherIdStr, theirCurve) {
+    return getOrCreateDeviceId().then(function (myDevId) {
+      var cipher = e;
+      var senderDeviceId = 'default';
+      if (e && e.v === 2 && e.devices) {
+        senderDeviceId = e.sender_device_id || 'default';
+        cipher = pickCipher(e, myDevId);
+      }
+      if (!cipher || cipher.b === undefined || cipher.t === undefined) {
+        return Promise.reject(new Error('empty ciphertext'));
+      }
+      var fullKey = otherIdStr + ':' + senderDeviceId;
+      return withSessionLock('sess:' + fullKey, function () {
+        return decryptCipherLadder(cipher, fullKey, theirCurve, {});
+      });
+    });
   }
 
   function decryptOlm(msg, isOwn, otherIdStr, theirCurve25519) {
     if (isOwn) {
       return getOrCreateDeviceId().then(function (myDevId) {
-        var raw = msg.body;
-        if (raw) {
-          try {
-            var env = typeof raw === 'string' ? JSON.parse(raw) : raw;
-            if (env && env.v === 2 && env.devices && env.devices[myDevId]) {
-              var targetCipher = env.devices[myDevId];
-              var senderDevId = env.sender_device_id || 'default';
-              var devKey = activeUserId() + ':' + senderDevId;
-
-              // 1. Try Inbound Session from sender device
-              return loadInboundSession(devKey).then(function (inLive) {
-                if (!inLive) return loadInboundSession(activeUserId());
-                return inLive;
-              }).then(function (inLive) {
-                if (inLive) {
-                  try {
-                    var p = inLive.decrypt(targetCipher.t, targetCipher.b);
-                    if (p) {
-                      return saveInboundSession(devKey, inLive).then(function () { return p; });
-                    }
-                  } catch (_) {}
-                }
-                return loadInboundSessionBaseline(devKey).then(function (inBase) {
-                  if (inBase) {
-                    try {
-                      var pBase = inBase.decrypt(targetCipher.t, targetCipher.b);
-                      if (pBase) return pBase;
-                    } catch (_) {}
-                  }
-                  // 2. Try Outbound Session
-                  return loadOutboundSession(devKey).then(function (outLive) {
-                    if (outLive) {
-                      try {
-                        var pOut = outLive.decrypt(targetCipher.t, targetCipher.b);
-                        if (pOut) {
-                          return saveOutboundSession(devKey, outLive).then(function () { return pOut; });
-                        }
-                      } catch (_) {}
-                    }
-                    if (targetCipher.t === 0 || targetCipher.t === 2) {
-                      var s = new Olm.Session();
-                      try {
-                        s.create_inbound(account, targetCipher.b);
-                        account.remove_one_time_keys(s);
-                        return saveInboundSessionBaseline(devKey, s).then(function () {
-                          var pNew = s.decrypt(targetCipher.t, targetCipher.b);
-                          return saveInboundSession(devKey, s).then(function () { return saveAccount(); }).then(function () { return pNew; });
-                        });
-                      } catch (_) {}
-                    }
-                    return decryptSelfFallback(msg);
-                  });
-                });
-              });
-            }
-          } catch (_) {}
+        var env = null;
+        try { env = typeof msg.body === 'string' ? JSON.parse(msg.body) : msg.body; } catch (_) {}
+        if (env && env.v === 2 && env.devices && env.devices[myDevId]) {
+          var senderDevId = env.sender_device_id || 'default';
+          var fullKey = activeUserId() + ':' + senderDevId;
+          var cipher = env.devices[myDevId];
+          return withSessionLock('sess:' + fullKey, function () {
+            return decryptCipherLadder(cipher, fullKey, null, { noRekey: true });
+          }).catch(function () { return decryptSelfFallback(msg); });
         }
         return decryptSelfFallback(msg);
       });
     }
 
-    return getOrCreateDeviceId().then(function (myDevId) {
-      var e = typeof msg.body === 'string' ? JSON.parse(msg.body) : msg.body;
-      var cipherToDecrypt = e;
-      var senderDeviceId = 'default';
-
-      if (e && e.v === 2 && e.devices) {
-        senderDeviceId = e.sender_device_id || 'default';
-        if (e.devices[myDevId]) {
-          cipherToDecrypt = e.devices[myDevId];
-        } else if (e.t !== undefined && e.b) {
-          cipherToDecrypt = { t: e.t, b: e.b };
-        } else {
-          var devKeys = Object.keys(e.devices);
-          if (devKeys.length) cipherToDecrypt = e.devices[devKeys[0]];
-        }
-      }
-
-      var sessionKeyToUse = otherIdStr + ':' + senderDeviceId;
-
-      // 1. Try Inbound Session
-      return loadInboundSession(sessionKeyToUse).then(function (inLive) {
-        if (!inLive) return loadInboundSession(otherIdStr);
-        return inLive;
-      }).then(function (inLive) {
-        if (inLive) {
-          var livePickle = inLive.pickle(PICKLE_KEY);
-          try {
-            var plain = inLive.decrypt(cipherToDecrypt.t, cipherToDecrypt.b);
-            scheduleHistorySync();
-            return saveInboundSession(sessionKeyToUse, inLive).then(function () { return plain; });
-          } catch (_) {
-            try {
-              var restored = new Olm.Session();
-              restored.unpickle(PICKLE_KEY, livePickle);
-              inboundSessions[sessionKeyToUse] = restored;
-            } catch (_) {}
-          }
-        }
-        // 2. Try Inbound Baseline
-        return loadInboundSessionBaseline(sessionKeyToUse).then(function (base) {
-          if (!base) return loadInboundSessionBaseline(otherIdStr);
-          return base;
-        }).then(function (base) {
-          if (base) {
-            try {
-              var plain2 = base.decrypt(cipherToDecrypt.t, cipherToDecrypt.b);
-              scheduleHistorySync();
-              return (inLive
-                ? Promise.resolve(plain2)
-                : saveInboundSession(sessionKeyToUse, base).then(function () { return plain2; })
-              );
-            } catch (_) {}
-          }
-          // 3. Try Outbound Session
-          return loadOutboundSession(sessionKeyToUse).then(function (outLive) {
-            if (outLive) {
-              try {
-                var pOut2 = outLive.decrypt(cipherToDecrypt.t, cipherToDecrypt.b);
-                scheduleHistorySync();
-                return saveOutboundSession(sessionKeyToUse, outLive).then(function () { return pOut2; });
-              } catch (_) {}
-            }
-            if (cipherToDecrypt.t === 0 || cipherToDecrypt.t === 2) {
-              var ns = new Olm.Session();
-              try {
-                ns.create_inbound(account, cipherToDecrypt.b);
-                account.remove_one_time_keys(ns);
-                var identWrite = theirCurve25519
-                  ? idbSet(STORE_OLM, sessionIdentKey(sessionKeyToUse), theirCurve25519)
-                  : Promise.resolve();
-                return identWrite.then(function () {
-                  return saveInboundSessionBaseline(sessionKeyToUse, ns);
-                }).then(function () {
-                  return ns.decrypt(cipherToDecrypt.t, cipherToDecrypt.b);
-                }).then(function (plain3) {
-                  scheduleHistorySync();
-                  return saveInboundSession(sessionKeyToUse, ns).then(function () { return plain3; });
-                }).then(function (plain3) {
-                  return saveAccount().then(function () { return plain3; });
-                });
-              } catch (createErr) {
-                if (base) {
-                  try {
-                    var pBase = base.decrypt(cipherToDecrypt.t, cipherToDecrypt.b);
-                    scheduleHistorySync();
-                    return (inLive
-                      ? Promise.resolve(pBase)
-                      : saveInboundSession(sessionKeyToUse, base).then(function () { return pBase; })
-                    );
-                  } catch (_) {}
-                }
-                requestRekeyFrom(otherIdStr);
-                throw createErr;
-              }
-            }
-            requestRekeyFrom(otherIdStr);
-            throw new Error('No session for sender and message could not be decrypted.');
-          });
-        });
-      });
-    });
+    var e;
+    try {
+      e = typeof msg.body === 'string' ? JSON.parse(msg.body) : msg.body;
+    } catch (_) {
+      return Promise.reject(new Error('malformed olm envelope'));
+    }
+    return decryptOlmEnvelope(e, otherIdStr, theirCurve25519);
   }
 
   // ---- Legacy RSA decrypt (old proto='rsa' messages only) ----
@@ -1282,11 +1436,34 @@
     interceptAuthForm('form[action^="/register"]');
   }
   function storeKek(password, username) {
-    return deriveKek(password, username).then(function (k) {
-      return crypto.subtle.exportKey('jwk', k);
-    }).then(function (jwk) {
-      sessionStorage.setItem(KEK_SESSION_KEY, btoa(JSON.stringify(jwk)));
-    }).catch(function () {});
+    return e2eeFetch('/chats/kek-salt?username=' + encodeURIComponent(username))
+      .then(function (r) { return r.json(); })
+      .catch(function () { return null; })
+      .then(function (d) {
+        var salt = d && d.salt;
+        var legacy = !!(d && d.legacy);
+        var fetched = !!d;
+        var deriveP, chosenSalt = null;
+        if (salt) {
+          // Existing salted backup: derive v2 with it.
+          deriveP = deriveKekWithSalt(password, salt); chosenSalt = salt;
+        } else if (legacy) {
+          // Legacy backup exists: upgrade to a random salt at the next upload.
+          chosenSalt = newSaltB64(); deriveP = deriveKekWithSalt(password, chosenSalt);
+        } else if (fetched) {
+          // No backup at all (new account): salt the backup from the start.
+          chosenSalt = newSaltB64(); deriveP = deriveKekWithSalt(password, chosenSalt);
+        } else {
+          // Salt endpoint unreachable: derive the legacy way so a later upload
+          // can't clobber an existing salted backup with a mismatched salt.
+          deriveP = deriveKek(password, username); chosenSalt = null;
+        }
+        return deriveP.then(function (k) {
+          return crypto.subtle.exportKey('jwk', k);
+        }).then(function (jwk) {
+          sessionStorage.setItem(KEK_SESSION_KEY, btoa(JSON.stringify({ v: 2, jwk: jwk, salt: chosenSalt })));
+        });
+      }).catch(function () {});
   }
 
   function loadLegacyKey(k) {
@@ -1317,6 +1494,15 @@
             importKek(storedKek).then(function (k) {
               kek = k;
               return restoreHistoryFromBackup();
+            }).then(function () {
+              // Once per browser session: if the KEK was derived with a random
+              // salt, push a freshly salted backup so recovery is salt-based
+              // (and so a legacy backup gets upgraded after the first login).
+              if (kek && kekSalt && account && !sessionStorage.getItem('extrovert_kek_synced')) {
+                return uploadBackup(account.pickle(PICKLE_KEY)).then(function () {
+                  try { sessionStorage.setItem('extrovert_kek_synced', '1'); } catch (_) {}
+                }).catch(function () {});
+              }
             }).catch(function () {});
           }
           if (opts.onReady) opts.onReady();
@@ -1354,9 +1540,15 @@
 
   function importKek(b64) {
     try {
-      var jwk = JSON.parse(atob(b64));
-      return crypto.subtle.importKey('jwk', jwk, { name: 'AES-GCM', length: 256 }, false, ['wrapKey', 'unwrapKey', 'encrypt', 'decrypt']);
-    } catch (e) { return Promise.resolve(null); }
+      var parsed = JSON.parse(atob(b64));
+      if (parsed && parsed.v === 2 && parsed.jwk) {
+        kekSalt = parsed.salt || null;
+        return crypto.subtle.importKey('jwk', parsed.jwk, { name: 'AES-GCM', length: 256 }, false, ['wrapKey', 'unwrapKey', 'encrypt', 'decrypt']);
+      }
+      // Legacy shape (raw jwk): no salt.
+      kekSalt = null;
+      return crypto.subtle.importKey('jwk', parsed, { name: 'AES-GCM', length: 256 }, false, ['wrapKey', 'unwrapKey', 'encrypt', 'decrypt']);
+    } catch (e) { kekSalt = null; return Promise.resolve(null); }
   }
 
   // ---- Safety number ----
@@ -1443,56 +1635,91 @@
     return saveGroupInbound(roomId, String(myId), String(outbound.session_id()), ig);
   }
 
-  // Room-scoped prekey bundle (no mutual-follower requirement).
+  // Room-scoped prekey bundle (cached, NON-destructive — no mutual-follow req).
   function fetchRoomBundle(roomId, username) {
+    var key = roomId + ':' + username;
+    var c = roomBundleCache[key];
+    if (c && Date.now() - c.ts < BUNDLE_CACHE_MS) return Promise.resolve(c);
     return e2eeFetch('/rooms/' + encodeURIComponent(roomId) + '/bundle/' + encodeURIComponent(username))
-      .then(function (r) { return r.json(); });
+      .then(function (r) { return r.json(); }).then(function (b) {
+        if (b && (b.devices || b.identity_key)) { b.ts = Date.now(); roomBundleCache[key] = b; }
+        return b;
+      });
   }
 
-  // Get-or-create a 1:1 Olm session with a room member (used to wrap group keys).
-  function getOrCreateRoomOutboundSession(roomId, otherId, otherUsername) {
-    var otherIdStr = String(otherId);
-    if (sessions[otherIdStr]) return Promise.resolve(sessions[otherIdStr]);
-    return loadSession(otherIdStr).then(function (s) { return s || null; }).then(function (existing) {
-      if (existing) return existing;
-      return fetchRoomBundle(roomId, otherUsername).then(function (bundle) {
-        if (!bundle.identity_key || (!bundle.one_time_key && !bundle.fallback_key)) {
-          throw new Error('Recipient has no encryption keys.');
-        }
-        var theirOtk = bundle.one_time_key ? bundle.one_time_key.public_key : bundle.fallback_key;
-        var s = new Olm.Session();
-        s.create_outbound(account, bundle.identity_key, theirOtk);
-        return saveSessionBaseline(otherIdStr, s).then(function () {
-          return saveSession(otherIdStr, s);
-        }).then(function () { return s; });
+  function claimRoomPrekeys(roomId, username, deviceIds) {
+    return csrfFetch('/rooms/' + encodeURIComponent(roomId) + '/claim/' + encodeURIComponent(username), {
+      method: 'POST',
+      body: JSON.stringify({ device_ids: deviceIds })
+    }).then(function (r) { return r.json(); });
+  }
+
+  // Wrap a Megolm session key for every device of a recipient (per-device 1:1
+  // Olm sessions), producing a v2 envelope. A second device of the recipient
+  // can now decrypt the room key — the old single-target share only reached the
+  // primary device and burned prekeys for every device it never used.
+  function wrapRoomKeyForMember(roomId, sessionKeyStr, member, myDevId, skipSelfDeviceId) {
+    return fetchRoomBundle(roomId, member.username).then(function (bundle) {
+      var devs = (bundle.devices || []).slice();
+      if (!devs.length && bundle.identity_key) {
+        devs = [{
+          device_id: 'default',
+          identity_key: bundle.identity_key,
+          fallback_key: bundle.fallback_key,
+          one_time_key: bundle.one_time_key,
+        }];
+      }
+      if (!devs.length) throw new Error('Recipient has no encryption keys.');
+      var cts = {};
+      return Promise.all(devs.map(function (dev) {
+        if (skipSelfDeviceId && dev.device_id === skipSelfDeviceId) return Promise.resolve();
+        var fullKey = String(member.id) + ':' + dev.device_id;
+        return withSessionLock('sess:' + fullKey, function () {
+          return getOrEstablishOutboundSession(fullKey, dev, function (devId) {
+            return claimRoomPrekeys(roomId, member.username, [devId]).then(function (d) {
+              return findDevice(d.devices, devId);
+            });
+          }).then(function (sess) {
+            if (!sess) return;
+            var enc = sess.encrypt(sessionKeyStr);
+            cts[dev.device_id] = { t: enc.type, b: enc.body };
+            return saveOutboundSession(fullKey, sess);
+          });
+        });
+      })).then(function () {
+        var primary = devs[0].device_id;
+        var pc = cts[primary] || { t: 1, b: '' };
+        return JSON.stringify({ v: 2, sender_device_id: myDevId, devices: cts, t: pc.t, b: pc.b });
       });
     });
   }
 
-  function roomSessionKeyEnvelope(roomId, session, recipientId, recipientUsername) {
-    return getOrCreateRoomOutboundSession(roomId, recipientId, recipientUsername).then(function (s) {
-      var msg = s.encrypt(session.session_key());
-      return saveSession(String(recipientId), s).then(function () {
-        return JSON.stringify({ t: msg.type, b: msg.body });
-      });
-    });
-  }
-
-  // Publish (or rotate) this device's outbound Megolm session and share keys to members.
-  function shareRoomSession(roomId, session, members, allMemberIds, rotate) {
+  // Publish (or rotate) this device's outbound Megolm session and share keys to
+  // every member's every device, plus the sender's own OTHER devices.
+  function shareRoomSession(roomId, session, members, allMemberIds, rotate, myId, myUsername, myDevId) {
+    var sessionKeyStr = session.session_key();
     var perRecipient = members.map(function (m) {
-      return roomSessionKeyEnvelope(roomId, session, m.id, m.username).then(function (enc) {
+      return wrapRoomKeyForMember(roomId, sessionKeyStr, m, myDevId, null).then(function (enc) {
         return { recipient_id: m.id, encrypted_key: enc };
       }).catch(function (err) {
         console.warn('skipping room key share to member', m.id, err.message);
         return null;
       });
     });
+    // The sender's other devices must also receive the key, otherwise they can
+    // never decrypt the sender's own room messages.
+    if (myUsername && myId) {
+      perRecipient.push(
+        wrapRoomKeyForMember(roomId, sessionKeyStr, { id: myId, username: myUsername }, myDevId, myDevId)
+          .then(function (enc) { return { recipient_id: myId, encrypted_key: enc }; })
+          .catch(function () { return null; })
+      );
+    }
     return Promise.all(perRecipient).then(function (keys) {
       keys = keys.filter(Boolean);
       return csrfFetch('/rooms/' + encodeURIComponent(roomId) + '/session', {
         method: 'POST',
-        body: JSON.stringify({ keys: keys, member_ids: allMemberIds, rotate: !!rotate }),
+        body: JSON.stringify({ keys: keys, member_ids: allMemberIds, rotate: !!rotate, sender_device_id: myDevId }),
       }).then(function (r) { return r.json(); }).then(function (d) {
         if (d.error) throw new Error(d.error);
         return d.session_id;
@@ -1502,72 +1729,24 @@
     });
   }
 
-  // Fetch + import pending Megolm session keys meant for us.
+  // Fetch + import pending Megolm session keys meant for us. Key envelopes are
+  // now per-device v2 objects; self-shares addressed to other devices import
+  // via the same 1:1 decrypt ladder DMs use.
   function fetchAndImportRoomKeys(roomId, myId) {
     return csrfFetch('/rooms/' + encodeURIComponent(roomId) + '/session/keys').then(function (r) { return r.json(); }).then(function (data) {
       var keys = data.keys || [];
       var deliveredIds = [];
-      var ops = keys.filter(function (k) { return String(k.room_id) === String(roomId) && String(k.sender_id) !== String(myId); })
-        .map(function (k) {
-          return loadSession(String(k.sender_id)).then(function (live) {
-            var env = JSON.parse(k.encrypted_key);
-            // Same discipline as decryptOlm: live session first so ratchet
-            // advances are persisted, baseline only for replaying old key
-            // shares (never overwriting live), and decrypt-before-persist on
-            // the fresh-session branch.
-            if (live) {
-              var livePickle = live.pickle(PICKLE_KEY);
-              try {
-                var plain = live.decrypt(env.t, env.b);
-                return saveSession(String(k.sender_id), live).then(function () { return plain; });
-              } catch (_) {
-                // A failed decrypt must not leave the in-memory session (also
-                // used for sending) half-advanced: restore last-good state.
-                try {
-                  var restored = new Olm.Session();
-                  restored.unpickle(PICKLE_KEY, livePickle);
-                  sessions[String(k.sender_id)] = restored;
-                } catch (_) {}
-              }
-            }
-            return loadSessionBaseline(String(k.sender_id)).then(function (base) {
-              if (base) {
-                try {
-                  var plain2 = base.decrypt(env.t, env.b);
-                  return (live
-                    ? Promise.resolve(plain2)
-                    : saveSession(String(k.sender_id), base).then(function () { return plain2; })
-                  );
-                } catch (_) {}
-              }
-              if (env.t === 0 || env.t === 2) {
-                var ns = new Olm.Session();
-                try {
-                  ns.create_inbound(account, env.b);
-                  account.remove_one_time_keys(ns);
-                  return saveSessionBaseline(String(k.sender_id), ns).then(function () {
-                    return ns.decrypt(env.t, env.b);
-                  }).then(function (plain3) {
-                    return saveSession(String(k.sender_id), ns).then(function () { return plain3; });
-                  }).then(function (plain3) {
-                    return saveAccount().then(function () { return plain3; });
-                  });
-                } catch (createErr) {
-                  if (base) {
-                    try {
-                      var pBase = base.decrypt(env.t, env.b);
-                      return (live
-                        ? Promise.resolve(pBase)
-                        : saveSession(String(k.sender_id), base).then(function () { return pBase; })
-                      );
-                    } catch (_) {}
-                  }
-                  throw createErr;
-                }
-              }
-              throw new Error('No session to decrypt room key');
-            });
-          }).then(function (sessionKey) {
+      return getOrCreateDeviceId().then(function (myDevId) {
+        var ops = keys.filter(function (k) { return String(k.room_id) === String(roomId); }).map(function (k) {
+          var env;
+          try { env = JSON.parse(k.encrypted_key); } catch (_) { return Promise.resolve(); }
+          // Self-shares: the sharing device already holds the outbound group
+          // session locally, so skip anything not addressed to THIS device.
+          if (String(k.sender_id) === String(myId)) {
+            if (env && env.v === 2 && env.devices && !env.devices[myDevId]) return Promise.resolve();
+            if (!(env && env.v === 2)) return Promise.resolve();
+          }
+          return decryptOlmEnvelope(env, String(k.sender_id), null).then(function (sessionKey) {
             var ig = new Olm.InboundGroupSession();
             ig.create(sessionKey);
             return saveGroupInbound(k.room_id, k.sender_id, k.session_id, ig).then(function () {
@@ -1575,7 +1754,8 @@
             });
           }).catch(function (err) { console.error('room key import failed', err); });
         });
-      return Promise.all(ops).then(function () {
+        return Promise.all(ops);
+      }).then(function () {
         if (!deliveredIds.length) return;
         return csrfFetch('/rooms/' + encodeURIComponent(roomId) + '/session/keys/delivered', {
           method: 'POST',
@@ -1591,56 +1771,66 @@
   function syncRoomSessions(roomId, myId, members) {
     var others = members.filter(function (m) { return Number(m.id) !== Number(myId); });
     var allIds = members.map(function (m) { return Number(m.id); });
-    return fetchAndImportRoomKeys(roomId, myId).then(function () {
-      return loadGroupOutbound(roomId);
-    }).then(function (out) {
-      return csrfFetch('/rooms/' + encodeURIComponent(roomId) + '/session/status').then(function (r) { return r.json(); }).then(function (status) {
-        var ok = out && groupOutIds[roomId] && String(groupOutIds[roomId]) === String(status.session_id);
-        if (ok) {
-          var have = (status.recipients || []).map(Number);
-          var empty = (status.empty_keys_for || []).map(Number);
-          // Members who joined after this session was created -> rotate so they
-          // can never read history.
-          var joined = others.filter(function (m) { return have.indexOf(Number(m.id)) === -1; });
-          if (joined.length) {
-            var fresh = new Olm.OutboundGroupSession();
-            fresh.create();
-            return saveSelfGroupInbound(roomId, myId, fresh).then(function () {
-              return shareRoomSession(roomId, fresh, others, allIds, true);
+    var me = members.filter(function (m) { return Number(m.id) === Number(myId); })[0];
+    var myUsername = me ? me.username : null;
+    return getOrCreateDeviceId().then(function (myDevId) {
+      return fetchAndImportRoomKeys(roomId, myId).then(function () {
+        return loadGroupOutbound(roomId);
+      }).then(function (out) {
+        return csrfFetch('/rooms/' + encodeURIComponent(roomId) + '/session/status?device_id=' + encodeURIComponent(myDevId))
+          .then(function (r) { return r.json(); }).then(function (status) {
+            var ok = out && groupOutIds[roomId] && String(groupOutIds[roomId]) === String(status.session_id);
+            if (ok) {
+              var have = (status.recipients || []).map(Number);
+              var empty = (status.empty_keys_for || []).map(Number);
+              // Members who joined after this session was created -> rotate so they
+              // can never read history.
+              var joined = others.filter(function (m) { return have.indexOf(Number(m.id)) === -1; });
+              if (joined.length) {
+                var fresh = new Olm.OutboundGroupSession();
+                fresh.create();
+                return saveSelfGroupInbound(roomId, myId, fresh).then(function () {
+                  return shareRoomSession(roomId, fresh, others, allIds, true, myId, myUsername, myDevId);
+                });
+              }
+              // Members who are covered but never got a real key (set up E2EE late) -> re-share.
+              var needKey = others.filter(function (m) { return empty.indexOf(Number(m.id)) !== -1; });
+              if (needKey.length) {
+                return shareRoomSession(roomId, out, needKey, allIds, false, myId, myUsername, myDevId);
+              }
+              return;
+            }
+            var fresh2 = new Olm.OutboundGroupSession();
+            fresh2.create();
+            return saveSelfGroupInbound(roomId, myId, fresh2).then(function () {
+              return shareRoomSession(roomId, fresh2, others, allIds, true, myId, myUsername, myDevId);
             });
-          }
-          // Members who are covered but never got a real key (set up E2EE late) -> re-share.
-          var needKey = others.filter(function (m) { return empty.indexOf(Number(m.id)) !== -1; });
-          if (needKey.length) {
-            return shareRoomSession(roomId, out, needKey, allIds, false);
-          }
-          return;
-        }
-        var fresh = new Olm.OutboundGroupSession();
-        fresh.create();
-        return saveSelfGroupInbound(roomId, myId, fresh).then(function () {
-          return shareRoomSession(roomId, fresh, others, allIds, true);
-        });
+          });
       });
     });
   }
 
   function encryptRoomMessage(roomId, plaintext) {
-    if (!groupOutbound[roomId]) {
-      return Promise.reject(new Error('No room session. Try reloading the room.'));
-    }
-    var ct = groupOutbound[roomId].encrypt(plaintext);
-    var sid = groupOutIds[roomId];
-    return saveGroupOutbound(roomId, groupOutbound[roomId], sid).then(function () {
-      return { ciphertext: ct, group_session_id: String(sid) };
+    return withSessionLock('groupOut:' + roomId, function () {
+      if (!groupOutbound[roomId]) {
+        return Promise.reject(new Error('No room session. Try reloading the room.'));
+      }
+      var ct = groupOutbound[roomId].encrypt(plaintext);
+      var sid = groupOutIds[roomId];
+      return saveGroupOutbound(roomId, groupOutbound[roomId], sid).then(function () {
+        return { ciphertext: ct, group_session_id: String(sid) };
+      });
     });
   }
 
   function decryptRoomMessage(roomId, senderId, ciphertext, groupSessionId) {
-    return loadGroupInbound(roomId, senderId, groupSessionId).then(function (ig) {
-      if (!ig) throw new Error('No inbound group session for sender');
-      var result = ig.decrypt(ciphertext);
-      return saveGroupInbound(roomId, senderId, groupSessionId, ig).then(function () { return result.plaintext; });
+    var lockKey = 'groupIn:' + roomId + ':' + senderId + ':' + groupSessionId;
+    return withSessionLock(lockKey, function () {
+      return loadGroupInbound(roomId, senderId, groupSessionId).then(function (ig) {
+        if (!ig) throw new Error('No inbound group session for sender');
+        var result = ig.decrypt(ciphertext);
+        return saveGroupInbound(roomId, senderId, groupSessionId, ig).then(function () { return result.plaintext; });
+      });
     });
   }
 
@@ -1932,15 +2122,12 @@
         var id = el.getAttribute('data-msg-id');
         if (id) existing[id] = true;
       });
-      // Purge deleted non-secure messages from local cache (messages that were deleted on the server)
-      var deletedNonSecure = msgs.filter(function (m) {
-        return !existing[String(m.id)] && !m.msg_secure && !m.secure;
-      });
-      if (deletedNonSecure.length > 0) {
-        deletedNonSecure.forEach(function (d) {
-          secureDeleteMessage(otherIdStr, d.id);
-        });
-      }
+      // NOTE: do NOT purge cached plaintexts that aren't currently in the DOM.
+      // The page only renders a bounded slice of history, so "absent from DOM"
+      // can't tell "deleted on server" from "outside the loaded window" —
+      // purging wiped the only recovery path that masked the decrypt bugs.
+      // The local cache is removed only on an explicit server delete event
+      // (the delete_dm WebSocket handler calls secureDeleteMessage directly).
 
       // Only ephemeral/secure=1 messages are meant to be rendered when missing from server
       var missing = msgs.filter(function (m) {
@@ -2375,52 +2562,73 @@
     var pass = String(password || '').trim();
     if (!pass) return Promise.reject(new Error('password required'));
     return initOlm().then(function () {
-      return deriveKek(pass, username).then(function (k) {
-        kek = k;
-        return loadLegacyKey(k);
-      }).then(function () {
-        return getOrCreateDeviceKey();
-      }).then(function () {
-        return loadAccountFromStorage();
-      }).then(function (acct) {
-        if (acct) return loadSelfSessions();
-        return fetchBackup().then(function (data) {
-          if (data.backup) {
+      return getOrCreateDeviceKey();
+    }).then(function () {
+      return loadAccountFromStorage();
+    }).then(function (acct) {
+      if (acct) {
+        // Local account exists: the KEK is only needed for the legacy RSA key.
+        return deriveKek(pass, username).then(function (k) {
+          kek = k; kekSalt = null;
+          return loadLegacyKey(k);
+        }).then(function () { return loadSelfSessions(); });
+      }
+      return fetchBackup().then(function (data) {
+        if (data.backup) {
+          // Derive with the backup's salt (v2) or the legacy username-salt.
+          var deriveP = data.salt ? deriveKekWithSalt(pass, data.salt) : deriveKek(pass, username);
+          return deriveP.then(function (k) {
+            kek = k; kekSalt = data.salt || null;
+            return loadLegacyKey(k);
+          }).then(function () {
             return decryptWithKek(unwrapBackup(data.backup).account, kek).then(function (pickle) {
-                account = new Olm.Account();
-                account.unpickle(PICKLE_KEY, pickle);
-                var k = JSON.parse(account.identity_keys());
-                myIdKeys = { curve25519: k.curve25519, ed25519: k.ed25519 };
-                return restoreSelfSessionsFromBackup(data);
-              }).catch(function () {
-                throw new Error('Wrong password.');
+              account = new Olm.Account();
+              account.unpickle(PICKLE_KEY, pickle);
+              var k2 = JSON.parse(account.identity_keys());
+              myIdKeys = { curve25519: k2.curve25519, ed25519: k2.ed25519 };
+              return restoreSelfSessionsFromBackup(data);
+            }).catch(function () { throw new Error('Wrong password.'); });
+          }).then(function () {
+            // Upgrade a legacy (unsalted) backup to a random salt now that the
+            // password is in hand; future unlocks derive v2.
+            if (!data.salt) {
+              var freshSalt = newSaltB64();
+              return deriveKekWithSalt(pass, freshSalt).then(function (k2) {
+                kek = k2; kekSalt = freshSalt;
+                return uploadBackup(account.pickle(PICKLE_KEY));
               });
-          }
-          if (data && data.has_identity) {
-            throw new Error('No valid backup is stored on the server — use "Reset keys" below.');
-          }
-          return createAndPublishAccount().then(function () {
-            return uploadBackup(account.pickle(PICKLE_KEY));
-          });
-        }).then(function () {
-          // Verify the restored account still matches the server's current
-          // identity; a stale backup must not silently load an account that
-          // can never decrypt anything.
-          return csrfFetch('/chats/prekeys/identity').then(function (r) { return r.json(); }).then(function (d) {
-            if (d && d.identity_key && myIdKeys && d.identity_key !== myIdKeys.curve25519) {
-              account = null;
-              myIdKeys = null;
-              throw new Error('The backup belongs to a different encryption identity — use "Reset keys" below.');
             }
           });
-        }).then(function () { return maybeReplenishPrekeys(); });
+        }
+        if (data && data.has_identity) {
+          throw new Error('No valid backup is stored on the server — use "Reset keys" below.');
+        }
+        // No identity at all: fresh start with a salted backup.
+        var freshSalt2 = newSaltB64();
+        return deriveKekWithSalt(pass, freshSalt2).then(function (k2) {
+          kek = k2; kekSalt = freshSalt2;
+          return loadLegacyKey(k2);
+        }).then(function () {
+          return createAndPublishAccount().then(function () { return uploadBackup(account.pickle(PICKLE_KEY)); });
+        });
       }).then(function () {
-        return saveAccount().then(function () { return loadSelfSessions(); });
-      }).then(function () {
-        sessionStorage.removeItem(KEK_SESSION_KEY);
-        saveSelfSessions();
-        return username;
-      });
+        // Verify the restored account still matches the server's current
+        // identity; a stale backup must not silently load an account that
+        // can never decrypt anything.
+        return csrfFetch('/chats/prekeys/identity').then(function (r) { return r.json(); }).then(function (d) {
+          if (d && d.identity_key && myIdKeys && d.identity_key !== myIdKeys.curve25519) {
+            account = null;
+            myIdKeys = null;
+            throw new Error('The backup belongs to a different encryption identity — use "Reset keys" below.');
+          }
+        });
+      }).then(function () { return maybeReplenishPrekeys(); });
+    }).then(function () {
+      return saveAccount().then(function () { return loadSelfSessions(); });
+    }).then(function () {
+      sessionStorage.removeItem(KEK_SESSION_KEY);
+      saveSelfSessions();
+      return username;
     });
   }
 
@@ -2502,7 +2710,10 @@
       sessionBaselines = {};
       rekeyLastCheck = {};
       rekeyRequestedAt = {};
-      sessionIdentLastCheck = {};
+      pendingRekeyAcks = {};
+      bundleCache = {};
+      roomBundleCache = {};
+      kekSalt = null;
       return createAndPublishAccount(true); // force: the reset IS the sanctioned rotation
     }).then(function () {
       return ensureSelfSessions();
@@ -2678,6 +2889,16 @@
     });
   });
 
+  // Poll the peer's rekey-needed flag on an interval so a desynced session heals
+  // even when the user isn't actively sending (the next send then drops + rebuilds).
+  var rekeyPollTimer = null;
+  function startRekeyPolling(otherIdStr, otherUsername) {
+    if (rekeyPollTimer) clearInterval(rekeyPollTimer);
+    rekeyPollTimer = setInterval(function () {
+      maybeRekeyBeforeSend(otherIdStr, otherUsername).catch(function () {});
+    }, REKEY_CHECK_MS);
+  }
+
   function finishChatInit(recipientId, recipientCurve, otherIdStr, otherUsername) {
     decryptExistingMessages(otherIdStr, recipientCurve, otherUsername).then(function () {
       scrollChatBottom();
@@ -2687,6 +2908,7 @@
     initSecurityToggle();
     initChatHandlers(recipientId, otherIdStr, otherUsername, recipientCurve);
     checkOwnIdentity();
+    startRekeyPolling(otherIdStr, otherUsername);
   }
 
   // Room pages (and any future consumer) drive Megolm through this global.

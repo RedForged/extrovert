@@ -9,8 +9,15 @@ const {
   editMessage, deleteMessage, getEditHistory,
   setDmSecurity, getDmSecurity, ackMessagesReceived,
   setOlmIdentity, getOlmIdentity, addOlmPrekeys, countAvailablePrekeys, claimOlmPrekey, setOlmBackup, requestDmRekey, dmRekeyNeeded, clearDmRekey,
-  registerUserDevice, getUserDevices, getUserDevice, touchUserDevice, deleteUserDevice, addDevicePrekeys, countAvailableDevicePrekeys, claimDevicePrekey, claimAllDevicePrekeysForUser, setUserHistoryBackup, getUserHistoryBackup,
+  registerUserDevice, getUserDevices, getUserDevice, touchUserDevice, deleteUserDevice, addDevicePrekeys, countAvailableDevicePrekeys, claimDevicePrekey, getAllDeviceBundlesForUser, claimAllDevicePrekeysForUser, setUserHistoryBackup, getUserHistoryBackup,
 } = require('../db');
+
+// Message / ciphertext size caps. Oversize payloads are REJECTED, never
+// truncated: slicing a ciphertext corrupts it and stores a message that can
+// never be decrypted again.
+const DM_BODY_MAX = 65536;
+const DM_SENDER_CT_MAX = 65536;
+const MESSAGE_PAGE = 100;
 
 const router = express.Router();
 
@@ -95,7 +102,8 @@ router.post('/prekeys', express.json(), (req, res) => {
 
   if (backup) {
     const backupIdentity = String(req.body.backup_identity || '').trim() || null;
-    setOlmBackup(user.id, backup, backupIdentity);
+    const kekSalt = String(req.body.kek_salt || '').trim().slice(0, 200) || null;
+    setOlmBackup(user.id, backup, backupIdentity, kekSalt);
   }
   const avail = deviceId ? countAvailableDevicePrekeys(user.id, deviceId) : countAvailablePrekeys(user.id);
   res.json({ ok: true, available: avail });
@@ -162,7 +170,24 @@ router.get('/prekeys/backup', (req, res) => {
   const user = res.locals.currentUser;
   if (!user) return res.status(401).json({ error: 'not logged in' });
   const id = getOlmIdentity(user.id);
-  res.json({ backup: id ? id.backup : null, has_identity: !!(id && id.identity_key) });
+  res.json({ backup: id ? id.backup : null, has_identity: !!(id && id.identity_key), salt: id ? id.kek_salt || null : null });
+});
+
+// PBKDF2 salt for the password-derived backup key. Deliberately readable
+// BEFORE login: the client needs it to derive the KEK while intercepting the
+// login form. The salt is random per account and not secret (its only purpose
+// is defeating precomputation); the password remains the actual secret.
+// `legacy: true` means a backup exists but predates random salts — derive with
+// the old username-based scheme.
+router.get('/kek-salt', (req, res) => {
+  const username = String(req.query.username || '').trim();
+  if (!username || username.length > 100) return res.status(400).json({ error: 'missing username' });
+  const u = getUserByUsername(username);
+  if (!u) return res.json({ salt: null, legacy: false });
+  const id = getOlmIdentity(u.id);
+  if (id && id.backup && id.kek_salt) return res.json({ salt: id.kek_salt });
+  if (id && id.backup) return res.json({ salt: null, legacy: true });
+  return res.json({ salt: null, legacy: false });
 });
 
 // How many unused one-time prekeys the current user still has published.
@@ -182,7 +207,13 @@ router.get('/prekeys/identity', (req, res) => {
   res.json({ identity_key: id ? id.identity_key : null, ed25519_key: id ? id.ed25519_key : null });
 });
 
-// Fetch a recipient's Olm bundle (all active devices of recipient + sender's other devices).
+// Fetch a recipient's Olm bundle (all active devices of recipient + sender's
+// other devices). READ-ONLY: returns identity + fallback + an UNCLAIMED
+// one-time-key preview. Claiming on every read burned prekey pools and made
+// senders rebuild sessions constantly (each fetch returned a different OTK).
+// One-time keys are claimed only via POST /:username/claim, when a sender
+// actually establishes a new session. (?claim=1 keeps the legacy behavior for
+// clients that haven't adopted the claim endpoint yet.)
 router.get('/:username/bundle', (req, res) => {
   const user = res.locals.currentUser;
   if (!user) return res.status(401).json({ error: 'not logged in' });
@@ -190,8 +221,9 @@ router.get('/:username/bundle', (req, res) => {
   if (!other) return res.status(404).json({ error: 'not found' });
   if (!areMutualFollowers(user.id, other.id)) return res.status(403).json({ error: 'not mutual followers' });
 
-  const recipientDevices = claimAllDevicePrekeysForUser(other.id);
-  const senderDevices = claimAllDevicePrekeysForUser(user.id);
+  const bundlesFor = req.query.claim === '1' ? claimAllDevicePrekeysForUser : getAllDeviceBundlesForUser;
+  const recipientDevices = bundlesFor(other.id);
+  const senderDevices = bundlesFor(user.id);
   const primaryRecipient = recipientDevices[0] || null;
 
   res.json({
@@ -201,6 +233,36 @@ router.get('/:username/bundle', (req, res) => {
     ed25519_key: primaryRecipient ? primaryRecipient.ed25519_key : null,
     one_time_key: primaryRecipient ? primaryRecipient.one_time_key : null,
     fallback_key: primaryRecipient ? primaryRecipient.fallback_key : null,
+  });
+});
+
+// Claim one one-time prekey per listed device — called exactly once per new
+// outbound session, never on every send. device_ids restricts the recipient's
+// claimed devices; sender_device_ids claims the caller's OWN other devices
+// (fan-out for self copies). Omitted/empty lists claim nothing for that side.
+router.post('/:username/claim', express.json(), (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.status(401).json({ error: 'not logged in' });
+  const other = getUserByUsername(req.params.username);
+  if (!other) return res.status(404).json({ error: 'not found' });
+  if (!areMutualFollowers(user.id, other.id)) return res.status(403).json({ error: 'not mutual followers' });
+
+  const cleanIds = (v) => Array.isArray(v)
+    ? [...new Set(v.map(x => String(x || '').trim()).filter(Boolean))].slice(0, 50)
+    : null;
+  const deviceIds = cleanIds(req.body.device_ids);
+  const senderDeviceIds = cleanIds(req.body.sender_device_ids);
+
+  const devices = deviceIds ? claimAllDevicePrekeysForUser(other.id, deviceIds) : [];
+  const senderDevices = senderDeviceIds ? claimAllDevicePrekeysForUser(user.id, senderDeviceIds) : [];
+  const primary = devices[0] || null;
+  res.json({
+    devices,
+    sender_devices: senderDevices,
+    identity_key: primary ? primary.identity_key : null,
+    ed25519_key: primary ? primary.ed25519_key : null,
+    one_time_key: primary ? primary.one_time_key : null,
+    fallback_key: primary ? primary.fallback_key : null,
   });
 });
 
@@ -257,12 +319,15 @@ router.get('/:username', (req, res) => {
   if (!areMutualFollowers(user.id, other.id)) {
     return res.status(403).send('You can only message mutual followers.');
   }
-  const messages = getMessages(user.id, other.id);
+  const before = req.query.before ? Number(req.query.before) : null;
+  // Newest-first page (the old ASC query showed the OLDEST 100 of long chats).
+  const messages = getMessages(user.id, other.id, MESSAGE_PAGE, before && Number.isInteger(before) ? before : null);
+  const hasOlder = messages.length === MESSAGE_PAGE;
   const recipientPubKey = getPublicKey(other.id);
   const recipientCurve = getOlmIdentity(other.id);
   const security = getDmSecurity(user.id, other.id);
   markConversationRead(user.id, other.id);
-  res.render('chat', { other, messages, recipientPubKey, recipientCurve, security, wrapClass: 'chat-wrap' });
+  res.render('chat', { other, messages, hasOlder, recipientPubKey, recipientCurve, security, wrapClass: 'chat-wrap' });
 });
 
 // Send a message.
@@ -275,11 +340,20 @@ router.post('/:username/send', (req, res) => {
   if (!other || !areMutualFollowers(user.id, other.id)) {
     return req.xhr ? res.json({ error: 'cannot message' }) : res.redirect(back(req, '/chats'));
   }
-  const body = String(req.body.body || '').trim().slice(0, 65536);
+  const body = String(req.body.body || '').trim();
   const keyForSender = String(req.body.key_for_sender || '').trim() || null;
   const keyForRecipient = String(req.body.key_for_recipient || '').trim() || null;
   const proto = String(req.body.proto || 'rsa').trim() === 'olm' ? 'olm' : 'rsa';
-  const senderCiphertext = String(req.body.sender_ciphertext || '').trim().slice(0, 65536) || null;
+  const senderCiphertextRaw = String(req.body.sender_ciphertext || '').trim();
+  // Reject oversize payloads outright — truncating a ciphertext would store a
+  // corrupted message that can never be decrypted.
+  if (body.length > DM_BODY_MAX) {
+    return req.xhr ? res.json({ error: 'Message is too long.' }) : res.status(400).send('Message is too long.');
+  }
+  if (senderCiphertextRaw.length > DM_SENDER_CT_MAX) {
+    return req.xhr ? res.json({ error: 'Ciphertext too long.' }) : res.status(400).send('Ciphertext too long.');
+  }
+  const senderCiphertext = senderCiphertextRaw || null;
   const isSticker = body.startsWith('/uploads/stickers/');
   if (body && !isSticker) {
     if (proto !== 'olm' || !senderCiphertext) {
@@ -351,12 +425,19 @@ router.post('/:username/received', express.json(), (req, res) => {
 router.post('/:username/edit/:mid', (req, res) => {
   const user = res.locals.currentUser;
   if (!user) return req.xhr ? res.json({ error: 'not logged in' }) : res.redirect('/login');
-  const body = String(req.body.body || '').trim().slice(0, 65536);
+  const body = String(req.body.body || '').trim();
   if (!body) return req.xhr ? res.json({ error: 'body required' }) : res.redirect(back(req, '/chats'));
+  if (body.length > DM_BODY_MAX) {
+    return req.xhr ? res.json({ error: 'Message is too long.' }) : res.status(400).send('Message is too long.');
+  }
   const keyForSender = String(req.body.key_for_sender || '').trim() || null;
   const keyForRecipient = String(req.body.key_for_recipient || '').trim() || null;
   const proto = String(req.body.proto || 'rsa').trim() === 'olm' ? 'olm' : 'rsa';
-  const senderCiphertext = String(req.body.sender_ciphertext || '').trim().slice(0, 65536) || null;
+  const senderCiphertextRaw = String(req.body.sender_ciphertext || '').trim();
+  if (senderCiphertextRaw.length > DM_SENDER_CT_MAX) {
+    return req.xhr ? res.json({ error: 'Ciphertext too long.' }) : res.status(400).send('Ciphertext too long.');
+  }
+  const senderCiphertext = senderCiphertextRaw || null;
   if (!body.startsWith('/uploads/stickers/') && (proto !== 'olm' || !senderCiphertext)) {
     return req.xhr ? res.json({ error: 'End-to-end encryption required. All messages must be Olm-encrypted.' }) : res.status(400).send('E2EE required');
   }

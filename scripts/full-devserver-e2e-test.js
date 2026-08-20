@@ -82,6 +82,24 @@ class SimulatedBrowserDevice {
     return res;
   }
 
+  // Claim one one-time key per device — mirrors the FIXED client (bundle reads
+  // are non-destructive; claiming happens once per new session).
+  async claimFor(username, deviceIds, senderDeviceIds) {
+    const body = {};
+    if (deviceIds) body.device_ids = deviceIds;
+    if (senderDeviceIds) body.sender_device_ids = senderDeviceIds;
+    const r = await this.fetch('/chats/' + encodeURIComponent(username) + '/claim', {
+      method: 'POST', body: JSON.stringify(body),
+    });
+    return r.json();
+  }
+  async roomClaimFor(roomId, username, deviceIds) {
+    const r = await this.fetch('/rooms/' + encodeURIComponent(roomId) + '/claim/' + encodeURIComponent(username), {
+      method: 'POST', body: JSON.stringify({ device_ids: deviceIds }),
+    });
+    return r.json();
+  }
+
   async getCsrf() {
     const res = await this.fetch('/login');
     const text = await res.text();
@@ -171,9 +189,12 @@ class SimulatedBrowserDevice {
       const sessKey = recipientUsername + ':' + dev.device_id;
       let sess = this.sessions[sessKey];
       if (!sess) {
+        // Claim a one-time key for THIS device (bundle read is non-destructive).
+        const claimed = await this.claimFor(recipientUsername, [dev.device_id], null);
+        const cd = (claimed.devices || []).find(d => d.device_id === dev.device_id) || dev;
+        const otk = cd.one_time_key ? cd.one_time_key.public_key : cd.fallback_key;
         sess = new Olm.Session();
-        const otk = dev.one_time_key ? dev.one_time_key.public_key : dev.fallback_key;
-        sess.create_outbound(this.account, dev.identity_key, otk);
+        sess.create_outbound(this.account, cd.identity_key || dev.identity_key, otk);
         this.sessions[sessKey] = sess;
       }
       const enc = sess.encrypt(plaintext);
@@ -186,9 +207,12 @@ class SimulatedBrowserDevice {
       const sessKey = this.user.username + ':' + dev.device_id;
       let sess = this.sessions[sessKey];
       if (!sess) {
+        // Self-device claim piggy-backs on the peer's claim endpoint.
+        const claimed = await this.claimFor(recipientUsername, null, [dev.device_id]);
+        const cd = (claimed.sender_devices || []).find(d => d.device_id === dev.device_id) || dev;
+        const otk = cd.one_time_key ? cd.one_time_key.public_key : cd.fallback_key;
         sess = new Olm.Session();
-        const otk = dev.one_time_key ? dev.one_time_key.public_key : dev.fallback_key;
-        sess.create_outbound(this.account, dev.identity_key, otk);
+        sess.create_outbound(this.account, cd.identity_key || dev.identity_key, otk);
         this.sessions[sessKey] = sess;
       }
       const enc = sess.encrypt(plaintext);
@@ -420,13 +444,15 @@ async function runTest() {
     const roomBundle = await roomBundleRes.json();
     assert.ok(roomBundle.devices && roomBundle.devices.length > 0, 'Room bundle must return recipient devices');
 
-    // Target Bob Dev 1 specifically
+    // Target Bob Dev 1 specifically — CLAIM its one-time key (bundle is read-only).
     const devBob1 = roomBundle.devices.find(d => d.device_id === bobDev1.deviceId) || roomBundle.devices[0];
-    const bob1Otk = devBob1.one_time_key ? devBob1.one_time_key.public_key : devBob1.fallback_key;
+    const claimedBob1 = await aliceDev1.roomClaimFor(roomId, bobUser, [devBob1.device_id]);
+    const cdBob1 = (claimedBob1.devices || []).find(d => d.device_id === devBob1.device_id) || devBob1;
+    const bob1Otk = cdBob1.one_time_key ? cdBob1.one_time_key.public_key : cdBob1.fallback_key;
 
     // Alice wraps session key using 1:1 Olm
     const aliceToBobRoomSess = new Olm.Session();
-    aliceToBobRoomSess.create_outbound(aliceDev1.account, devBob1.identity_key, bob1Otk);
+    aliceToBobRoomSess.create_outbound(aliceDev1.account, cdBob1.identity_key || devBob1.identity_key, bob1Otk);
     const keyEnc = aliceToBobRoomSess.encrypt(roomSessionKey);
 
     // Save session on server
@@ -435,7 +461,8 @@ async function runTest() {
       body: JSON.stringify({
         keys: [{ recipient_id: bobRow.id, encrypted_key: JSON.stringify({ t: keyEnc.type, b: keyEnc.body }) }],
         member_ids: [aliceRow.id, bobRow.id],
-        rotate: true
+        rotate: true,
+        sender_device_id: aliceDev1.deviceId
       })
     });
     console.log('✓ Alice published Megolm room session and shared wrapped key with Bob Dev 1.');

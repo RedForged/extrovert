@@ -9,6 +9,7 @@ const KEY_FILE = path.join(DATA_DIR, 'oidc-keys.json');
 const ISSUER = process.env.OIDC_ISSUER || 'https://extrovert.redforged.eu';
 
 let keyPair = null;
+let previousKeys = [];
 
 function loadOrGenerateKeys() {
   if (keyPair) return keyPair;
@@ -34,6 +35,14 @@ function loadOrGenerateKeys() {
         privateKey: crypto.createPrivateKey(parsed.privateKeyPem),
         kid: parsed.kid,
       };
+      // Restore previously-rotated keys so verification still works across
+      // restarts (otherwise tokens signed before the last rotation could no
+      // longer be validated after a server restart).
+      if (Array.isArray(parsed.previousKeys)) {
+        previousKeys = parsed.previousKeys
+          .filter(k => k && k.kid && k.jwk)
+          .slice(-2);
+      }
       return keyPair;
     }
   } catch {}
@@ -49,6 +58,7 @@ function loadOrGenerateKeys() {
     kid,
     publicKeyPem: publicKey,
     privateKeyPem: privateKey,
+    previousKeys: [],
     generatedAt: Date.now(),
   };
 
@@ -64,8 +74,19 @@ function loadOrGenerateKeys() {
   return keyPair;
 }
 
-// Store previous keys for rotation support
-let previousKeys = [];
+function saveKeyFile(publicKey, privateKey, kid) {
+  const keyData = {
+    kid,
+    publicKeyPem: publicKey,
+    privateKeyPem: privateKey,
+    // Persist the rollover set: without this a restart would silently drop the
+    // verification keys for every id_token signed before the last rotation.
+    previousKeys: previousKeys.slice(-2),
+    generatedAt: Date.now(),
+  };
+  fs.writeFileSync(KEY_FILE, JSON.stringify(keyData, null, 2), 'utf8');
+  try { fs.chmodSync(KEY_FILE, 0o600); } catch {}
+}
 
 function getJwks() {
   const { publicKey, kid } = loadOrGenerateKeys();
@@ -109,15 +130,7 @@ function rotateKeys() {
   }
 
   const kid = crypto.randomBytes(8).toString('hex');
-  const keyData = {
-    kid,
-    publicKeyPem: publicKey,
-    privateKeyPem: privateKey,
-    generatedAt: Date.now(),
-  };
-
-  fs.writeFileSync(KEY_FILE, JSON.stringify(keyData, null, 2), 'utf8');
-  try { fs.chmodSync(KEY_FILE, 0o600); } catch {}
+  saveKeyFile(publicKey, privateKey, kid);
 
   keyPair = {
     publicKey: crypto.createPublicKey(publicKey),

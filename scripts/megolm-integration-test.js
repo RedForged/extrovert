@@ -112,8 +112,10 @@ async function main() {
   ok(String(sessionId2) !== String(sessionId), 'rotated id differs from the original');
 
   // ---- Bob fetches pending keys ----
+  // Rotation now RETAINS the previous session's undelivered keys (P1-9), so Bob
+  // sees the key from BOTH the original and the rotated session.
   const pending = await api(`/api/v1/rooms/${roomId}/session/keys`, { token: btok });
-  ok(pending.status === 200 && pending.json.data.keys.length === 1, 'Bob sees 1 pending session key');
+  ok(pending.status === 200 && pending.json.data.keys.length === 2, 'Bob sees 2 pending session keys (old session retained on rotate)');
 
   // Bob decrypts the wrapped key with an inbound session from the prekey message.
   const b2a = new Olm.Session();

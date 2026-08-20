@@ -11,9 +11,13 @@ const {
   getRoomMessages, sendRoomMessage, joinDefaultRole, hasRoomPermission, getUserById, getUserByUsername, db,
   createReport,
   createJoinRequest, getJoinRequests, approveJoinRequest, rejectJoinRequest, hasPendingRequest,
-  publishRoomGroupSession, getRoomGroupSession, saveRoomSessionKeys, ensureRoomSessionRecipient, getPendingRoomSessionKeys, markRoomSessionKeyDelivered, getRoomSessionRecipients, getRoomSessionEmptyKeyRecipients,
-  getOlmIdentity, claimAllDevicePrekeysForUser,
+  publishRoomGroupSession, getRoomGroupSession, isRoomGroupSessionUsable, saveRoomSessionKeys, ensureRoomSessionRecipient, getPendingRoomSessionKeys, markRoomSessionKeyDelivered, getRoomSessionRecipients, getRoomSessionEmptyKeyRecipients,
+  getOlmIdentity, getAllDeviceBundlesForUser, claimAllDevicePrekeysForUser,
 } = require('../db');
+
+// Room ciphertext cap — oversize payloads are rejected, never truncated.
+const ROOM_CT_MAX = 20000;
+const ROOM_BODY_MAX = 20000;
 
 const router = express.Router();
 
@@ -383,19 +387,22 @@ router.post('/:id/channels/:cid/send', (req, res) => {
   if (!checkPerm(room.id, res.locals.currentUser.id, PERM.WRITE)) return res.status(403).json({ error: 'No write permission' });
   const body = String(req.body.body || '').trim();
   const proto = String(req.body.proto || 'plain').trim() === 'megolm' ? 'megolm' : 'plain';
-  const ciphertext = String(req.body.ciphertext || '').trim().slice(0, 20000) || null;
+  const ciphertextRaw = String(req.body.ciphertext || '').trim();
   const groupSessionId = String(req.body.group_session_id || '').trim() || null;
   const isSticker = body.startsWith('/uploads/stickers/');
   if (!isSticker) {
-    if (!body && !ciphertext) return res.status(400).json({ error: 'Message is empty' });
-    if (proto !== 'megolm' || !ciphertext || !groupSessionId) {
+    if (!body && !ciphertextRaw) return res.status(400).json({ error: 'Message is empty' });
+    if (body.length > ROOM_BODY_MAX || ciphertextRaw.length > ROOM_CT_MAX) {
+      return res.status(400).json({ error: 'Message is too long.' });
+    }
+    if (proto !== 'megolm' || !ciphertextRaw || !groupSessionId) {
       return res.status(400).json({ error: 'End-to-end encryption required. Room messages must be Megolm-encrypted.' });
     }
-    const gs = getRoomGroupSession(room.id, res.locals.currentUser.id);
-    if (!gs || String(gs.id) !== groupSessionId) {
+    if (!isRoomGroupSessionUsable(room.id, res.locals.currentUser.id, groupSessionId)) {
       return res.status(400).json({ error: 'Unknown group session.' });
     }
   }
+  const ciphertext = ciphertextRaw || null;
   const msgId = sendRoomMessage(channel.id, res.locals.currentUser.id, isSticker ? body : '', proto, ciphertext, isSticker ? null : groupSessionId);
   res.json({ id: msgId });
 });
@@ -413,7 +420,10 @@ router.post('/:id/session', (req, res) => {
   const keys = Array.isArray(req.body.keys) ? req.body.keys : [];
   const memberIds = Array.isArray(req.body.member_ids) ? req.body.member_ids.map(Number) : [];
   const rotate = req.body.rotate === true || req.body.rotate === 'true';
-  const sessionId = publishRoomGroupSession(room.id, res.locals.currentUser.id, rotate);
+  // Sessions are per sender DEVICE so a user's devices never fight over the
+  // "current" session row (which used to rotate on every visit per device).
+  const senderDeviceId = String(req.body.sender_device_id || '').trim().slice(0, 100);
+  const sessionId = publishRoomGroupSession(room.id, res.locals.currentUser.id, senderDeviceId, rotate);
   const roomMembers = new Set(getRoomMembers(room.id).map(m => m.user_id));
   for (const k of keys) {
     const rid = Number(k.recipient_id);
@@ -463,13 +473,16 @@ router.get('/:id/session/status', (req, res) => {
   const room = getRoom(Number(req.params.id));
   if (!room) return res.status(404).json({ error: 'Room not found' });
   if (!isRoomMember(room.id, res.locals.currentUser.id)) return res.status(403).json({ error: 'Not a member' });
-  const gs = getRoomGroupSession(room.id, res.locals.currentUser.id);
+  const deviceId = String(req.query.device_id || '').trim().slice(0, 100);
+  const gs = getRoomGroupSession(room.id, res.locals.currentUser.id, deviceId);
   if (!gs) return res.json({ session_id: null, recipients: [], empty_keys_for: [] });
   res.json({ session_id: gs.id, recipients: getRoomSessionRecipients(gs.id), empty_keys_for: getRoomSessionEmptyKeyRecipients(gs.id) });
 });
 
 // Room-scoped prekey bundle fetch for session-key sharing. Unlike the DM bundle
 // this does NOT require mutual followers — just that both users are in the room.
+// READ-ONLY like the DM bundle: no prekeys are claimed here (?claim=1 keeps the
+// legacy claiming behavior for older clients).
 router.get('/:id/bundle/:username', (req, res) => {
   if (!res.locals.currentUser) return res.status(401).json({ error: 'Not logged in' });
   const room = getRoom(Number(req.params.id));
@@ -479,7 +492,8 @@ router.get('/:id/bundle/:username', (req, res) => {
   const other = getUserByUsername(req.params.username);
   if (!other) return res.status(404).json({ error: 'not found' });
   if (!isRoomMember(room.id, other.id)) return res.status(403).json({ error: 'not a member' });
-  const recipientDevices = claimAllDevicePrekeysForUser(other.id);
+  const bundlesFor = req.query.claim === '1' ? claimAllDevicePrekeysForUser : getAllDeviceBundlesForUser;
+  const recipientDevices = bundlesFor(other.id);
   const primary = recipientDevices[0] || null;
   if (!primary) return res.status(404).json({ error: 'no keys' });
   res.json({
@@ -488,6 +502,31 @@ router.get('/:id/bundle/:username', (req, res) => {
     ed25519_key: primary.ed25519_key,
     fallback_key: primary.fallback_key,
     one_time_key: primary.one_time_key
+  });
+});
+
+// Claim one one-time prekey per listed device of a room member — used exactly
+// once per new 1:1 session (Megolm key wrapping), never on every share.
+router.post('/:id/claim/:username', express.json(), (req, res) => {
+  if (!res.locals.currentUser) return res.status(401).json({ error: 'Not logged in' });
+  const room = getRoom(Number(req.params.id));
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+  const user = res.locals.currentUser;
+  if (!isRoomMember(room.id, user.id)) return res.status(403).json({ error: 'Not a member' });
+  const other = getUserByUsername(req.params.username);
+  if (!other) return res.status(404).json({ error: 'not found' });
+  if (!isRoomMember(room.id, other.id)) return res.status(403).json({ error: 'not a member' });
+  const deviceIds = Array.isArray(req.body.device_ids)
+    ? [...new Set(req.body.device_ids.map(x => String(x || '').trim()).filter(Boolean))].slice(0, 50)
+    : null;
+  const devices = deviceIds ? claimAllDevicePrekeysForUser(other.id, deviceIds) : [];
+  const primary = devices[0] || null;
+  res.json({
+    devices,
+    identity_key: primary ? primary.identity_key : null,
+    ed25519_key: primary ? primary.ed25519_key : null,
+    fallback_key: primary ? primary.fallback_key : null,
+    one_time_key: primary ? primary.one_time_key : null,
   });
 });
 
@@ -522,19 +561,22 @@ router.post('/:id/channels/:cid/messages/:mid/edit', (req, res) => {
   if (!channel || channel.room_id !== room.id) return res.status(404).json({ error: 'Channel not found' });
   const body = String(req.body.body || '').trim();
   const proto = String(req.body.proto || 'plain').trim() === 'megolm' ? 'megolm' : 'plain';
-  const ciphertext = String(req.body.ciphertext || '').trim().slice(0, 20000) || null;
+  const ciphertextRaw = String(req.body.ciphertext || '').trim();
   const groupSessionId = String(req.body.group_session_id || '').trim() || null;
   const isSticker = body.startsWith('/uploads/stickers/');
   if (!isSticker) {
-    if (!body && !ciphertext) return res.status(400).json({ error: 'Message is empty' });
-    if (proto !== 'megolm' || !ciphertext || !groupSessionId) {
+    if (!body && !ciphertextRaw) return res.status(400).json({ error: 'Message is empty' });
+    if (body.length > ROOM_BODY_MAX || ciphertextRaw.length > ROOM_CT_MAX) {
+      return res.status(400).json({ error: 'Message is too long.' });
+    }
+    if (proto !== 'megolm' || !ciphertextRaw || !groupSessionId) {
       return res.status(400).json({ error: 'End-to-end encryption required. Room messages must be Megolm-encrypted.' });
     }
-    const gs = getRoomGroupSession(room.id, userId);
-    if (!gs || String(gs.id) !== groupSessionId) {
+    if (!isRoomGroupSessionUsable(room.id, userId, groupSessionId)) {
       return res.status(400).json({ error: 'Unknown group session.' });
     }
   }
+  const ciphertext = ciphertextRaw || null;
   const ok = editRoomMessage(Number(req.params.mid), userId, isSticker ? body : '', proto, ciphertext, isSticker ? null : groupSessionId);
   if (!ok) return res.status(403).json({ error: 'Not your message' });
   res.json({ ok: true });

@@ -187,6 +187,8 @@ class SimBrowser {
 
   // --- outbound session ladder (getOrCreateOutboundSession, without the
   // safety/rekey network checks which don't affect the happy path) ---
+  // Mirrors the FIXED client: bundle reads are non-destructive (peek), and a
+  // one-time key is CLAIMED exactly once per new session via /claim.
   async getOrCreateOutboundSession(other) {
     const idStr = String(other.userId);
     if (this.sessions[idStr]) return this.sessions[idStr];
@@ -200,16 +202,29 @@ class SimBrowser {
     const r = await this.csrfFetch('/chats/' + encodeURIComponent(other.username) + '/bundle');
     if (r.status !== 200) throw new Error('bundle fetch failed: ' + r.status + ' ' + (await r.text()));
     const bundle = await r.json();
-    if (!bundle.identity_key || (!bundle.one_time_key && !bundle.fallback_key)) {
-      throw new Error('Recipient has no encryption keys yet');
-    }
+    if (!bundle.identity_key) throw new Error('Recipient has no encryption keys yet');
+    const claimed = await this.claimOne(other.username, ['default']);
+    const idKey = claimed.identity_key || bundle.identity_key;
+    const otk = claimed.one_time_key ? claimed.one_time_key.public_key : (bundle.one_time_key ? bundle.one_time_key.public_key : bundle.fallback_key);
+    if (!idKey || !otk) throw new Error('Recipient has no encryption keys yet');
     const s = new Olm.Session();
-    s.create_outbound(this.account, bundle.identity_key, bundle.one_time_key ? bundle.one_time_key.public_key : bundle.fallback_key);
+    s.create_outbound(this.account, idKey, otk);
     await this.saveSessionBaseline(idStr, s);
     await this.saveSession(idStr, s);
-    await this.idb.set('sessionIdent:' + this.userId + ':' + idStr, bundle.identity_key);
+    await this.idb.set('sessionIdent:' + this.userId + ':' + idStr, idKey);
     this.sessions[idStr] = s;
     return s;
+  }
+
+  // Claim one one-time key for the listed (single-device) ids. Mirrors the
+  // fixed client's claimPrekeys().
+  async claimOne(username, deviceIds) {
+    const r = await this.csrfFetch('/chats/' + encodeURIComponent(username) + '/claim', {
+      method: 'POST',
+      body: JSON.stringify({ device_ids: deviceIds }),
+    });
+    if (r.status !== 200) throw new Error('claim failed: ' + r.status + ' ' + (await r.text()));
+    return r.json();
   }
 
   // Force a fresh outbound session from the peer's current bundle (mirrors
@@ -219,14 +234,16 @@ class SimBrowser {
     const r = await this.csrfFetch('/chats/' + encodeURIComponent(other.username) + '/bundle');
     if (r.status !== 200) throw new Error('bundle fetch failed: ' + r.status + ' ' + (await r.text()));
     const bundle = await r.json();
-    if (!bundle.identity_key || (!bundle.one_time_key && !bundle.fallback_key)) {
-      throw new Error('Recipient has no encryption keys yet');
-    }
+    if (!bundle.identity_key) throw new Error('Recipient has no encryption keys yet');
+    const claimed = await this.claimOne(other.username, ['default']);
+    const idKey = claimed.identity_key || bundle.identity_key;
+    const otk = claimed.one_time_key ? claimed.one_time_key.public_key : (bundle.one_time_key ? bundle.one_time_key.public_key : bundle.fallback_key);
+    if (!idKey || !otk) throw new Error('Recipient has no encryption keys yet');
     const s = new Olm.Session();
-    s.create_outbound(this.account, bundle.identity_key, bundle.one_time_key ? bundle.one_time_key.public_key : bundle.fallback_key);
+    s.create_outbound(this.account, idKey, otk);
     await this.saveSessionBaseline(idStr, s);
     await this.saveSession(idStr, s);
-    await this.idb.set('sessionIdent:' + this.userId + ':' + idStr, bundle.identity_key);
+    await this.idb.set('sessionIdent:' + this.userId + ':' + idStr, idKey);
     this.sessions[idStr] = s;
     return s;
   }
