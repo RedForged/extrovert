@@ -9,8 +9,119 @@ const { adminExists } = db;
 const { getAccountIds, getSignedInAccounts, addAccount, setActiveAccount, removeAccount } = require('../accounts');
 const captcha = require('../captcha');
 const emailVerify = require('../email-verify');
+const twofa = require('../twofa');
 
 const router = express.Router();
+
+// ---------- two-factor login support ----------
+const TRUSTED_DEVICE_COOKIE = 'extv_td';
+const PENDING_2FA_TTL_MS = 5 * 60 * 1000;
+const MAX_2FA_ATTEMPTS = 5;
+
+function cookieSecureSetting() {
+  return process.env.EXTV_COOKIE_SECURE === 'false' ? false
+    : process.env.EXTV_COOKIE_SECURE === 'true' ? true
+    : process.env.NODE_ENV === 'production' ? 'auto' : false;
+}
+
+// Minimal cookie reader (the app has no cookie-parser dependency).
+function readCookie(req, name) {
+  const header = req.headers.cookie;
+  if (!header) return null;
+  for (const part of header.split(';')) {
+    const idx = part.indexOf('=');
+    if (idx === -1) continue;
+    if (part.slice(0, idx).trim() === name) return decodeURIComponent(part.slice(idx + 1).trim());
+  }
+  return null;
+}
+
+// True when this browser presents a valid, unexpired trusted-device token
+// for exactly this account (suppresses the TOTP challenge).
+function hasTrustedDevice(req, userId) {
+  const token = readCookie(req, TRUSTED_DEVICE_COOKIE);
+  if (!token) return false;
+  const row = db.getTrustedDevice(twofa.hashTrustedDeviceToken(token));
+  return !!row && row.user_id === userId;
+}
+
+// Shared second-factor verifier: 6-digit input is a TOTP code, anything else
+// is treated as a recovery code (consumed atomically, single use). Returns
+// false on any failure — including decryption errors — never throws.
+function verifySecondFactor(user, code) {
+  const trimmed = String(code || '').trim();
+  if (!trimmed) return false;
+  try {
+    if (/^\d{6}$/.test(trimmed.replace(/\s+/g, ''))) {
+      return twofa.verifyTotp(twofa.decryptSecret(user.totp_secret), trimmed);
+    }
+    return db.consumeRecoveryCode(user.id, twofa.hashRecoveryCode(trimmed));
+  } catch (err) {
+    console.error('second-factor verify error:', err.message);
+    return false;
+  }
+}
+
+// The session-stored pending second factor, or null when absent/expired.
+function getPending2fa(req) {
+  const pending = req.session.pending2fa;
+  if (!pending) return null;
+  if (!pending.expiresAt || pending.expiresAt <= Date.now()) {
+    delete req.session.pending2fa;
+    return null;
+  }
+  return pending;
+}
+
+// Session-fixation-safe login completion, shared by the password path, the
+// TOTP challenge path, and passkey login. When the browser is ALREADY signed
+// in (add-another-account flow), the existing account list is carried across
+// the regeneration so adding an account does not sign the device out of the
+// accounts it already has. A fresh login seeds the list with just this
+// account — a planted session cookie can never inherit an attacker's list.
+function completeLogin(req, res, user, { next, wasSignedIn, existingIds }) {
+  req.session.regenerate((err) => {
+    if (err) {
+      console.error('login: session regeneration failed:', err);
+      return res.status(500).send('Internal server error');
+    }
+    req.session.csrfToken = crypto.randomBytes(32).toString('hex');
+    addAccount(req, user.id);
+    if (wasSignedIn && existingIds.length > 0) {
+      req.session.accountIds = existingIds.includes(user.id) ? existingIds : [...existingIds, user.id];
+      req.session.userId = user.id;
+    }
+    const loginIp = req.ip || req.connection.remoteAddress;
+    try { db.db.prepare(`UPDATE users SET referrer_ip = ? WHERE id = ?`).run(loginIp, user.id); } catch {}
+    if (!user.is_admin && !adminExists()) {
+      return res.redirect('/become-admin');
+    }
+    res.safeRedirect(next, '/');
+  });
+}
+
+// Passkey login completion: same regeneration + account-list rules as
+// completeLogin, but hands control to a callback instead of redirecting (the
+// caller responds with JSON).
+function completeLoginForApi(req, res, user, done) {
+  const wasSignedIn = !!req.session.userId;
+  const existingIds = wasSignedIn ? getAccountIds(req) : [];
+  req.session.regenerate((err) => {
+    if (err) {
+      console.error('passkey login: session regeneration failed:', err);
+      return res.status(500).json({ error: { message: 'Internal server error' } });
+    }
+    req.session.csrfToken = crypto.randomBytes(32).toString('hex');
+    addAccount(req, user.id);
+    if (wasSignedIn && existingIds.length > 0) {
+      req.session.accountIds = existingIds.includes(user.id) ? existingIds : [...existingIds, user.id];
+      req.session.userId = user.id;
+    }
+    const loginIp = req.ip || req.connection.remoteAddress;
+    try { db.db.prepare(`UPDATE users SET referrer_ip = ? WHERE id = ?`).run(loginIp, user.id); } catch {}
+    done();
+  });
+}
 
 router.get('/register', (req, res) => {
   if (req.session.userId) return res.redirect('/');
@@ -183,30 +294,86 @@ router.post('/login', (req, res) => {
       signedInAccounts: req.session.userId ? getSignedInAccounts(req) : [],
     });
   }
-  // Session-fixation-safe login. When the browser is ALREADY signed in
-  // (add-another-account flow), carry the existing account list across the
-  // regeneration so adding an account does not sign the device out of the
-  // accounts it already has. A fresh login seeds the list with just this
-  // account — a planted session cookie can never inherit an attacker's list.
+  // Two-factor accounts get a second step instead of an immediate session.
+  // userId stays UNSET until the code verifies, so requireAuth-protected pages
+  // remain inaccessible; the multi-account context is captured up front so
+  // completion can reproduce the anti-fixation rules exactly.
   const wasSignedIn = !!req.session.userId;
   const existingIds = wasSignedIn ? getAccountIds(req) : [];
-  req.session.regenerate((err) => {
-    if (err) {
-      console.error('login: session regeneration failed:', err);
-      return res.status(500).send('Internal server error');
+  const nextUrl = req.body.next || req.query.next || '';
+  if (user.totp_enabled && !hasTrustedDevice(req, user.id)) {
+    req.session.pending2fa = {
+      userId: user.id,
+      next: nextUrl,
+      wasSignedIn,
+      existingIds,
+      attempts: 0,
+      expiresAt: Date.now() + PENDING_2FA_TTL_MS,
+    };
+    return res.redirect('/login/totp');
+  }
+  completeLogin(req, res, user, { next: nextUrl, wasSignedIn, existingIds });
+});
+
+// Renders the second-factor challenge. No pending state → back to /login.
+router.get('/login/totp', (req, res) => {
+  const pending = getPending2fa(req);
+  if (!pending) return res.redirect('/login');
+  res.render('totp-challenge', { error: null, remember: true });
+});
+
+// Second-factor verification. The input is either a 6-digit TOTP or a recovery
+// code — both fail with the same generic message and share the attempt budget.
+router.post('/login/totp', (req, res) => {
+  const pending = getPending2fa(req);
+  if (!pending) return res.redirect('/login');
+  const user = getUserById(pending.userId);
+  // The account (or its 2FA enrollment) vanished mid-challenge.
+  if (!user || !user.totp_enabled || !user.totp_secret) {
+    delete req.session.pending2fa;
+    return res.redirect('/login');
+  }
+  const code = String(req.body.code || '');
+  const usedRecovery = !/^\d{6}$/.test(code.replace(/\s+/g, ''));
+  const ok = verifySecondFactor(user, code);
+  if (!ok) {
+    pending.attempts += 1;
+    db.auditLog('2fa_verify_failed', pending.userId, usedRecovery ? 'recovery' : 'totp');
+    if (pending.attempts >= MAX_2FA_ATTEMPTS) {
+      delete req.session.pending2fa;
+      return res.render('login', {
+        error: 'Too many invalid codes. Please log in again.',
+        next: pending.next || '',
+        addMode: false,
+        signedInAccounts: [],
+      });
     }
-    req.session.csrfToken = crypto.randomBytes(32).toString('hex');
-    addAccount(req, user.id);
-    if (wasSignedIn && existingIds.length > 0) {
-      req.session.accountIds = existingIds.includes(user.id) ? existingIds : [...existingIds, user.id];
-      req.session.userId = user.id;
-    }
-    const loginIp = req.ip || req.connection.remoteAddress;
-    try { db.db.prepare(`UPDATE users SET referrer_ip = ? WHERE id = ?`).run(loginIp, user.id); } catch {}
-    if (!user.is_admin && !adminExists()) {
-      return res.redirect('/become-admin');
-    }
-    res.safeRedirect(req.body.next, '/');
+    return res.render('totp-challenge', { error: 'Invalid code.', remember: !!req.body.remember });
+  }
+  // Remember this device for N days: a random token in an httpOnly cookie,
+  // only its sha256$ hash is stored server-side.
+  if (req.body.remember) {
+    const token = twofa.generateTrustedDeviceToken();
+    db.addTrustedDevice(
+      pending.userId,
+      twofa.hashTrustedDeviceToken(token),
+      Date.now() + twofa.TRUSTED_DEVICE_DAYS * 24 * 60 * 60 * 1000
+    );
+    res.cookie(TRUSTED_DEVICE_COOKIE, token, {
+      httpOnly: true,
+      secure: cookieSecureSetting(),
+      sameSite: 'lax',
+      maxAge: twofa.TRUSTED_DEVICE_DAYS * 24 * 60 * 60 * 1000,
+      path: '/',
+    });
+    db.auditLog('trusted_device_added', pending.userId, `device remembered for ${twofa.TRUSTED_DEVICE_DAYS} days`);
+  }
+  delete req.session.pending2fa;
+  db.auditLog(usedRecovery ? 'recovery_code_used' : 'totp_login_success', pending.userId, '');
+  completeLogin(req, res, user, {
+    next: pending.next || '',
+    wasSignedIn: pending.wasSignedIn,
+    existingIds: pending.existingIds || [],
   });
 });
 
@@ -291,3 +458,6 @@ router.post('/become-admin', (req, res) => {
 });
 
 module.exports = router;
+module.exports.completeLoginForApi = completeLoginForApi;
+module.exports.verifySecondFactor = verifySecondFactor;
+module.exports.hasTrustedDevice = hasTrustedDevice;

@@ -105,7 +105,7 @@ app.use(session({
 // Auth rate limiter (login + register).
 const authLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 30,
+  max: Number(process.env.EXTV_AUTH_RATE_LIMIT) || 30,
   standardHeaders: true,
   legacyHeaders: false,
   validate: { xForwardedForHeader: false },
@@ -143,6 +143,21 @@ const apiLimiter = rateLimit({
   message: { type: 'about:blank', title: 'Too Many Requests', status: 429, detail: 'API rate limit exceeded. See X-RateLimit-* headers for details.' },
 });
 app.use('/api', apiLimiter);
+
+// Second-factor limiter — tight budget for code-verification endpoints
+// (login challenge, OAuth interstitial, passkey ceremonies). In-session
+// attempt counters provide the second wall.
+const SECOND_FACTOR_MAX = Number(process.env.EXTV_SECOND_FACTOR_RATE_LIMIT) || 10;
+const totpLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: SECOND_FACTOR_MAX,
+  standardHeaders: true,
+  legacyHeaders: false,
+  validate: { xForwardedForHeader: false },
+  message: 'Too many verification attempts. Try again in a few minutes.',
+});
+app.use('/login/totp', totpLimiter);
+app.use('/passkeys', totpLimiter);
 
 // CSRF middleware — generates and validates tokens per session.
 app.use((req, res, next) => {
@@ -312,6 +327,7 @@ app.use('/inbox', require('./routes/notifications'));
 app.use('/chats', require('./routes/chats'));
 app.use('/settings', require('./routes/settings'));
 app.use('/push', require('./routes/push'));
+app.use('/passkeys', require('./routes/webauthn'));
 app.use('/admin', require('./routes/admin'));
 app.use('/stickers', require('./routes/stickers'));
 app.use('/rooms', require('./routes/rooms'));
@@ -319,6 +335,24 @@ app.use('/', require('./routes/security')); // /security, /security/report, /sec
 
 // REST API v1.
 app.use('/api/v1', require('./routes/api-v1'));
+
+// Tighter limiter for the OAuth authorize POST when it carries a second-factor
+// code (the interstitial submission). Scoped matcher keeps normal consents on
+// the regular apiLimiter budget.
+const oauthFactorLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: Number(process.env.EXTV_OAUTH_FACTOR_RATE_LIMIT) || 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  validate: { xForwardedForHeader: false },
+  message: { type: 'about:blank', title: 'Too Many Requests', status: 429, detail: 'Too many verification attempts. Re-open the authorization request.' },
+});
+app.use('/api/v1/oauth/authorize', (req, res, next) => {
+  if (req.method === 'POST' && req.body && req.body.totp_code !== undefined) {
+    return oauthFactorLimiter(req, res, next);
+  }
+  next();
+});
 
 // OIDC well-known endpoints.
 app.use('/.well-known', require('./routes/well-known'));

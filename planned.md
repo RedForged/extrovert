@@ -1,17 +1,18 @@
 # Extrovert — Planned Features
 
 > Grounded in direct source analysis. File:line citations throughout.
-> Status: **F1 (multi-account) implemented** on 2026-08-09; F2–F5 remain
-> planning-phase (nothing implemented yet). Implemented items carry a `[✅ DONE]`
+> Status: **F1 (multi-account) implemented** on 2026-08-09; **F2 (2FA) and
+> F3 (passkeys) implemented** on 2026-08-22; F4–F5 remain planning-phase.
+> Implemented items carry a `[✅ DONE]`
 > tag verified against the current code.
 
 ---
 
 ## Structure
 
-- **F1. Multi-Account (with account selection at OAuth)**
-- **F2. Two-Factor Authentication (2FA)**
-- **F3. Passkeys (WebAuthn)**
+- **F1. Multi-Account (with account selection at OAuth)** [✅ DONE]
+- **F2. Two-Factor Authentication (2FA)** [✅ DONE]
+- **F3. Passkeys (WebAuthn)** [✅ DONE]
 - **F4. Federation (ActivityPub)**
 - **F5. Bots (Discord/Telegram-style bot accounts)**
 
@@ -132,10 +133,18 @@ Landing commit: **2026-08-09** (see `CHANGELOG.md` → Unreleased).
 
 ---
 
-## F2. Two-Factor Authentication (2FA)
+## F2. Two-Factor Authentication (2FA)  [✅ DONE 2026-08-22]
 
 **Goal:** TOTP-based second factor on login (and optionally on sensitive actions), with recovery
 codes so users are never locked out.
+
+> Implemented: `src/twofa.js` (RFC 6238 hand-rolled, AES-256-GCM secret
+> encryption via `TOTP_ENCRYPTION_KEY`, hashed recovery codes), `src/db.js`
+> (`totp_*` columns + `recovery_codes`/`trusted_devices` tables), the two-step
+> login in `src/routes/auth.js` (challenge page `/login/totp`, generic errors,
+> attempt lockout), enrollment/disable/regenerate on Settings → Security,
+> trusted-device cookie (30 d), sibling-session purge on state change, and the
+> F2.5 OAuth gate in `src/routes/api-v1.js`. Suite: `npm run test:twofa`.
 
 ### F2.1 Dependencies  [P1]
 
@@ -212,11 +221,19 @@ pre-enrollment session cookie is cut off.
 
 ---
 
-## F3. Passkeys (WebAuthn)
+## F3. Passkeys (WebAuthn)  [✅ DONE 2026-08-22]
 
 **Goal:** Passwordless sign-in and 2FA-class authentication using platform/roaming passkeys
 (WebAuthn), including a first-passkey enrollment bootstrap so new accounts can register a passkey
 at signup.
+
+> Implemented: `src/webauthn.js` + `src/routes/webauthn.js` (@simplewebauthn/
+> server v13, host-derived rpID/origin, single-use session challenges) and
+> `public/passkeys.js` (+ login/settings glue). Passkeys are **full auth** —
+> no TOTP afterwards (the chosen model; F3.6's ambiguity resolved). Enrollment
+> and management live on Settings → Security; signup-time bootstrap (F3.5) was
+> left out for now — passkeys are added post-signup from Security settings.
+> Attestation policy is `none` (F3.7 default). Suite: `npm run test:passkeys`.
 
 ### F3.1 Dependencies  [P1]
 

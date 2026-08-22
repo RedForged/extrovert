@@ -354,6 +354,51 @@ try { db.exec(`CREATE TABLE IF NOT EXISTS security_reports (
   handled_by INTEGER REFERENCES users(id)
 )`); } catch {}
 try { db.exec(`CREATE TABLE IF NOT EXISTS join_requests (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id INTEGER NOT NULL REFERENCES rooms(id), user_id INTEGER NOT NULL REFERENCES users(id), status TEXT NOT NULL DEFAULT 'pending', created_at INTEGER NOT NULL)`); } catch {}
+// Two-factor authentication: TOTP secret is stored encrypted at rest
+// (AES-256-GCM via TOTP_ENCRYPTION_KEY, see src/twofa.js). NULL = not enrolled.
+try { db.exec(`ALTER TABLE users ADD COLUMN totp_secret TEXT`); } catch {}
+try { db.exec(`ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0`); } catch {}
+try { db.exec(`ALTER TABLE users ADD COLUMN totp_confirmed_at INTEGER`); } catch {}
+// One-time backup codes; only sha256$ hashes are stored, never plaintext.
+try { db.exec(`
+  CREATE TABLE IF NOT EXISTS recovery_codes (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL REFERENCES users(id),
+    code_hash  TEXT NOT NULL,
+    used_at    INTEGER,
+    created_at INTEGER NOT NULL
+  );
+`); } catch {}
+try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_recovery_codes_user_hash ON recovery_codes(user_id, code_hash)`); } catch {}
+// WebAuthn passkeys. credential_id/public_key are base64url; counter guards
+// against cloned authenticators.
+try { db.exec(`
+  CREATE TABLE IF NOT EXISTS passkeys (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id       INTEGER NOT NULL REFERENCES users(id),
+    credential_id TEXT UNIQUE NOT NULL,
+    public_key    TEXT NOT NULL,
+    counter       INTEGER NOT NULL DEFAULT 0,
+    device_name   TEXT,
+    transports    TEXT,
+    created_at    INTEGER NOT NULL,
+    last_used_at  INTEGER
+  );
+`); } catch {}
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_passkeys_user ON passkeys(user_id)`); } catch {}
+// "Remember this device" tokens that suppress the TOTP prompt on login.
+// Only sha256$ hashes are stored.
+try { db.exec(`
+  CREATE TABLE IF NOT EXISTS trusted_devices (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      INTEGER NOT NULL REFERENCES users(id),
+    token_hash   TEXT UNIQUE NOT NULL,
+    created_at   INTEGER NOT NULL,
+    expires_at   INTEGER NOT NULL,
+    last_used_at INTEGER
+  );
+`); } catch {}
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_trusted_devices_user ON trusted_devices(user_id)`); } catch {}
 // Olm (Signal-style) end-to-end encryption: message protocol + sender-self ciphertext.
 try { db.exec(`ALTER TABLE messages ADD COLUMN proto TEXT NOT NULL DEFAULT 'rsa'`); } catch {}
 try { db.exec(`ALTER TABLE messages ADD COLUMN sender_ciphertext TEXT`); } catch {}
@@ -1436,6 +1481,130 @@ function getUserHistoryBackup(userId) {
   return row ? { backup_data: row.backup_data, updated_at: row.updated_at } : null;
 }
 
+// ---------- two-factor authentication (TOTP / recovery codes) ----------
+function setTotpSecret(userId, encryptedSecret) {
+  db.prepare(`UPDATE users SET totp_secret = ? WHERE id = ?`).run(encryptedSecret || null, userId);
+}
+
+function setTotpEnabled(userId, confirmedAt) {
+  db.prepare(`UPDATE users SET totp_enabled = ?, totp_confirmed_at = ? WHERE id = ?`)
+    .run(confirmedAt ? 1 : 0, confirmedAt || null, userId);
+}
+
+function replaceRecoveryCodes(userId, codeHashes, createdAt) {
+  const now = createdAt || Date.now();
+  db.exec('BEGIN');
+  try {
+    db.prepare(`DELETE FROM recovery_codes WHERE user_id = ?`).run(userId);
+    const ins = db.prepare(`INSERT INTO recovery_codes (user_id, code_hash, created_at) VALUES (?, ?, ?)`);
+    for (const hash of codeHashes) ins.run(userId, hash, now);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+function listRecoveryCodes(userId) {
+  return db.prepare(`SELECT id, code_hash, used_at, created_at FROM recovery_codes WHERE user_id = ? ORDER BY id`).all(userId);
+}
+
+function countUnusedRecoveryCodes(userId) {
+  const row = db.prepare(`SELECT COUNT(*) AS n FROM recovery_codes WHERE user_id = ? AND used_at IS NULL`).get(userId);
+  return row.n;
+}
+
+// Atomic single-use consume (cf. markOAuthCodeUsed): returns true when this
+// exact unused hash was flipped to used by THIS call.
+function consumeRecoveryCode(userId, codeHash) {
+  const res = db.prepare(`UPDATE recovery_codes SET used_at = ? WHERE user_id = ? AND code_hash = ? AND used_at IS NULL`)
+    .run(Date.now(), userId, codeHash);
+  return res.changes > 0;
+}
+
+// ---------- passkeys (WebAuthn credentials) ----------
+function createPasskey(p) {
+  const now = Date.now();
+  const res = db.prepare(`
+    INSERT INTO passkeys (user_id, credential_id, public_key, counter, device_name, transports, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(p.userId, p.credentialId, p.publicKey, p.counter || 0, p.deviceName || null,
+         p.transports ? JSON.stringify(p.transports) : null, now);
+  return getPasskeyById(res.lastInsertRowid);
+}
+
+function getPasskeyById(id) {
+  return db.prepare(`SELECT * FROM passkeys WHERE id = ?`).get(id);
+}
+
+// Global lookup: authentication happens before we know the user.
+function getPasskeyByCredentialId(credentialId) {
+  return db.prepare(`SELECT * FROM passkeys WHERE credential_id = ?`).get(String(credentialId));
+}
+
+function getPasskeysByUser(userId) {
+  return db.prepare(`SELECT * FROM passkeys WHERE user_id = ? ORDER BY created_at DESC, id DESC`).all(userId);
+}
+
+function countPasskeys(userId) {
+  const row = db.prepare(`SELECT COUNT(*) AS n FROM passkeys WHERE user_id = ?`).get(userId);
+  return row.n;
+}
+
+function updatePasskeyCounter(id, counter) {
+  db.prepare(`UPDATE passkeys SET counter = ?, last_used_at = ? WHERE id = ?`).run(counter, Date.now(), id);
+}
+
+function touchPasskey(id) {
+  db.prepare(`UPDATE passkeys SET last_used_at = ? WHERE id = ?`).run(Date.now(), id);
+}
+
+function renamePasskey(id, userId, deviceName) {
+  const res = db.prepare(`UPDATE passkeys SET device_name = ? WHERE id = ? AND user_id = ?`).run(deviceName, id, userId);
+  return res.changes > 0;
+}
+
+function deletePasskey(id, userId) {
+  const res = db.prepare(`DELETE FROM passkeys WHERE id = ? AND user_id = ?`).run(id, userId);
+  return res.changes > 0;
+}
+
+// ---------- trusted devices ("remember this device" for 2FA) ----------
+function addTrustedDevice(userId, tokenHash, expiresAt) {
+  const now = Date.now();
+  db.prepare(`INSERT INTO trusted_devices (user_id, token_hash, created_at, expires_at) VALUES (?, ?, ?, ?)`)
+    .run(userId, tokenHash, now, expiresAt);
+}
+
+// Expired rows are treated as absent; non-expired reads refresh last_used_at.
+function getTrustedDevice(tokenHash) {
+  const row = db.prepare(`SELECT * FROM trusted_devices WHERE token_hash = ?`).get(tokenHash);
+  if (!row) return null;
+  if (row.expires_at <= Date.now()) {
+    db.prepare(`DELETE FROM trusted_devices WHERE token_hash = ?`).run(tokenHash);
+    return null;
+  }
+  db.prepare(`UPDATE trusted_devices SET last_used_at = ? WHERE id = ?`).run(Date.now(), row.id);
+  return row;
+}
+
+function listTrustedDevices(userId) {
+  return db.prepare(`SELECT * FROM trusted_devices WHERE user_id = ? ORDER BY created_at DESC, id DESC`).all(userId);
+}
+
+function deleteTrustedDevice(id, userId) {
+  const res = db.prepare(`DELETE FROM trusted_devices WHERE id = ? AND user_id = ?`).run(id, userId);
+  return res.changes > 0;
+}
+
+function deleteAllTrustedDevices(userId) {
+  db.prepare(`DELETE FROM trusted_devices WHERE user_id = ?`).run(userId);
+}
+
+function pruneExpiredTrustedDevices() {
+  db.prepare(`DELETE FROM trusted_devices WHERE expires_at <= ?`).run(Date.now());
+}
+
 // ---------- account deletion ----------
 function deleteUser(userId) {
   // Remove every row referencing the user (FKs are enforced), in dependency
@@ -1479,6 +1648,10 @@ function deleteUser(userId) {
     db.prepare(`DELETE FROM media_attachments WHERE user_id = ?`).run(userId);
     db.prepare(`DELETE FROM edit_history WHERE edited_by = ?`).run(userId);
     db.prepare(`DELETE FROM push_subscriptions WHERE user_id = ?`).run(userId);
+    // Two-factor / passkey credentials.
+    db.prepare(`DELETE FROM recovery_codes WHERE user_id = ?`).run(userId);
+    db.prepare(`DELETE FROM passkeys WHERE user_id = ?`).run(userId);
+    db.prepare(`DELETE FROM trusted_devices WHERE user_id = ?`).run(userId);
     db.prepare(`DELETE FROM audit_log WHERE actor_id = ?`).run(userId);
     db.prepare(`UPDATE announcement SET author_id = NULL WHERE author_id = ?`).run(userId);
     db.prepare(`UPDATE security_reports SET handled_by = NULL WHERE handled_by = ?`).run(userId);
@@ -2300,6 +2473,15 @@ module.exports = {
   getMailSettings, setMailSettings, MAIL_SETTING_KEYS,
   // theme
   getUserTheme, setUserTheme, getUserDeveloperMode, setUserDeveloperMode,
+  // two-factor authentication (TOTP / recovery codes / trusted devices)
+  setTotpSecret, setTotpEnabled,
+  replaceRecoveryCodes, listRecoveryCodes, countUnusedRecoveryCodes, consumeRecoveryCode,
+  // passkeys (WebAuthn credentials)
+  createPasskey, getPasskeyById, getPasskeyByCredentialId, getPasskeysByUser, countPasskeys,
+  updatePasskeyCounter, touchPasskey, renamePasskey, deletePasskey,
+  // trusted devices ("remember this device")
+  addTrustedDevice, getTrustedDevice, listTrustedDevices, deleteTrustedDevice,
+  deleteAllTrustedDevices, pruneExpiredTrustedDevices,
   // rooms
   createRoom, getRoom, getRoomsForUser, getAvailableRooms, updateRoom, deleteRoom,
   isRoomMember, addRoomMember, removeRoomMember, getRoomMembers, getUserRoomRole, countRoomMembers,

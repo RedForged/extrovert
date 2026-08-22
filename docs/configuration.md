@@ -22,6 +22,10 @@ Extrovert is configured entirely through environment variables. There is no conf
 | `SECURITY_CONTACT_EMAIL` | no | `admin@extrovert.local` | Contact shown on the responsible-disclosure page (`/security`) and in `/.well-known/security.txt`. |
 | `EXTV_EMAIL_POLICY` | no | `off` | Email verification policy: `off` / `optional` / `required` (see [docs/mail.md](mail.md)). |
 | `EXTV_MAIL_*` | no | see [docs/mail.md](mail.md) | Built-in mail server settings (From address, DKIM, relay, STARTTLS, …). Also configurable live from `/admin/mail`. |
+| `TOTP_ENCRYPTION_KEY` | for 2FA | — | Key used to encrypt TOTP secrets at rest (AES-256-GCM). Generate with `openssl rand -base64 32`. Without it, users can't enable 2FA (passkeys still work). Changing it invalidates existing TOTP enrollments. |
+| `EXTV_AUTH_RATE_LIMIT` | no | `30` | Login/register requests per minute per IP. |
+| `EXTV_SECOND_FACTOR_RATE_LIMIT` | no | `10` | Second-factor verification attempts per 5 minutes (login challenge + passkey ceremonies). |
+| `EXTV_OAUTH_FACTOR_RATE_LIMIT` | no | `10` | Second-factor attempts per 5 minutes on the OAuth authorize endpoint. |
 
 ### `.env` files
 
@@ -41,6 +45,18 @@ export VAPID_PRIVATE_KEY=...
 - On first startup the server generates an RSA-2048 keypair and writes it to **`data/oidc-keys.json`** (chmod `0600`). This file contains the private signing key — treat it like a password and include it in backups.
 - Alternatively, supply the key via `OIDC_PRIVATE_KEY` (PEM) plus `OIDC_KID`; the file is then ignored.
 - The public JWKS is served at `/.well-known/jwks.json`. Previous keys are kept in the JWKS during rotation (max 2) so clients can verify ID tokens issued before a rotation.
+
+## Two-factor authentication & passkeys
+
+Users manage both features on **Settings → Security** (`/settings/security`).
+
+**TOTP 2FA** requires `TOTP_ENCRYPTION_KEY` to be set on the server — TOTP secrets are encrypted at rest with it (AES-256-GCM, `v1.`-prefixed ciphertext). Without the key the setup button explains that 2FA is unavailable; existing enrollments keep working but can't be re-created after a key change. Users get 10 single-use recovery codes (stored as SHA-256 hashes) and can opt to remember a browser for 30 days (`extv_td` cookie; only a hash is stored). Enabling or disabling 2FA signs all *other* sessions of the account out.
+
+**Passkeys (WebAuthn)** work without any extra configuration. The relying-party ID is derived from the request hostname — credentials are bound to the hostname the account registered them on, so don't switch between `example.com` and `www.example.com`. A passkey alone is sufficient to sign in (it is phishing-resistant multi-factor by itself); TOTP is not demanded afterwards. Up to 10 passkeys per account.
+
+**OAuth apps:** when the authorizing account has TOTP enabled, the consent flow demands a code first (per account, once per session) unless the browser holds a valid trusted-device cookie — an OAuth token must not be mintable from a merely password-authenticated session.
+
+Rate limits for the new endpoints are tunable via `EXTV_AUTH_RATE_LIMIT`, `EXTV_SECOND_FACTOR_RATE_LIMIT`, and `EXTV_OAUTH_FACTOR_RATE_LIMIT` (see Reference).
 
 ## Web Push (browser notifications)
 

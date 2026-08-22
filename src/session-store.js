@@ -146,5 +146,23 @@ function listAccountSessions(sid) {
   return db.prepare(`SELECT user_id, active FROM account_sessions WHERE session_id = ? ORDER BY rowid`).all(sid);
 }
 
+// Destroy every session that has `userId` signed in (F2.7: enabling/disabling
+// 2FA cuts off stolen or pre-enrollment cookies). The current device's session
+// can be spared via exceptSid. Returns the number of destroyed sessions.
+function destroySessionsForUser(userId, exceptSid) {
+  const rows = db.prepare(`SELECT DISTINCT session_id FROM account_sessions WHERE user_id = ?`).all(userId);
+  const delSession = db.prepare(`DELETE FROM sessions WHERE sid = ?`);
+  const delAccount = db.prepare(`DELETE FROM account_sessions WHERE session_id = ?`);
+  let destroyed = 0;
+  for (const row of rows) {
+    if (exceptSid && row.session_id === exceptSid) continue;
+    delSession.run(row.session_id);
+    delAccount.run(row.session_id);
+    destroyed++;
+  }
+  return destroyed;
+}
+
 module.exports = SqliteStore;
 module.exports.listAccountSessions = listAccountSessions;
+module.exports.destroySessionsForUser = destroySessionsForUser;

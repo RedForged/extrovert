@@ -1,0 +1,42 @@
+<%- include('partials/header', { pageTitle: 'Settings' }) %>
+
+<div style="max-width:480px;margin:0 auto">
+  <div class="card elevated" style="padding:28px">
+    <h2>Set up two-factor authentication</h2>
+    <p class="muted" style="font-size:0.9rem;margin:8px 0 16px">Scan this QR code with your authenticator app (Aegis, Raivo, Google Authenticator, 1Password, …), then enter the 6-digit code it shows.</p>
+
+    <% if (locals.error) { %>
+      <div class="flash err"><span class="flash-ico"><%- include('partials/icon', { name: 'alert', size: 18 }) %></span><span><%= error %></span></div>
+    <% } %>
+
+    <% if (locals.needRestart) { %>
+      <form method="post" action="/settings/security/totp/setup">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <button type="submit" class="btn full">Restart setup</button>
+      </form>
+    <% } else { %>
+      <% if (qrDataUrl) { %>
+        <div style="text-align:center;margin-bottom:16px">
+          <img src="<%= qrDataUrl %>" width="220" height="220" alt="TOTP QR code" style="border-radius:8px;background:#fff;padding:8px">
+        </div>
+      <% } %>
+      <% if (manualSecret) { %>
+        <p class="muted" style="font-size:0.85rem;margin-bottom:4px">Can't scan? Enter this secret manually:</p>
+        <p style="font-family:monospace;font-size:1rem;letter-spacing:0.06em;background:var(--surface-2);padding:10px;border-radius:8px;word-break:break-all;text-align:center"><%= manualSecret %></p>
+      <% } %>
+
+      <form method="post" action="/settings/security/totp/confirm" style="margin-top:16px">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <label for="code" class="muted" style="font-size:0.85rem">6-digit code from your app</label>
+        <input type="text" id="code" name="code" inputmode="numeric" pattern="[0-9]*" maxlength="6"
+               autocomplete="one-time-code" autofocus required
+               placeholder="123456"
+               style="width:100%;margin-bottom:12px;font-size:1.15rem;letter-spacing:0.08em;text-align:center">
+        <button type="submit" class="btn full"><%- include('partials/icon', { name: 'check', size: 15 }) %> Confirm & enable</button>
+      </form>
+    <% } %>
+    <a href="/settings/security" class="btn ghost full" style="margin-top:8px">Cancel</a>
+  </div>
+</div>
+
+<%- include('partials/footer') %>

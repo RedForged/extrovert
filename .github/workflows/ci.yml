@@ -39,6 +39,12 @@ jobs:
       - name: Multi-account suite
         run: npm run test:multi-account
 
+      - name: Two-factor authentication suite
+        run: npm run test:twofa
+
+      - name: Passkeys / WebAuthn suite
+        run: npm run test:passkeys
+
       - name: Register captcha suite
         run: npm run test:captcha
 

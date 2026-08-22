@@ -2,11 +2,13 @@
 
 const express = require('express');
 const crypto = require('node:crypto');
+const QRCode = require('qrcode');
 const db = require('../db');
 const { getUserTheme, setUserTheme, getUserDeveloperMode, setUserDeveloperMode, deleteUser, isValidEmail, getUserByEmail, getEmailPolicy } = db;
 const { VALID_SCOPES } = require('../api-auth');
 const { removeAccount } = require('../accounts');
 const emailVerify = require('../email-verify');
+const twofa = require('../twofa');
 
 const router = express.Router();
 
@@ -207,6 +209,210 @@ router.post('/developers/authorized/:clientId/revoke', (req, res) => {
     db.revokeOAuthTokensForUser(user.id, app.id);
   }
   res.redirect('/settings/developers');
+});
+
+// ---------- Security settings (2FA / recovery codes / trusted devices / passkeys) ----------
+const TRUSTED_DEVICE_COOKIE = 'extv_td';
+const MAX_PASSKEYS_PER_USER = 10;
+
+function cookieSecureSetting() {
+  return process.env.EXTV_COOKIE_SECURE === 'false' ? false
+    : process.env.EXTV_COOKIE_SECURE === 'true' ? true
+    : process.env.NODE_ENV === 'production' ? 'auto' : false;
+}
+
+function totpKeyConfigured() {
+  return !!process.env.TOTP_ENCRYPTION_KEY;
+}
+
+function renderSecurity(res, user, extra = {}) {
+  res.render('security-settings', {
+    user,
+    totpEnabled: !!user.totp_enabled,
+    totpKeyConfigured: totpKeyConfigured(),
+    unusedRecoveryCodes: db.countUnusedRecoveryCodes(user.id),
+    trustedDevices: db.listTrustedDevices(user.id),
+    passkeys: db.getPasskeysByUser(user.id),
+    ...extra,
+  });
+}
+
+router.get('/security', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.redirect('/login');
+  renderSecurity(res, user);
+});
+
+// Step 1: generate a secret, store it ENCRYPTED, show QR + manual entry.
+router.post('/security/totp/setup', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.redirect('/login');
+  if (!totpKeyConfigured()) {
+    return renderSecurity(res, user, {
+      error: 'This server has not configured TOTP_ENCRYPTION_KEY, so two-factor authentication is unavailable. The operator must set it (see docs/configuration.md).',
+    });
+  }
+  if (user.totp_enabled) return res.redirect('/settings/security');
+  const secret = twofa.generateTotpSecret();
+  db.setTotpSecret(user.id, twofa.encryptSecret(secret));
+  const uri = twofa.otpauthUri(secret, user.username);
+  QRCode.toDataURL(uri, { margin: 1, width: 220 })
+    .then((qr) => {
+      res.render('totp-setup', {
+        qrDataUrl: qr,
+        manualSecret: twofa.base32Encode(secret),
+        error: null,
+      });
+    })
+    .catch((err) => {
+      console.error('totp setup: QR generation failed:', err);
+      res.render('totp-setup', {
+        qrDataUrl: null,
+        manualSecret: twofa.base32Encode(secret),
+        error: 'Could not render the QR code — use the manual secret below.',
+      });
+    });
+});
+
+// Step 2: prove the authenticator works, then enable + show recovery codes once.
+router.post('/security/totp/confirm', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.redirect('/login');
+  if (user.totp_enabled) return res.redirect('/settings/security');
+  if (!user.totp_secret) {
+    return res.redirect('/settings/security/totp/setup');
+  }
+  let ok = false;
+  try {
+    ok = twofa.verifyTotp(twofa.decryptSecret(user.totp_secret), String(req.body.code || ''));
+  } catch (err) {
+    console.error('totp confirm: decrypt failed:', err.message);
+  }
+  if (!ok) {
+    return res.render('totp-setup', {
+      qrDataUrl: null,
+      manualSecret: null,
+      error: 'That code didn\'t match. Scan the code again or restart setup.',
+      needRestart: true,
+    });
+  }
+  const now = Date.now();
+  db.setTotpEnabled(user.id, now);
+  const codes = twofa.generateRecoveryCodes();
+  db.replaceRecoveryCodes(user.id, codes.map(twofa.hashRecoveryCode), now);
+  db.auditLog('totp_enabled', user.id, '2FA enabled');
+  // Cut off any OTHER device's pre-enrollment session (F2.7); this device's
+  // session is regenerated below so it survives.
+  try { require('../session-store').destroySessionsForUser(user.id, req.sessionID); } catch (err) {
+    console.error('totp confirm: session purge failed:', err);
+  }
+  req.session.regenerate((err) => {
+    if (err) {
+      console.error('totp confirm: session regeneration failed:', err);
+      return res.status(500).send('Internal server error');
+    }
+    req.session.csrfToken = crypto.randomBytes(32).toString('hex');
+    req.session.userId = user.id;
+    req.session.accountIds = [user.id];
+    res.render('totp-recovery', { codes, regenerated: false });
+  });
+});
+
+// Disable 2FA: requires a current TOTP code OR an unused recovery code —
+// never the password alone.
+router.post('/security/totp/disable', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.redirect('/login');
+  if (!user.totp_enabled) return res.redirect('/settings/security');
+  const code = String(req.body.code || '').trim();
+  let ok = false;
+  try {
+    if (/^\d{6}$/.test(code.replace(/\s+/g, ''))) {
+      ok = twofa.verifyTotp(twofa.decryptSecret(user.totp_secret), code);
+    } else if (code) {
+      ok = db.consumeRecoveryCode(user.id, twofa.hashRecoveryCode(code));
+    }
+  } catch (err) {
+    console.error('totp disable: verify failed:', err.message);
+  }
+  if (!ok) {
+    return renderSecurity(res, user, { error: 'Enter a valid authentication code or recovery code to disable 2FA.' });
+  }
+  db.setTotpSecret(user.id, null);
+  db.setTotpEnabled(user.id, null);
+  db.replaceRecoveryCodes(user.id, []); // clear all codes
+  db.deleteAllTrustedDevices(user.id);
+  res.clearCookie(TRUSTED_DEVICE_COOKIE, { path: '/' });
+  db.auditLog('totp_disabled', user.id, '2FA disabled');
+  try { require('../session-store').destroySessionsForUser(user.id, req.sessionID); } catch {}
+  renderSecurity(res, db.getUserById(user.id), { notice: 'Two-factor authentication is now off.' });
+});
+
+// Regenerate recovery codes: requires a valid current code; old codes die.
+router.post('/security/recovery/regenerate', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.redirect('/login');
+  if (!user.totp_enabled) return res.redirect('/settings/security');
+  const code = String(req.body.code || '').trim();
+  let ok = false;
+  try {
+    ok = /^\d{6}$/.test(code.replace(/\s+/g, ''))
+      ? twofa.verifyTotp(twofa.decryptSecret(user.totp_secret), code)
+      : !!code && db.consumeRecoveryCode(user.id, twofa.hashRecoveryCode(code));
+  } catch (err) {
+    console.error('recovery regenerate: verify failed:', err.message);
+  }
+  if (!ok) {
+    return renderSecurity(res, user, { error: 'Enter a valid authentication code or recovery code first.' });
+  }
+  const codes = twofa.generateRecoveryCodes();
+  db.replaceRecoveryCodes(user.id, codes.map(twofa.hashRecoveryCode));
+  db.auditLog('recovery_codes_regenerated', user.id, '');
+  res.render('totp-recovery', { codes, regenerated: true });
+});
+
+router.post('/security/devices/:id/revoke', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.redirect('/login');
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || !db.deleteTrustedDevice(id, user.id)) {
+    return res.status(404).send('Trusted device not found.');
+  }
+  db.auditLog('trusted_device_revoked', user.id, `device #${id}`);
+  res.redirect('/settings/security');
+});
+
+router.post('/security/devices/revoke-all', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.redirect('/login');
+  db.deleteAllTrustedDevices(user.id);
+  res.clearCookie(TRUSTED_DEVICE_COOKIE, { path: '/' });
+  db.auditLog('trusted_device_revoked', user.id, 'all devices');
+  res.redirect('/settings/security');
+});
+
+// ---------- Passkey management (ceremonies live in routes/webauthn.js) ----------
+router.post('/security/passkeys/:id/rename', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.redirect('/login');
+  const id = Number(req.params.id);
+  const name = String(req.body.device_name || '').trim().slice(0, 64);
+  if (!Number.isInteger(id) || !db.getPasskeyById(id) || db.getPasskeyById(id).user_id !== user.id) {
+    return res.status(404).send('Passkey not found.');
+  }
+  db.renamePasskey(id, user.id, name || 'Passkey');
+  res.redirect('/settings/security');
+});
+
+router.post('/security/passkeys/:id/delete', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.redirect('/login');
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || !db.deletePasskey(id, user.id)) {
+    return res.status(404).send('Passkey not found.');
+  }
+  db.auditLog('passkey_removed', user.id, `passkey #${id}`);
+  res.redirect('/settings/security');
 });
 
 module.exports = router;

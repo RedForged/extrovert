@@ -9,6 +9,9 @@ Security researchers may test the software under the conditions on the in-app **
 ## Authentication
 
 - **Passwords:** bcrypt (10 rounds). Registration enforces a **12-character minimum and a 72-byte maximum** (ASVS 2.1.1). The byte cap (not a character cap) is deliberate: bcrypt truncates at 72 bytes, so anything longer would silently collide with its own prefix — multi-byte characters like emoji count toward the limit, and full Unicode remains supported.
+- **Two-factor authentication (TOTP):** RFC 6238, hand-verified against the standard's test vectors. Secrets are encrypted at rest with AES-256-GCM keyed from `TOTP_ENCRYPTION_KEY` (scrypt-derived); ciphertexts carry a `v1.` prefix so plaintext or foreign formats fail closed. Recovery codes are random 40-bit values stored as `sha256$` hashes and consumed atomically (single use). The login challenge is a separate step that never sets `userId` until the code verifies: 5 wrong attempts reset it, failures are generic (no oracle for whether an account has 2FA), and both the challenge endpoint and the OAuth factor step are rate-limited (10/5 min) on top of per-session attempt counters. "Remember this device" issues a random 32-byte token in an httpOnly cookie; only its hash is stored, rows expire after 30 days. Enabling/disabling 2FA signs the account's *other* sessions out.
+- **Passkeys (WebAuthn):** verified with `@simplewebauthn/server` — origin/RP-ID checks, single-use session-stored challenges with a 5-minute TTL, and signature-counter replay protection (an assertion whose counter moves backwards is rejected as a possible cloned authenticator). A passkey is treated as **full authentication**: no TOTP is demanded after it. Registration caps at 10 credentials per account; unknown credentials and tampered signatures return the same generic error as bad passwords.
+- **OAuth + 2FA:** authorizing an OAuth application for a TOTP-enabled account requires a second factor first (per account, remembered for the session or via trusted-device cookie) — a stolen password-only session cookie cannot mint API tokens.
 - **Sessions:** signed cookies (`express-session`), `httpOnly`, `SameSite=Lax`, `Secure` in production, 30-day lifetime, stored server-side in SQLite (`data/sessions.db`, expired rows purged). `SESSION_SECRET` is mandatory — the server refuses to start without it. Session IDs are regenerated on login and registration (anti session-fixation).
 - **OAuth:** access tokens (24 h) and rotating refresh tokens (90 days) are random 64-hex values handed to the client once and stored **only as SHA-256 hashes** (`sha256$…`) at rest, so a leaked database dump cannot be replayed. Client secrets and authorization codes are stored the same way (client secrets are shown once at registration; codes are single-use and 10-minute-lived). Endpoints check token validity, expiry, required scopes, and ban status on every request.
 
@@ -44,6 +47,7 @@ Security researchers may test the software under the conditions on the in-app **
 - 30 req/min on login/register (per IP)
 - 60 req/min on other web POSTs (per IP)
 - 120 req/min on `/api/*` (per OAuth token, falling back to per IP)
+- 10 req/5 min on second-factor verification (`/login/totp`, `/passkeys/*`, OAuth factor step)
 
 ## Headers (helmet CSP)
 
@@ -92,3 +96,5 @@ A registration via a referral link is rejected when the registrant's IP matches 
 | OIDC key rotation | Supported in code (`rotateKeys`), no admin UI |
 | JWT/refresh token reuse detection | Refresh tokens are rotated on use; a reused token is simply invalid |
 | Avatar storage path normalization | One-time migration in `db.js` keeps `/uploads/`-prefixed values for templates |
+| Passkeys bound to hostname | WebAuthn rpID = request hostname; changing an instance's public hostname invalidates registered passkeys (documented in configuration.md) |
+| `TOTP_ENCRYPTION_KEY` rotation | Changing it breaks existing TOTP enrollments (users can still recover via recovery codes… which also require the secret — treat the key as a backup-critical secret) |

@@ -69,6 +69,12 @@ Yes — set `OIDC_ISSUER` to your public URL, `TRUST_PROXY` to your proxy's addr
 ### Do I need to configure anything for Docker?
 The sample `docker-compose.yml` is complete on its own: it just needs `SESSION_SECRET` from the host environment (and an existing `nginx-proxy-manager_default` network). No extra services, no external dependencies.
 
+### How do I turn on two-factor authentication?
+Users enable it themselves at **Settings → Security** — but the server operator must set `TOTP_ENCRYPTION_KEY` first (generate with `openssl rand -base64 32`; TOTP secrets are encrypted with it). Without the key, 2FA setup shows an explanatory message. Passkeys work without any configuration.
+
+### I lost my authenticator device — am I locked out?
+No. Each of your 10 recovery codes works exactly once in place of a TOTP code, both on the login screen and on the "turn off 2FA" form. If you've burned all recovery codes and lost the device, an admin can delete the account; there is deliberately **no bypass** of 2FA (not even for admins).
+
 ## Developers
 
 ### How do third-party apps authenticate?

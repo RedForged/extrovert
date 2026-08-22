@@ -1,0 +1,111 @@
+<%- include('partials/header', { pageTitle: 'Settings' }) %>
+
+<div style="max-width:640px;margin:0 auto">
+  <h2>Security</h2>
+
+  <% if (locals.error) { %>
+    <div class="flash err"><span class="flash-ico"><%- include('partials/icon', { name: 'alert', size: 18 }) %></span><span><%= error %></span></div>
+  <% } %>
+  <% if (locals.notice) { %>
+    <div class="flash ok"><span class="flash-ico"><%- include('partials/icon', { name: 'check', size: 18 }) %></span><span><%= notice %></span></div>
+  <% } %>
+
+  <!-- Two-factor authentication -->
+  <div class="card" style="padding:20px;margin-bottom:16px">
+    <h3 style="margin:0 0 6px"><%- include('partials/icon', { name: 'lock', size: 17 }) %> Two-factor authentication</h3>
+    <p class="muted" style="font-size:0.9rem;margin:0 0 14px">A second step at login using an authenticator app (TOTP). Recovery codes provide access if you lose the device.</p>
+    <% if (!totpKeyConfigured) { %>
+      <p class="muted" style="font-size:0.85rem"><em>2FA is unavailable on this server: TOTP_ENCRYPTION_KEY is not configured.</em></p>
+    <% } else if (!totpEnabled) { %>
+      <form method="post" action="/settings/security/totp/setup">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <button type="submit" class="btn full"><%- include('partials/icon', { name: 'lock', size: 15 }) %> Set up 2FA</button>
+      </form>
+    <% } else { %>
+      <p style="font-size:0.9rem;margin:0 0 12px">
+        <strong>On</strong> since <%= new Date(user.totp_confirmed_at).toLocaleDateString() %>
+        · <span class="badge"><%= unusedRecoveryCodes %> recovery codes left</span>
+      </p>
+      <form method="post" action="/settings/security/recovery/regenerate" style="margin-bottom:10px">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <div style="display:flex;gap:8px">
+          <input type="text" name="code" placeholder="Current code or recovery code" aria-label="Current code or recovery code" required style="flex:1">
+          <button type="submit" class="btn ghost">Regenerate recovery codes</button>
+        </div>
+      </form>
+      <form method="post" action="/settings/security/totp/disable">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <div style="display:flex;gap:8px">
+          <input type="text" name="code" placeholder="Current code or recovery code" aria-label="Current code or recovery code" required style="flex:1">
+          <button type="submit" class="btn ghost">Turn off 2FA</button>
+        </div>
+      </form>
+    <% } %>
+  </div>
+
+  <!-- Trusted devices -->
+  <% if (totpEnabled) { %>
+  <div class="card" style="padding:20px;margin-bottom:16px">
+    <h3 style="margin:0 0 6px"><%- include('partials/icon', { name: 'check', size: 17 }) %> Remembered devices</h3>
+    <p class="muted" style="font-size:0.9rem;margin:0 0 14px">Browsers that skip the second-factor prompt for 30 days after verifying a code.</p>
+    <% if (trustedDevices.length === 0) { %>
+      <p class="muted" style="font-size:0.85rem">No remembered devices.</p>
+    <% } else { %>
+      <% trustedDevices.forEach((d) => { %>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border-soft)">
+          <span style="font-size:var(--fs-sm)">Remembered <%= new Date(d.created_at).toLocaleDateString() %> · last used <%= d.last_used_at ? new Date(d.last_used_at).toLocaleDateString() : 'never' %> · expires <%= new Date(d.expires_at).toLocaleDateString() %></span>
+          <form method="post" action="/settings/security/devices/<%= d.id %>/revoke" onsubmit="return confirm('Forget this device?')">
+            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+            <button type="submit" class="btn ghost">Revoke</button>
+          </form>
+        </div>
+      <% }) %>
+      <form method="post" action="/settings/security/devices/revoke-all" style="margin-top:10px">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <button type="submit" class="btn ghost full">Forget all devices</button>
+      </form>
+    <% } %>
+  </div>
+  <% } %>
+
+  <!-- Passkeys -->
+  <div class="card" style="padding:20px;margin-bottom:16px">
+    <h3 style="margin:0 0 6px"><%- include('partials/icon', { name: 'key', size: 17 }) %> Passkeys</h3>
+    <p class="muted" style="font-size:0.9rem;margin:0 0 14px">Sign in without a password using your device's built-in authenticator (fingerprint, face, or hardware key). A passkey alone is enough to sign in.</p>
+    <div id="passkey-status" class="muted" style="font-size:0.85rem;margin-bottom:10px"></div>
+    <button type="button" id="passkey-add" class="btn full" style="margin-bottom:8px"><%- include('partials/icon', { name: 'key', size: 15 }) %> Add a passkey</button>
+
+    <% if (passkeys.length === 0) { %>
+      <p class="muted" style="font-size:0.85rem">No passkeys registered.</p>
+    <% } else { %>
+      <% passkeys.forEach((p) => { %>
+        <div style="padding:8px 0;border-bottom:1px solid var(--border-soft)">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+            <span style="font-size:var(--fs-sm)">
+              <strong><%= p.device_name || 'Passkey' %></strong>
+              · added <%= new Date(p.created_at).toLocaleDateString() %>
+              · last used <%= p.last_used_at ? new Date(p.last_used_at).toLocaleDateString() : 'never' %>
+              <% if (p.counter > 0) { %>· counter <%= p.counter %><% } %>
+            </span>
+            <form method="post" action="/settings/security/passkeys/<%= p.id %>/delete" onsubmit="return confirm('Delete this passkey?')">
+              <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+              <button type="submit" class="btn ghost">Delete</button>
+            </form>
+          </div>
+          <form method="post" action="/settings/security/passkeys/<%= p.id %>/rename" style="display:flex;gap:8px;margin-top:6px">
+            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+            <input type="text" name="device_name" value="<%= p.device_name || '' %>" maxlength="64" aria-label="Passkey name" style="flex:1;font-size:var(--fs-sm)">
+            <button type="submit" class="btn ghost">Rename</button>
+          </form>
+        </div>
+      <% }) %>
+    <% } %>
+  </div>
+
+  <a href="/settings" class="btn ghost full">Back to settings</a>
+</div>
+
+<script src="/static/passkeys.js?v=1" defer></script>
+<script src="/static/settings-passkeys.js?v=1" defer></script>
+
+<%- include('partials/footer') %>

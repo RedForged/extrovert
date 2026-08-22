@@ -1,0 +1,23 @@
+<%- include('partials/header', { pageTitle: 'Settings' }) %>
+
+<div style="max-width:480px;margin:0 auto">
+  <div class="card elevated" style="padding:28px">
+    <h2><%= locals.regenerated ? 'New recovery codes' : 'Two-factor authentication is on' %></h2>
+    <p class="muted" style="font-size:0.9rem;margin:8px 0 4px">
+      <%= locals.regenerated
+        ? 'Your old recovery codes no longer work. Store the new ones somewhere safe.'
+        : 'Store these recovery codes somewhere safe. Each works once, instead of your authenticator code, if you ever lose access to it.' %>
+    </p>
+    <p class="muted" style="font-size:0.85rem;margin:0 0 14px"><strong>These are shown only this once.</strong></p>
+
+    <div style="background:var(--surface-2);border-radius:8px;padding:14px;display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">
+      <% codes.forEach((c) => { %>
+        <code style="font-size:0.95rem;text-align:center"><%= c %></code>
+      <% }) %>
+    </div>
+
+    <a href="/settings/security" class="btn full">Done — back to security settings</a>
+  </div>
+</div>
+
+<%- include('partials/footer') %>

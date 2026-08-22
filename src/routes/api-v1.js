@@ -13,6 +13,7 @@ const feed = require('../feed');
 const { requireApiAuth, clientAppAuth, generateToken, VALID_SCOPES } = require('../api-auth');
 const { signIdToken, ISSUER } = require('../oidc');
 const { getAccountIds } = require('../accounts');
+const auth = require('./auth');
 const { getOnlineUsers, getUserPresence, sendDmEvent, cancelPendingCallByToken } = require('../webrtc-signaling');
 const { onNotification } = require('../notif-broadcaster');
 const dm = require('../dm');
@@ -76,6 +77,17 @@ function requireVerifiedApiWrite(req, res, next) {
       'Email verification required before interacting. Use PATCH /api/v1/accounts/email to set and verify an address.');
   }
   next();
+}
+
+// F2.5 — does this session still owe a second factor for `userId`? True when
+// the account has TOTP enabled and this browser has neither a trusted-device
+// cookie nor a recorded second-factor pass for it. The pass is per-account
+// (bound to whichever account the code will be issued FOR), so a stolen
+// session can't mint tokens for another signed-in 2FA account via the picker.
+function needsSecondFactor(req, userId) {
+  if (req.session.secondFactorPassed === userId) return false;
+  const { hasTrustedDevice } = require('./auth');
+  return !hasTrustedDevice(req, userId);
 }
 
 function makeCursor(items, key = 'id') {
@@ -270,6 +282,29 @@ router.get('/oauth/authorize', (req, res) => {
   const signedInAccounts = accountIds.map(id => db.getUserById(id)).filter(Boolean);
   const oauthNextUrl = '/api/v1/oauth/authorize?' + new URLSearchParams(req.query).toString();
 
+  // F2.5: an OAuth authorization from a device that isn't trusted for this
+  // account must complete the same second-factor step the login flow uses
+  // before consent is shown — OAuth tokens grant API access, so minting one
+  // from a merely password-authenticated session would bypass 2FA.
+  const activeUser = db.getUserById(req.session.userId);
+  if (activeUser && activeUser.totp_enabled && needsSecondFactor(req, activeUser.id)) {
+    if (!req.session.csrfToken) {
+      req.session.csrfToken = crypto.randomBytes(32).toString('hex');
+    }
+    return res.render('oauth-second-factor', {
+      app,
+      redirect_uri,
+      state,
+      scopes: validScopes,
+      code_challenge,
+      code_challenge_method,
+      nonce,
+      csrfToken: req.session.csrfToken,
+      signedInAccounts,
+      activeId: req.session.userId,
+    });
+  }
+
   if (!req.session.csrfToken) {
     req.session.csrfToken = crypto.randomBytes(32).toString('hex');
   }
@@ -311,6 +346,57 @@ router.post('/oauth/authorize', (req, res) => {
     return errorResponse(res, 400, 'Bad Request', 'redirect_uri does not match registered URIs.');
   }
 
+  // F2.5 second factor, step 2: this is the INTERSTITIAL SUBMISSION (its form
+  // always carries the totp_code field and never an approve flag). Verify the
+  // code for the target account, record the per-account pass, and bounce back
+  // to the GET so the CONSENT page renders next — factor first, consent second.
+  if (req.body.totp_code !== undefined) {
+    let factorUserId = req.session.userId;
+    if (account_id !== undefined && account_id !== '') {
+      const parsed = Number(account_id);
+      if (!Number.isInteger(parsed) || !getAccountIds(req).includes(parsed)) {
+        return errorResponse(res, 400, 'Bad Request', 'Selected account is not signed in on this device.');
+      }
+      factorUserId = parsed;
+    }
+    const factorUser = db.getUserById(factorUserId);
+    const relayFields = {
+      app, redirect_uri, state, scopes: req.body.scope || app.scopes,
+      code_challenge, code_challenge_method, nonce,
+      signedInAccounts: getAccountIds(req).map(id => db.getUserById(id)).filter(Boolean),
+      activeId: factorUserId,
+    };
+    if (!req.session.csrfToken) req.session.csrfToken = crypto.randomBytes(32).toString('hex');
+    relayFields.csrfToken = req.session.csrfToken;
+
+    const overAttempts = (req.session.secondFactorAttempts || 0) >= 5;
+    const codeInput = String(req.body.totp_code || '').trim();
+    if (overAttempts) {
+      return errorResponse(res, 429, 'Too Many Requests',
+        'Too many invalid codes. Re-open the authorization request from the application.');
+    }
+    if (!codeInput || !factorUser || !factorUser.totp_enabled || !auth.verifySecondFactor(factorUser, codeInput)) {
+      req.session.secondFactorAttempts = (req.session.secondFactorAttempts || 0) + 1;
+      db.auditLog('2fa_verify_failed', factorUserId, 'oauth_authorize');
+      relayFields.error = 'Invalid code.';
+      return res.render('oauth-second-factor', relayFields);
+    }
+    delete req.session.secondFactorAttempts;
+    req.session.secondFactorPassed = factorUserId;
+    const getParams = new URLSearchParams({
+      client_id,
+      response_type: 'code',
+      redirect_uri,
+      scope: req.body.scope || '',
+    });
+    if (state) getParams.set('state', state);
+    if (code_challenge) getParams.set('code_challenge', code_challenge);
+    if (code_challenge_method) getParams.set('code_challenge_method', code_challenge_method);
+    if (nonce) getParams.set('nonce', nonce);
+    if (account_id !== undefined && account_id !== '') getParams.set('account_id', account_id);
+    return res.redirect('/api/v1/oauth/authorize?' + getParams.toString());
+  }
+
   if (approve !== 'yes') {
     const redirectUrl = new URL(redirect_uri);
     redirectUrl.searchParams.set('error', 'access_denied');
@@ -329,6 +415,22 @@ router.post('/oauth/authorize', (req, res) => {
       return errorResponse(res, 400, 'Bad Request', 'Selected account is not signed in on this device.');
     }
     userId = parsed;
+  }
+
+  // F2.5 second factor, step 1: consent was given (approve=yes) but the target
+  // account hasn't passed a factor challenge on this device — demand the code
+  // instead of issuing anything (tampered form, or trusted-device cookie that
+  // expired between GET and POST).
+  const factorUser = db.getUserById(userId);
+  if (factorUser && factorUser.totp_enabled && needsSecondFactor(req, userId)) {
+    if (!req.session.csrfToken) req.session.csrfToken = crypto.randomBytes(32).toString('hex');
+    return res.render('oauth-second-factor', {
+      app, redirect_uri, state, scopes: req.body.scope || app.scopes,
+      code_challenge, code_challenge_method, nonce,
+      csrfToken: req.session.csrfToken,
+      signedInAccounts: getAccountIds(req).map(id => db.getUserById(id)).filter(Boolean),
+      activeId: userId,
+    });
   }
 
   // Cap requested scopes by what the client registered (least privilege).

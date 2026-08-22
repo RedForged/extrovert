@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Two-Factor Verification — Extrovert</title>
+  <link rel="stylesheet" href="/static/theme.css">
+</head>
+<body style="display:flex;align-items:center;justify-content:center;min-height:100vh">
+  <div class="card" style="max-width:480px;width:100%;padding:32px">
+    <h1 style="margin-bottom:4px">Two-factor verification</h1>
+    <p style="margin-bottom:16px">Authorizing <strong><%= app.name %></strong> requires a second factor. Enter the 6-digit code from your authenticator app — or a recovery code.</p>
+
+    <% if (locals.error) { %>
+      <div class="flash err"><span class="flash-ico">!</span><span><%= error %></span></div>
+    <% } %>
+
+    <form method="POST" action="/api/v1/oauth/authorize">
+      <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+      <input type="hidden" name="client_id" value="<%= app.client_id %>">
+      <input type="hidden" name="redirect_uri" value="<%= redirect_uri %>">
+      <input type="hidden" name="scope" value="<%= scopes %>">
+      <input type="hidden" name="state" value="<%= state || '' %>">
+      <input type="hidden" name="code_challenge" value="<%= code_challenge || '' %>">
+      <input type="hidden" name="code_challenge_method" value="<%= code_challenge_method || '' %>">
+      <input type="hidden" name="nonce" value="<%= nonce || '' %>">
+      <input type="hidden" name="account_id" value="<%= activeId %>">
+
+      <label for="totp-code" style="display:block;margin-bottom:6px;font-size:0.9rem">Authentication code</label>
+      <input type="text" id="totp-code" name="totp_code" inputmode="numeric" autocomplete="one-time-code"
+             autofocus required placeholder="123456 or recovery code"
+             style="width:100%;margin-bottom:14px;font-size:1.15rem;letter-spacing:0.08em;text-align:center">
+
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+        <button type="submit" class="btn full">Verify</button>
+      </div>
+    </form>
+
+    <% if (signedInAccounts.length > 1) { %>
+      <p style="margin:14px 0 0;font-size:0.82rem" class="muted">Verifying for
+        <strong>@<%= (signedInAccounts.find(a => String(a.id) === String(activeId)) || {}).username || activeId %></strong>.
+        Other signed-in accounts will each ask for their own code.</p>
+    <% } %>
+  </div>
+</body>
+</html>

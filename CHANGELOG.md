@@ -8,6 +8,43 @@ below reconstruct the history behind each version.
 ## [Unreleased]
 
 ### Features
+- **Two-factor authentication (planned.md F2)**: TOTP second factor with the
+  full supporting surface.
+  - Enrollment at **Settings → Security** (`/settings/security`): QR code +
+    manual base32 secret, one confirming code required, then 10 single-use
+    recovery codes shown once (stored only as `sha256$` hashes).
+  - TOTP secrets are **encrypted at rest** (AES-256-GCM, `TOTP_ENCRYPTION_KEY`
+    env key, scrypt-derived; `v1.`-prefixed ciphertext fails closed on foreign
+    formats). Without the key configured, 2FA is unavailable and the UI says so.
+  - Login for enrolled accounts becomes a two-step flow: password first, then a
+    challenge page (`/login/totp`) accepting a 6-digit code or a recovery code.
+    `userId` stays unset until verification, so protected pages remain locked;
+    5 wrong attempts force a restart; all failures are generic (no oracle).
+  - **Remember this device** (30 days): hashed-token `trusted_devices` table +
+    httpOnly `extv_td` cookie suppresses re-prompting; revocable per-device or
+    wholesale from the Security page.
+  - Enabling/disabling 2FA signs the account's **other** sessions out (F2.7);
+    disabling requires a current code or recovery code — never just a password.
+  - **OAuth consent is gated behind the second factor** (F2.5): authorizing an
+    app for a TOTP-enabled account demands a code before consent (per account,
+    once per session), so API tokens can't be minted from a password-only
+    session. Documented in docs/developers/oauth-oidc.md.
+- **Passkeys / WebAuthn (planned.md F3)**: passwordless sign-in via platform or
+  roaming authenticators.
+  - "Sign in with a passkey" on the login page (discoverable-credential flow,
+    optional username narrowing) — a passkey is **full authentication**: no
+    password and no TOTP step afterwards.
+  - Enrollment + management on Settings → Security: rename, delete, max 10 per
+    account. Verification via `@simplewebauthn/server` (new dependency):
+    origin/RP-ID checks from the request host, single-use session challenges
+    (5-min TTL), signature-counter replay protection (backwards counters are
+    rejected as cloned authenticators).
+  - New tables: `passkeys`, `recovery_codes`, `trusted_devices`; additive
+    migrations, cleaned up in the account-deletion cascade. All credential
+    events land in `audit_log`.
+  - Tighter rate limits on every factor endpoint (10/5 min by default, tunable
+    via `EXTV_SECOND_FACTOR_RATE_LIMIT` / `EXTV_OAUTH_FACTOR_RATE_LIMIT`;
+    login/register now `EXTV_AUTH_RATE_LIMIT`).
 - **Multi-account (planned.md F1)**: sign in to several accounts on one browser
   and switch without logging out. The session model now tracks an ordered list
   of signed-in accounts (`req.session.accountIds`) with `req.session.userId` as

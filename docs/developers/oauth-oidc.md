@@ -66,6 +66,7 @@ GET /api/v1/oauth/authorize?client_id=…&redirect_uri=https%3A%2F%2Fapp.example
 
 - `redirect_uri` must exactly match a registered URI.
 - The user sees the consent page listing the app and requested scopes.
+- If the authorizing account has **two-factor authentication enabled**, a second-factor step is shown *before* consent: the user must enter a TOTP or recovery code (once per session per account; skipped on browsers with a valid "remember this device" cookie). Your app doesn't need to do anything — after verification the consent page renders as usual. A user signing in with a **passkey** skips this step (the passkey already proved possession).
 - `state` is echoed back (use it for CSRF protection). `nonce` is echoed into the `id_token`.
 - PKCE is strongly recommended for native clients: `code_challenge = base64url(sha256(verifier))`.
 
