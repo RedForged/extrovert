@@ -26,14 +26,14 @@
     <% } %>
     <div class="card elevated">
       <% if (error) { %><div class="flash err"><span class="flash-ico"><%- include('partials/icon', { name: 'alert', size: 18 }) %></span><span><%= error %></span></div><% } %>
-      <form method="post" action="/login<%= next ? '?next=' + encodeURIComponent(next) : '' %>" autocomplete="on">
+      <form method="post" action="/login" autocomplete="on">
         <input type="hidden" name="_csrf" value="<%= csrfToken %>">
         <label for="login-username">Username</label>
-        <input type="text" id="login-username" name="username" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false" required autofocus>
+        <input type="text" id="login-username" name="username" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false" required>
         <label for="login-password">Password</label>
         <input type="password" id="login-password" name="password" autocomplete="current-password" required>
         <input type="hidden" name="next" value="<%= next %>">
-        <button class="btn full" style="margin-top:20px"><%= addMode ? 'Add account' : 'Log in' %></button>
+        <button type="submit" class="btn full" style="margin-top:20px"><%= addMode ? 'Add account' : 'Log in' %></button>
       </form>
       <% if (!addMode) { %>
         <div style="display:flex;align-items:center;gap:10px;margin-top:14px">
