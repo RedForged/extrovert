@@ -35,18 +35,16 @@
         <input type="hidden" name="next" value="<%= next %>">
         <button type="submit" class="btn full" style="margin-top:20px"><%= addMode ? 'Add account' : 'Log in' %></button>
       </form>
-      <% if (!addMode) { %>
-        <div style="display:flex;align-items:center;gap:10px;margin-top:14px">
-          <span style="flex:1;border-top:1px solid var(--border-soft)"></span>
-          <span class="muted" style="font-size:var(--fs-xs)">or</span>
-          <span style="flex:1;border-top:1px solid var(--border-soft)"></span>
-        </div>
-        <div id="passkey-status" class="muted" style="font-size:var(--fs-sm);margin:10px 0 0"></div>
-        <button type="button" id="passkey-login" class="btn ghost full" style="margin-top:8px">
+    </div>
+    <% if (!addMode) { %>
+      <div class="card elevated" style="margin-top:16px">
+        <p class="muted center" style="margin:0 0 10px">Or sign in with a passkey</p>
+        <div id="passkey-status" class="muted" style="font-size:var(--fs-sm);margin:0 0 10px"></div>
+        <button type="button" id="passkey-login" class="btn ghost full">
           <%- include('partials/icon', { name: 'key', size: 15 }) %> Sign in with a passkey
         </button>
-      <% } %>
-    </div>
+      </div>
+    <% } %>
     <% if (!addMode) { %><p class="muted center" style="margin-top:18px">New here? <a href="/register">Make an account</a></p><% } %>
   </div>
   <script src="/static/passkeys.js?v=1" defer></script>
