@@ -2,8 +2,10 @@
 // The button is NOT in the initial HTML: password managers (Proton Pass and
 // friends) classify the page as a login form from the DOM they see on load,
 // and a second button — even in a separate card — makes them fill the
-// username but skip the password. The passkey option is injected after the
-// page settles, so the initial DOM is a clean single-form login.
+// username but skip the password. The button is injected after the `load`
+// event plus a settle margin, so it only shows up once the manager's
+// classification pass is done. (This file runs under `defer`, so a
+// readyState check can't do the deferring — see settleMount below.)
 (function () {
   'use strict';
 
@@ -49,9 +51,23 @@
     anchor.appendChild(wrap);
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', mount);
-  } else {
-    mount();
+  // Inject well after the load event and password-manager scan. This file is
+  // loaded with `defer`, so readyState is already 'interactive' when it runs
+  // and a readyState check never defers anything (the f7b8f36 bug) — wait for
+  // `load` plus a settle margin instead, so the button appears only after the
+  // extension's document_idle classification pass is done.
+  function settleMount() {
+    if ('requestIdleCallback' in window) {
+      requestIdleCallback(function () { setTimeout(mount, 2000); }, { timeout: 5000 });
+    } else {
+      setTimeout(mount, 2500);
+    }
   }
+
+  function scheduleMount() {
+    if (document.readyState === 'complete') settleMount();
+    else window.addEventListener('load', settleMount, { once: true });
+  }
+
+  scheduleMount();
 })();
