@@ -240,14 +240,28 @@ router.post('/register', async (req, res) => {
 });
 
 router.get('/login', (req, res) => {
+  // Canonical-URL login: any query string (next, add, …) is folded into the
+  // session and the browser is redirected to bare /login. Password managers
+  // key saved logins on the exact page URL, so serving the form under
+  // /login?next=… /login?add=1 (and their variants) breaks autofill. The
+  // login page URL is always exactly /login.
   const addMode = String(req.query.add || '') === '1';
   // Normally an already-signed-in browser is redirected away from the login
   // page; with ?add=1 the page becomes the "add another account" flow.
   if (req.session.userId && !addMode) return res.redirect('/');
+  if (req.query.next !== undefined || req.query.add !== undefined) {
+    req.session.loginNext = req.query.next || req.session.loginNext || '';
+    req.session.loginAdd = addMode;
+    return res.redirect('/login');
+  }
+  const next = req.session.loginNext || '';
+  delete req.session.loginNext;
+  const wasAdd = !!req.session.loginAdd;
+  delete req.session.loginAdd;
   res.render('login', {
     error: null,
-    next: req.query.next || '',
-    addMode,
+    next,
+    addMode: wasAdd,
     signedInAccounts: req.session.userId ? getSignedInAccounts(req) : [],
   });
 });
@@ -269,10 +283,11 @@ router.get('/verify-email', async (req, res) => {
 router.post('/login', (req, res) => {
   const username = String(req.body.username || '').trim();
   const password = String(req.body.password || '');
+  const nextFromBody = req.body.next || req.session.loginNext || '';
   if (password.length > 128) {
     return res.render('login', {
       error: 'Invalid username or password.',
-      next: req.query.next || '',
+      next: nextFromBody,
       addMode: !!req.session.userId,
       signedInAccounts: req.session.userId ? getSignedInAccounts(req) : [],
     });
@@ -281,7 +296,7 @@ router.post('/login', (req, res) => {
   if (!user || !bcrypt.compareSync(password, user.password_hash)) {
     return res.render('login', {
       error: 'Invalid username or password.',
-      next: req.query.next || '',
+      next: nextFromBody,
       addMode: !!req.session.userId,
       signedInAccounts: req.session.userId ? getSignedInAccounts(req) : [],
     });
@@ -289,7 +304,7 @@ router.post('/login', (req, res) => {
   if (user.banned) {
     return res.render('login', {
       error: 'Your account has been suspended.',
-      next: req.query.next || '',
+      next: nextFromBody,
       addMode: !!req.session.userId,
       signedInAccounts: req.session.userId ? getSignedInAccounts(req) : [],
     });
@@ -300,7 +315,7 @@ router.post('/login', (req, res) => {
   // completion can reproduce the anti-fixation rules exactly.
   const wasSignedIn = !!req.session.userId;
   const existingIds = wasSignedIn ? getAccountIds(req) : [];
-  const nextUrl = req.body.next || req.query.next || '';
+  const nextUrl = nextFromBody;
   if (user.totp_enabled && !hasTrustedDevice(req, user.id)) {
     req.session.pending2fa = {
       userId: user.id,
