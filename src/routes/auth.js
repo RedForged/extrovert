@@ -247,8 +247,11 @@ router.get('/login', (req, res) => {
   // login page URL is always exactly /login.
   const addMode = String(req.query.add || '') === '1';
   // Normally an already-signed-in browser is redirected away from the login
-  // page; with ?add=1 the page becomes the "add another account" flow.
-  if (req.session.userId && !addMode) return res.redirect('/');
+  // page. With ?add=1 the page becomes the "add another account" flow. The
+  // add flag is also folded into the session on the canonical-URL redirect
+  // below, so a signed-in browser that followed /login?add=1 -> bare /login
+  // must NOT be bounced here — check the session flag too.
+  if (req.session.userId && !addMode && !req.session.loginAdd) return res.redirect('/');
   if (req.query.next !== undefined || req.query.add !== undefined) {
     req.session.loginNext = req.query.next || req.session.loginNext || '';
     req.session.loginAdd = addMode;

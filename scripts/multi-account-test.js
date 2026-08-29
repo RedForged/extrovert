@@ -57,6 +57,22 @@ function makeWebSession(username, password) {
     if (sc) jar.cookie = sc.split(';')[0];
     return r;
   }
+  // Follow a 302 Location chain (up to 5 hops) while preserving cookies, as a
+  // browser would. The /login route folds query strings into the session and
+  // 302s to the canonical bare /login (commit 157541e); the add-account flow
+  // must follow that redirect before reading the form.
+  async function follow(url, max = 5) {
+    let cur = url;
+    for (let i = 0; i < max; i++) {
+      const r = await withCookie(cur);
+      if (r.status >= 300 && r.status < 400 && r.headers.get('location')) {
+        cur = new URL(r.headers.get('location'), 'http://localhost:' + process.env.PORT).pathname;
+        continue;
+      }
+      return r;
+    }
+    return withCookie(cur);
+  }
   return {
     jar,
     sid,
@@ -64,10 +80,10 @@ function makeWebSession(username, password) {
     get: (url) => withCookie(url).then((r) => r.text()),
     login: async (user, pass, { add = false } = {}) => {
       const qs = add ? '?add=1' : '';
-      const page = await withCookie('/login' + qs);
+      const page = await follow('/login' + qs);
       const html = await page.text();
       const csrf = (html.match(/name="_csrf" value="([^"]+)"/) || [])[1] || '';
-      const r = await withCookie('/login' + qs, {
+      const r = await withCookie('/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: `username=${encodeURIComponent(user)}&password=${encodeURIComponent(pass)}&_csrf=${encodeURIComponent(csrf)}`,
