@@ -115,17 +115,51 @@ app.use('/login', authLimiter);
 app.use('/register', authLimiter);
 
 // General action rate limiter (lower limit than auth).
+//
+// Keyed per-USER (signed-in session) with an IP fallback, not per-IP: a NAT
+// or a shared proxy IP must not let one user's activity starve everyone else,
+// and one user of an app this busy shouldn't be able to lock themselves out.
+// Budget is generous and configurable so legitimate use isn't throttled.
+const userScope = (req) => (req.session && req.session.userId)
+  ? 'u:' + req.session.userId
+  : (req.connection && req.connection.remoteAddress) || req.ip;
 const actionLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 60,
+  max: Number(process.env.EXTV_ACTION_RATE_LIMIT) || 240,
   standardHeaders: true,
   legacyHeaders: false,
-  validate: { xForwardedForHeader: false },
+  keyGenerator: userScope,
+  validate: { xForwardedForHeader: false, keyGeneratorIpFallback: false },
   message: 'Too many requests, please slow down.',
 });
+
+// E2EE crypto endpoints are NOT abuse-prone the way post/follow are. They are
+// authenticated + CSRF-protected, and throttling them is what breaks message
+// delivery: `/claim` establishes the Olm inbound session, `/rekey/*` heals a
+// desynced ratchet, `send` delivers the ciphertext, and `prekeys`/`devices`/
+// `security`/`received` back the whole flow. If these hit the 60/min blanket
+// limiter, the client can't claim a prekey or heal a session and every message
+// renders `[unable to decrypt]` — a self-inflicted DoS. Give them their own,
+// higher, still-per-user budget (configurable).
+const ML_CRYPTO_MAX = Number(process.env.EXTV_CRYPTO_RATE_LIMIT) || 600;
+const cryptoLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: ML_CRYPTO_MAX,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: userScope,
+  validate: { xForwardedForHeader: false, keyGeneratorIpFallback: false },
+  message: 'Too many crypto requests, please slow down.',
+});
+// E2EE paths that must never be throttled into a broken decrypt state.
+const CRYPTO_PREFIXES = [
+  '/chats/',                    // bundle/claim/send/rekey/security/received/delete
+  '/rooms/',                    // room key fan-out
+];
 app.use((req, res, next) => {
-  if (req.method === 'POST' && !req.path.startsWith('/api/')) return actionLimiter(req, res, next);
-  next();
+  if (req.method !== 'POST' || req.path.startsWith('/api/')) return next();
+  if (CRYPTO_PREFIXES.some((p) => req.path.startsWith(p))) return cryptoLimiter(req, res, next);
+  return actionLimiter(req, res, next);
 });
 
 // API rate limiter — key on OAuth bearer token when available, fallback to IP.

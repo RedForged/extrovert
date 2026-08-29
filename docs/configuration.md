@@ -26,6 +26,8 @@ Extrovert is configured entirely through environment variables. There is no conf
 | `EXTV_AUTH_RATE_LIMIT` | no | `30` | Login/register requests per minute per IP. |
 | `EXTV_SECOND_FACTOR_RATE_LIMIT` | no | `10` | Second-factor verification attempts per 5 minutes (login challenge + passkey ceremonies). |
 | `EXTV_OAUTH_FACTOR_RATE_LIMIT` | no | `10` | Second-factor attempts per 5 minutes on the OAuth authorize endpoint. |
+| `EXTV_ACTION_RATE_LIMIT` | no | `240` | General authenticated POST actions per minute per user (posts, follows, likes, …). |
+| `EXTV_CRYPTO_RATE_LIMIT` | no | `600` | E2EE crypto/transport POSTs per minute per user (`/chats/*/claim`, `/chats/*/send`, `/chats/rekey/*`, …). Set generously — throttling these is what breaks Olm decryption. |
 
 ### `.env` files
 
