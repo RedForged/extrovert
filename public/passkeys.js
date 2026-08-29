@@ -93,7 +93,9 @@
   }
 
   // Authentication: discoverable-credential flow when username is omitted.
-  async function authenticate(username, statusEl) {
+  // `redirectTo` lets the login page route a signed-in browser to the `next`
+  // target after an add-account passkey sign-in (defaults to '/').
+  async function authenticate(username, statusEl, redirectTo) {
     if (!window.PublicKeyCredential) throw new Error('This browser does not support passkeys.');
     const options = prepareGetOptions(await post('/passkeys/auth/options', { username: username || '' }));
     const assertion = await navigator.credentials.get({ publicKey: options });
@@ -108,7 +110,10 @@
         userHandle: assertion.response.userHandle ? bufToB64u(assertion.response.userHandle) : null,
       },
     });
-    window.location.href = '/';
+    // Safe-redirect semantics: only accept a relative path starting with '/'
+    // so an account can't be pointed at an external URL after passkey auth.
+    const target = (typeof redirectTo === 'string' && redirectTo.charAt(0) === '/') ? redirectTo : '/';
+    window.location.href = target;
   }
 
   window.ExtrovertPasskeys = { register, authenticate };

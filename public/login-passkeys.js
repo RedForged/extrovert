@@ -23,9 +23,15 @@
       if (status) status.textContent = 'Waiting for your authenticator…';
       try {
         // Username field is optional: when empty, the discoverable-credential
-        // flow lets the authenticator pick the passkey.
+        // flow lets the authenticator pick the passkey. On the add-account
+        // page, honor the hidden `next` target so a passkey sign-in lands where
+        // the password path would (instead of always going to '/').
+        const nextInput = document.querySelector('input[name="next"]');
+        const next = nextInput ? nextInput.value : '';
         await window.ExtrovertPasskeys.authenticate(
-          document.getElementById('login-username') ? document.getElementById('login-username').value.trim() : ''
+          document.getElementById('login-username') ? document.getElementById('login-username').value.trim() : '',
+          null,
+          next || '/'
         );
       } catch (err) {
         if (status) {

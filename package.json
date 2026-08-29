@@ -22,6 +22,7 @@
     "test:multi-account": "node scripts/multi-account-test.js",
     "test:twofa": "node scripts/twofa-test.js",
     "test:passkeys": "node scripts/passkeys-test.js",
+    "test:passkey-add": "node scripts/passkey-add-account-test.js",
     "test:captcha": "node scripts/captcha-test.js",
     "test:self-session": "node scripts/self-session-test.js",
     "test:session-reload": "node scripts/session-reload-test.js",
