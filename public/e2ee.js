@@ -1627,13 +1627,10 @@
     });
   }
 
-  // A room's outbound session must also exist as an inbound session for the
-  // sender, or their own sent messages can never be decrypted.
-  function saveSelfGroupInbound(roomId, myId, outbound) {
-    var ig = new Olm.InboundGroupSession();
-    ig.create(outbound.session_key());
-    return saveGroupInbound(roomId, String(myId), String(outbound.session_id()), ig);
-  }
+  // Note: the sender's own-room-message inbound session is created inside
+  // shareRoomSession, keyed by the SERVER session id (the id messages carry),
+  // not the Megolm base64 id. That mismatch used to make the sender unable to
+  // read their own room messages.
 
   // Room-scoped prekey bundle (cached, NON-destructive — no mutual-follow req).
   function fetchRoomBundle(roomId, username) {
@@ -1725,7 +1722,23 @@
         return d.session_id;
       });
     }).then(function (sessionId) {
-      return saveGroupOutbound(roomId, session, sessionId);
+      // Store the outbound session keyed by the SERVER session id. Self-messages
+      // must be decryptable by this device: create an inbound session from the
+      // outbound session's key, ALSO keyed by the SERVER session id (not the
+      // Megolm base64 id). Messages store group_session_id = the server id, so
+      // keying the self-inbound by the Megolm id made your own messages look up
+      // the wrong key and fail to decrypt.
+      var ig;
+      try {
+        ig = new Olm.InboundGroupSession();
+        ig.create(session.session_key());
+      } catch (e) { ig = null; }
+      var selfIn = (myId && ig)
+        ? saveGroupInbound(roomId, String(myId), String(sessionId), ig)
+        : Promise.resolve();
+      return selfIn.then(function () {
+        return saveGroupOutbound(roomId, session, sessionId);
+      });
     });
   }
 
@@ -1781,6 +1794,16 @@
           .then(function (r) { return r.json(); }).then(function (status) {
             var ok = out && groupOutIds[roomId] && String(groupOutIds[roomId]) === String(status.session_id);
             if (ok) {
+              // Ensure this device can read its own messages under the CURRENT
+              // server session id (not the Megolm base64 id). A prior bug keyed
+              // the self-inbound by the Megolm id, so own messages looked up the
+              // wrong key. Reconcile if the server-id-keyed self-inbound is absent.
+              var ensureSelf = loadGroupInbound(roomId, String(myId), String(groupOutIds[roomId])).then(function (ig) {
+                if (ig) return;
+                var selfIg = new Olm.InboundGroupSession();
+                selfIg.create(out.session_key());
+                return saveGroupInbound(roomId, String(myId), String(groupOutIds[roomId]), selfIg);
+              });
               var have = (status.recipients || []).map(Number);
               var empty = (status.empty_keys_for || []).map(Number);
               // Members who joined after this session was created -> rotate so they
@@ -1789,22 +1812,18 @@
               if (joined.length) {
                 var fresh = new Olm.OutboundGroupSession();
                 fresh.create();
-                return saveSelfGroupInbound(roomId, myId, fresh).then(function () {
-                  return shareRoomSession(roomId, fresh, others, allIds, true, myId, myUsername, myDevId);
-                });
+                return shareRoomSession(roomId, fresh, others, allIds, true, myId, myUsername, myDevId);
               }
               // Members who are covered but never got a real key (set up E2EE late) -> re-share.
               var needKey = others.filter(function (m) { return empty.indexOf(Number(m.id)) !== -1; });
               if (needKey.length) {
                 return shareRoomSession(roomId, out, needKey, allIds, false, myId, myUsername, myDevId);
               }
-              return;
+              return ensureSelf;
             }
             var fresh2 = new Olm.OutboundGroupSession();
             fresh2.create();
-            return saveSelfGroupInbound(roomId, myId, fresh2).then(function () {
-              return shareRoomSession(roomId, fresh2, others, allIds, true, myId, myUsername, myDevId);
-            });
+            return shareRoomSession(roomId, fresh2, others, allIds, true, myId, myUsername, myDevId);
           });
       });
     });
