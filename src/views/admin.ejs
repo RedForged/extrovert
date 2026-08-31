@@ -39,7 +39,7 @@
                 <% } %>
               <% } %>
               <% if (u.referral_count > 0) { %>
-                <form method="post" action="/admin/remove-referral/<%= u.id %>"><input type="hidden" name="_csrf" value="<%= csrfToken %>"><button class="btn ghost small">Remove ★</button></form>
+                <form method="post" action="/admin/remove-referral/<%= u.id %>"><input type="hidden" name="_csrf" value="<%= csrfToken %>"><button class="btn ghost small"><%- include('partials/icon', { name: 'starFilled', size: 12 }) %> Remove referral boost</button></form>
               <% } %>
             </td>
           </tr>

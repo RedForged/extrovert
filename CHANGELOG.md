@@ -5,7 +5,7 @@ follows [Semantic Versioning](https://semver.org/). This is the first tagged
 release: the codebase carries its version in `package.json`, and the sections
 below reconstruct the history behind each version.
 
-## [Unreleased]
+## [1.0.3] - 2026-08-30
 
 ### Features
 - **Two-factor authentication (planned.md F2)**: TOTP second factor with the
@@ -80,6 +80,26 @@ below reconstruct the history behind each version.
   which a terminal could solve by brute force.
   New `npm run test:captcha` suite (wired into CI) covering verification
   semantics and E2E register rejection of missing/wrong/replayed answers.
+
+### Fixes
+- **Rendered template text leaking as markup (settings)**: the email
+  verification field printed `Email <span class="muted">(change)</span>` in
+  cleartext — the span was built inside an escaped `<%= %>` expression — and
+  the update button showed a double-escaped `&amp;`. Both are now real template
+  markup; the "✓ verified" badge uses the SVG check icon.
+- **Post stat counts stopped updating after any like/share/comment**: the
+  client matched counts by emoji (`❤️`, `💬`) that server-rendered SVG icons had
+  long replaced, and clicking Like destroyed the heart icon. Stats are now
+  addressed via `data-stat` hooks and icons are rebuilt through a new shared
+  client icon helper (`public/icons.js`), which also replaces the emoji glyphs
+  (`♥` `⋮` `🔊` `📞`) in dynamically created UI.
+- **Emoji-as-icon sweep**: remaining text glyphs (✓ → `arrowRight`/`arrowLeft`
+  `★` `🔊` `📞` `⋮` in feed, admin, admin-mail, verify-email, rooms, call
+  overlays) replaced with the shared inline-SVG icon set.
+- **Megolm rooms: sender could not decrypt own messages** — the self-inbound
+  group session was keyed by the Megolm base64 id while messages carry the
+  server session id; sessions are now keyed consistently by the server id and
+  reconciled when missing.
 
 ## [1.0.2] - 2026-08-08
 

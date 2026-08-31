@@ -34,9 +34,9 @@
   <% } %>
 
   <div class="post-stats">
-    <span class="stat"><span class="ico"><%- include('icon', { name: item.liked ? 'heartFilled' : 'heart', size: 14 }) %></span> <%= item.likeCount %></span>
-    <span class="stat"><span class="ico"><%- include('icon', { name: 'comment', size: 14 }) %></span> <%= item.commentCount %></span>
-    <span class="stat"><span class="ico"><%- include('icon', { name: 'share', size: 14 }) %></span> <%= item.shareCount %></span>
+    <span class="stat" data-stat="like"><span class="ico"><%- include('icon', { name: item.liked ? 'heartFilled' : 'heart', size: 14 }) %></span> <%= item.likeCount %></span>
+    <span class="stat" data-stat="comment"><span class="ico"><%- include('icon', { name: 'comment', size: 14 }) %></span> <%= item.commentCount %></span>
+    <span class="stat" data-stat="share"><span class="ico"><%- include('icon', { name: 'share', size: 14 }) %></span> <%= item.shareCount %></span>
     <% if (item.followBoost > 0) { %><span class="boost"><%- include('icon', { name: 'starFilled', size: 13 }) %> followed from post ×<%= item.followBoost %></span><% } %>
   </div>
 

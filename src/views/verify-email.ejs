@@ -5,7 +5,7 @@
     </div>
     <div class="card elevated">
       <% if (result === 'ok') { %>
-        <h2 style="margin-top:0">Email verified ✓</h2>
+        <h2 style="margin-top:0;display:flex;align-items:center;gap:8px"><%- include('partials/icon', { name: 'check', size: 20 }) %>Email verified</h2>
         <p class="muted">Your email address has been confirmed. Thanks for verifying — you're all set.</p>
         <a class="btn full" href="/" style="margin-top:14px">Back to your feed</a>
       <% } else if (result === 'already_verified') { %>

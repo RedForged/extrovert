@@ -140,7 +140,9 @@
     var div = document.createElement('div');
     div.className = 'voice-member';
     div.id = 'voice-member-' + channelId + '-' + username;
-    div.innerHTML = '<span class="voice-member-speaking">🔊</span><span class="voice-member-name">' + escapeHtml(displayName || username) + '</span>';
+    div.innerHTML = '<span class="voice-member-speaking"></span><span class="voice-member-name">' + escapeHtml(displayName || username) + '</span>';
+    var speakEl = div.querySelector('.voice-member-speaking');
+    if (speakEl && window.DSHIcons) speakEl.appendChild(window.DSHIcons.icon('speaker', 12));
     list.appendChild(div);
   }
 

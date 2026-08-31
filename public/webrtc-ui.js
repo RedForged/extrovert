@@ -70,7 +70,7 @@
     activeCallBar.style.cssText = 'display:none;position:fixed;bottom:0;left:0;right:0;background:var(--surface);border-top:1px solid var(--border);z-index:9998;padding:8px 16px;align-items:center;justify-content:space-between';
     activeCallBar.innerHTML =
       '<div style="display:flex;align-items:center;gap:12px">' +
-        '<span style="font-size:1.2rem">🔊</span>' +
+        '<span id="call-bar-ico" style="display:inline-flex;color:var(--secondary,var(--accent))"></span>' +
         '<div>' +
           '<div style="font-weight:600" id="call-bar-label">In call</div>' +
           '<div style="font-size:0.85rem;color:var(--text-muted)" id="call-bar-timer">00:00</div>' +
@@ -81,6 +81,8 @@
         '<button id="call-hangup-btn" style="padding:8px 24px;background:var(--danger);color:#fff;border:none;border-radius:var(--radius);cursor:pointer;font-size:0.9rem;font-weight:600">Hang Up</button>' +
       '</div>';
     document.body.appendChild(activeCallBar);
+    var barIco = document.getElementById('call-bar-ico');
+    if (barIco && window.DSHIcons) barIco.appendChild(window.DSHIcons.icon('speaker', 18));
 
     var muted = false;
     document.getElementById('call-mute-btn').addEventListener('click', function () {
@@ -209,7 +211,14 @@
   }
 
   function showRingingOverlay() {
-    document.getElementById('call-incoming-label').textContent = '📞 Incoming call...';
+    var label = document.getElementById('call-incoming-label');
+    label.textContent = 'Incoming call...';
+    if (window.DSHIcons && !label.querySelector('svg')) {
+      var ico = window.DSHIcons.icon('phoneIncoming', 26);
+      ico.style.verticalAlign = '-4px';
+      ico.style.marginRight = '8px';
+      label.insertBefore(ico, label.firstChild);
+    }
   }
 
   function startRinging() {

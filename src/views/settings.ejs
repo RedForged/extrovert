@@ -23,7 +23,7 @@
         <p style="font-size:0.85rem;margin:-2px 0 8px">
           <span class="muted">On file:</span> <code><%= emailStatus.email %></code>
           <% if (emailStatus.verified) { %>
-            <span class="badge" style="color:var(--ok,#3c9);font-weight:600">✓ verified</span>
+            <span class="badge" style="color:var(--ok,#3c9);font-weight:600"><span class="ico" style="display:inline-flex;vertical-align:-2px;margin-right:3px"><%- include('partials/icon', { name: 'check', size: 11 }) %></span>verified</span>
           <% } else { %>
             <span style="color:var(--danger);font-weight:600">not yet verified</span>
           <% } %>
@@ -39,9 +39,9 @@
       <% } %>
       <form method="post" action="/settings/email">
         <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-        <label for="set-email">Email <%= emailStatus.email ? '<span class="muted">(change)</span>' : '' %></label>
+        <label for="set-email">Email<% if (emailStatus.email) { %> <span class="muted">(change)</span><% } %></label>
         <input type="email" id="set-email" name="email" placeholder="you@example.com">
-        <button class="btn full" style="margin-top:10px"><%= emailStatus.email ? 'Update email &amp; re-verify' : 'Add email &amp; verify' %></button>
+        <button class="btn full" style="margin-top:10px"><% if (emailStatus.email) { %>Update email &amp; re-verify<% } else { %>Add email &amp; verify<% } %></button>
       </form>
       <p class="muted" style="font-size:0.75rem;margin-top:8px">We'll email a confirmation link to that address. It's used only to verify the account.</p>
     <% } %>

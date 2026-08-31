@@ -38,11 +38,11 @@ document.addEventListener('DOMContentLoaded', function(){
       switch (verb) {
         case 'like':
           updateStats(postEl, 'like', data.liked, data.likeCount);
-          toggleBtn(form, data.liked ? '♥ Liked' : '♡ Like', data.liked);
+          toggleBtn(form, data.liked ? 'Liked' : 'Like', data.liked, 'heart');
           break;
         case 'share':
           updateStats(postEl, 'share', data.shared, data.shareCount);
-          toggleBtn(form, 'Share', data.shared);
+          toggleBtn(form, 'Share', data.shared, 'share');
           break;
         case 'repost':
           showToast('Reposted!');
@@ -65,24 +65,51 @@ document.addEventListener('DOMContentLoaded', function(){
     .catch(function(){});
   });
 
+  // Icon names per stat type, matching partials/post.ejs which tags each stat
+  // span with data-stat="like|comment|share" and renders the same SVG icons.
+  var STAT_ICONS = { like: 'heart', comment: 'comment', share: 'share' };
+
+  function statSpan(stats, type) {
+    return stats.querySelector('span[data-stat="' + type + '"]');
+  }
+
+  function setStatCount(span, iconName, count) {
+    span.textContent = '';
+    if (window.DSHIcons) {
+      var ico = document.createElement('span');
+      ico.className = 'ico';
+      ico.style.display = 'inline-flex';
+      ico.appendChild(window.DSHIcons.icon(iconName, 14));
+      span.appendChild(ico);
+    }
+    span.appendChild(document.createTextNode(' ' + count));
+  }
+
   function updateStats(postEl, type, active, count){
     var stats = postEl.querySelector('.post-stats');
     if (!stats) return;
-    var labels = { like: '❤️', share: '🔗' };
-    var icon = labels[type] || '';
-    var spans = stats.querySelectorAll('span');
-    for (var i = 0; i < spans.length; i++) {
-      if (spans[i].textContent.indexOf(icon) !== -1) {
-        spans[i].textContent = icon + ' ' + count;
-        break;
+    var span = statSpan(stats, type);
+    if (!span) return;
+    if (type === 'like') {
+      var icoEl = span.querySelector('.ico');
+      if (icoEl && window.DSHIcons) {
+        icoEl.replaceChildren(window.DSHIcons.icon(active ? 'heartFilled' : 'heart', 14));
       }
     }
+    // Update only the trailing count node so the SVG icon stays intact.
+    var last = span.lastChild;
+    if (last && last.nodeType === Node.TEXT_NODE) last.textContent = ' ' + count;
+    else setStatCount(span, STAT_ICONS[type], count);
   }
 
-  function toggleBtn(form, text, active){
+  function toggleBtn(form, text, active, iconName){
     var btn = form.querySelector('button');
     if (!btn) return;
     btn.textContent = text;
+    if (iconName && window.DSHIcons) {
+      var fillable = !!window.DSHIcons.PATHS[iconName + 'Filled'];
+      btn.insertBefore(window.DSHIcons.icon(active && fillable ? iconName + 'Filled' : iconName, 15, 'ico'), btn.firstChild);
+    }
     if (active) btn.classList.add('active');
     else btn.classList.remove('active');
   }
@@ -99,21 +126,20 @@ document.addEventListener('DOMContentLoaded', function(){
     var t = typeof timeFn === 'function' ? timeFn(c.created_at) : new Date(c.created_at).toLocaleString();
     var sticker = c.body && c.body.indexOf('/uploads/stickers/') !== -1;
     var editedHtml = c.edited_at ? ' <a href="/posts/' + c.id + '/history?type=comment&post_id=' + postIdVal + '" class="edited-link">(edited)</a>' : '';
-    var ownMenuHtml = '<div class="comment-menu-container"><button class="comment-menu-btn">⋮</button><div class="comment-menu" style="display:none"><button class="edit-comment-btn">Edit</button><form method="post" action="/posts/' + postIdVal + '/comments/' + c.id + '/delete" class="delete-comment-form"><input type="hidden" name="_csrf" value="' + csrfToken + '"><button class="delete-comment-btn">Delete</button></form></div></div>';
+    var ownMenuHtml = '<div class="comment-menu-container"><button class="comment-menu-btn" title="More"></button><div class="comment-menu" style="display:none"><button class="edit-comment-btn">Edit</button><form method="post" action="/posts/' + postIdVal + '/comments/' + c.id + '/delete" class="delete-comment-form"><input type="hidden" name="_csrf" value="' + csrfToken + '"><button class="delete-comment-btn">Delete</button></form></div></div>';
     var dataHtml = '<input type="hidden" class="edit-comment-data" value="' + esc(c.body) + '" data-csrf="' + csrfToken + '" data-action="/posts/' + postIdVal + '/comments/' + c.id + '/edit">';
     div.innerHTML = '<div class="comment-head"><div><b>' + esc(c.display_name) + '</b> <span class="post-handle">@' + esc(c.username) + '</span> <span class="post-time">· ' + t + '</span>' + editedHtml + '</div>' + ownMenuHtml + '</div><span class="comment-body">' + (sticker ? '<img src="' + esc(c.body) + '" class="sticker-inline" style="max-width:120px;max-height:120px;vertical-align:middle" alt="sticker">' : esc(c.body)) + '</span>' + dataHtml;
+    var menuBtn = div.querySelector('.comment-menu-btn');
+    if (menuBtn && window.DSHIcons) menuBtn.appendChild(window.DSHIcons.icon('more', 16));
     if (form) commentsDiv.insertBefore(div, form);
     else commentsDiv.appendChild(div);
     // Update comment count in stats.
     var stats = postEl.querySelector('.post-stats');
     if (stats) {
-      var spans = stats.querySelectorAll('span');
-      for (var i = 0; i < spans.length; i++) {
-        var m2 = spans[i].textContent.match(/💬\s*(\d+)/);
-        if (m2) {
-          spans[i].textContent = '💬 ' + (parseInt(m2[1],10) + 1);
-          break;
-        }
+      var span = statSpan(stats, 'comment');
+      if (span) {
+        var current = parseInt(span.textContent.replace(/[^0-9]/g, ''), 10) || 0;
+        setStatCount(span, STAT_ICONS.comment, current + 1);
       }
     }
   }
@@ -335,13 +361,10 @@ document.addEventListener('DOMContentLoaded', function(){
           if (commentDiv) commentDiv.remove();
           var stats = postEl ? postEl.querySelector('.post-stats') : null;
           if (stats) {
-            var spans = stats.querySelectorAll('span');
-            for (var i = 0; i < spans.length; i++) {
-              var m2 = spans[i].textContent.match(/💬\s*(\d+)/);
-              if (m2) {
-                spans[i].textContent = '💬 ' + Math.max(0, parseInt(m2[1],10) - 1);
-                break;
-              }
+            var span = statSpan(stats, 'comment');
+            if (span) {
+              var current = parseInt(span.textContent.replace(/[^0-9]/g, ''), 10) || 0;
+              setStatCount(span, STAT_ICONS.comment, Math.max(0, current - 1));
             }
           }
         }

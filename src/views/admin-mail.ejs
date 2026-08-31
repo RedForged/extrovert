@@ -2,7 +2,7 @@
   <div class="card" style="max-width:860px;margin:0 auto">
     <div style="display:flex;align-items:center;gap:2em;margin-bottom:18px;flex-wrap:wrap">
       <h2 style="margin:0">Admin · Mail &amp; email verification</h2>
-      <a class="btn ghost small" href="/admin" style="margin-left:auto">← Back</a>
+      <a class="btn ghost small" href="/admin" style="margin-left:auto"><%- include('partials/icon', { name: 'arrowLeft', size: 13 }) %> Back</a>
     </div>
 
     <% if (locals.saved) { %><div class="flash ok">Saved — the new settings apply immediately (no restart).</div><% } %>

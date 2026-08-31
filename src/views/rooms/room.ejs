@@ -18,7 +18,7 @@
             <% if (voiceChannelMembers && voiceChannelMembers[ch.id]) { %>
               <% voiceChannelMembers[ch.id].forEach(function(m) { %>
                 <div class="voice-member" id="voice-member-<%= ch.id %>-<%= m.username %>">
-                  <span class="voice-member-speaking">🔊</span><span class="voice-member-name"><%= m.display_name || m.username %></span>
+                  <span class="voice-member-speaking"><%- include('../partials/icon', { name: 'speaker', size: 12 }) %></span><span class="voice-member-name"><%= m.display_name || m.username %></span>
                 </div>
               <% }) %>
             <% } %>
