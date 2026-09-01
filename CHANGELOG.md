@@ -96,6 +96,10 @@ below reconstruct the history behind each version.
 - **Emoji-as-icon sweep**: remaining text glyphs (✓ → `arrowRight`/`arrowLeft`
   `★` `🔊` `📞` `⋮` in feed, admin, admin-mail, verify-email, rooms, call
   overlays) replaced with the shared inline-SVG icon set.
+- **OAuth flow suite vs canonical login URL**: the CI suite scraped the login
+  CSRF token from `/login?next=…`, which now 302s to bare `/login` (session
+  carries `next`), so the suite failed on an empty token; the suite follows
+  the redirect before scraping. Test-only fix — no app behavior change.
 - **Megolm rooms: sender could not decrypt own messages** — the self-inbound
   group session was keyed by the Megolm base64 id while messages carry the
   server session id; sessions are now keyed consistently by the server id and

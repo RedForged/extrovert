@@ -97,10 +97,13 @@ async function main() {
       return r;
     }
     const authorizePath = '/api/v1/oauth/authorize?client_id=' + confClientId + '&response_type=code&redirect_uri=' + encodeURIComponent('https://good.example/cb') + '&scope=read&state=regress';
+    // Canonical login URL: /login?next=… 302s to bare /login (next lives in the
+    // session), so follow the redirect before scraping the form's CSRF token.
     const loginPage = await wc('/login?next=' + encodeURIComponent(authorizePath));
-    const loginCsrf = ((await loginPage.text()).match(/name="_csrf" value="([^"]+)"/) || [])[1] || '';
+    const loginForm = await wc(loginPage.headers.get('location') || '/login');
+    const loginCsrf = ((await loginForm.text()).match(/name="_csrf" value="([^"]+)"/) || [])[1] || '';
     ok(loginCsrf.length > 0, 'login page renders a CSRF token');
-    const loginRes = await wc('/login?next=' + encodeURIComponent(authorizePath), {
+    const loginRes = await wc('/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ username: 'alice', password: 'pw1', _csrf: loginCsrf, next: authorizePath }),
@@ -376,8 +379,11 @@ async function main() {
   const initGet = await mobileReq(oauthTarget);
   ok(initGet.status === 302, 'unauthenticated OAuth authorize redirects to login');
   const loginUrl = initGet.headers.get('location');
+  // Canonical login URL: /login?next=… 302s to bare /login (next lives in the
+  // session), so follow the redirect before scraping the form's CSRF token.
   const loginPage = await mobileReq(loginUrl);
-  const loginCsrf = ((await loginPage.text()).match(/name="_csrf" value="([^"]+)"/) || [])[1] || '';
+  const loginForm = await mobileReq(loginPage.headers.get('location') || '/login');
+  const loginCsrf = ((await loginForm.text()).match(/name="_csrf" value="([^"]+)"/) || [])[1] || '';
   const loginPost = await mobileReq('/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
