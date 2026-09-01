@@ -2678,6 +2678,7 @@
           }
           input.value = '';
           input.disabled = false;
+          input.focus();
         }).catch(function () { input.disabled = false; });
         return;
       }
@@ -2713,11 +2714,13 @@
           }
           input.value = '';
           input.disabled = false;
+          input.focus();
           maybeReplenishPrekeys();
-        }).catch(function () { input.disabled = false; });
+        }).catch(function () { input.disabled = false; input.focus(); });
       }).catch(function (err) {
         console.error('E2EE encrypt error', err);
         input.disabled = false;
+        input.focus();
         if (err && /no encryption keys/i.test(err.message)) {
           showRecipientNotice();
         } else {
