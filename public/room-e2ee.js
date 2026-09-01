@@ -120,10 +120,11 @@
         var mid = el.getAttribute('data-msg-id') || el.getAttribute('data-id') || '';
         var textEl = el.querySelector('.room-msg-text');
         if (!textEl) return;
-        // This device already saw this message as undecryptable: remove it —
-        // never re-render the placeholder. Server copy + other devices untouched.
+        // This device already saw this message as undecryptable: keep it as a
+        // placeholder and let the stack collapse it. Server copy + other
+        // devices untouched.
         if (mid && seenMap[String(mid)]) {
-          if (el.parentNode) el.parentNode.removeChild(el);
+          textEl.textContent = '[unable to decrypt]';
           return;
         }
         if (textEl.textContent && textEl.textContent !== '[unable to decrypt]') return;
@@ -133,16 +134,66 @@
         }).catch(function () {
           textEl.textContent = '[unable to decrypt]';
           textEl.classList.remove('e2ee-pending');
-          // Device-local: record as seen so the placeholder is never shown again
-          // on this device, then remove the message element.
+          // Device-local: record as seen; failed messages are collapsed into one
+          // expandable stack below.
           if (mid && e2ee.markUndecryptableSeen) {
-            e2ee.markUndecryptableSeen(e2ee.undecryptableRoomKey(roomId), mid).then(function () {
-              if (el.parentNode) el.parentNode.removeChild(el);
-            });
+            e2ee.markUndecryptableSeen(e2ee.undecryptableRoomKey(roomId), mid);
           }
         });
       });
+      renderRoomUndecryptableStack(e2ee);
     });
+  }
+
+  var roomStackKey = null;
+  function renderRoomUndecryptableStack(e2ee) {
+    var container = document.getElementById('room-messages');
+    if (!container) return;
+    var failedNow = [];
+    container.querySelectorAll('.room-msg[data-proto="megolm"]').forEach(function (el) {
+      var textEl = el.querySelector('.room-msg-text');
+      if (textEl && textEl.textContent === '[unable to decrypt]') failedNow.push(String(el.getAttribute('data-msg-id') || ''));
+    });
+    var key = failedNow.sort().join(',');
+    if (key === roomStackKey && container.querySelector('.room-undecryptable-stack')) return;
+    roomStackKey = key;
+    var existing = container.querySelector('.room-undecryptable-stack');
+    if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+    var failed = [];
+    container.querySelectorAll('.room-msg[data-proto="megolm"]').forEach(function (el) {
+      var textEl = el.querySelector('.room-msg-text');
+      if (textEl && textEl.textContent === '[unable to decrypt]') failed.push(el);
+    });
+    if (!failed.length) return;
+    var firstSibling = null;
+    failed.forEach(function (el) {
+      if (!firstSibling && el.previousSibling) firstSibling = el.previousSibling;
+      if (el.parentNode) el.parentNode.removeChild(el);
+    });
+    var stack = document.createElement('div');
+    stack.className = 'room-msg room-undecryptable-stack';
+    var header = document.createElement('div');
+    header.className = 'room-msg-text room-undecryptable-stack-header';
+    header.style.cssText = 'cursor:pointer;opacity:0.85;border:1px dashed var(--border);font-size:0.85rem;text-align:center;padding:8px 12px;user-select:none;border-radius:var(--radius-lg);background:var(--surface)';
+    var label = function (open) {
+      return failed.length + (failed.length === 1 ? ' message couldn\'t be decrypted' : ' messages couldn\'t be decrypted') + (open ? ' \u25b8' : ' \u25be');
+    };
+    header.textContent = label(false);
+    stack.appendChild(header);
+    var body = document.createElement('div');
+    body.style.cssText = 'display:none;flex-direction:column';
+    failed.forEach(function (el) { body.appendChild(el); });
+    stack.appendChild(body);
+    header.addEventListener('click', function () {
+      var open = body.style.display !== 'none';
+      body.style.display = open ? 'none' : 'flex';
+      header.textContent = label(open);
+    });
+    if (firstSibling && firstSibling.parentNode) {
+      firstSibling.parentNode.insertBefore(stack, firstSibling.nextSibling);
+    } else {
+      container.insertBefore(stack, container.firstChild);
+    }
   }
 
   function encryptMessage(plaintext) {

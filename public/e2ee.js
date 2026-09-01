@@ -2198,12 +2198,12 @@
             }).catch(function (err) {
               console.error('DM decrypt failed', isOwn ? 'own' : 'incoming', 'msg', el.getAttribute('data-msg-id'), err && err.message);
               // Device-local: this device could not decrypt this message. Record
-              // it as seen so the placeholder is never shown again here, and
-              // remove the bubble. Other devices (and the server copy) are
-              // untouched — a device that CAN decrypt always shows the message.
-              markUndecryptableSeen(undecryptableDmKey(otherIdStr), msgId).then(function () {
-                if (el.parentNode) el.parentNode.removeChild(el);
-              });
+              // it and leave the placeholder; failed messages are collapsed into
+              // a single expandable stack by renderUndecryptableStack. Other
+              // devices (and the server copy) are untouched — a device that CAN
+              // decrypt always shows the message.
+              bubble.textContent = '[unable to decrypt]';
+              return markUndecryptableSeen(undecryptableDmKey(otherIdStr), msgId);
             });
           }
 
@@ -2221,11 +2221,15 @@
       });
 
       return chain.then(function () {
-        if (!securePending.length) return;
-        var writes = securePending.map(function (rec) { return securePersistMessage(otherIdStr, rec); });
-        return Promise.all(writes).then(function () {
-          return ackSecureMessages(otherUsername, secureAckIds);
-        });
+        if (securePending.length) {
+          var writes = securePending.map(function (rec) { return securePersistMessage(otherIdStr, rec); });
+          return Promise.all(writes).then(function () {
+            return ackSecureMessages(otherUsername, secureAckIds);
+          });
+        }
+      }).then(function () {
+        // Collapse any failed messages into the expandable stack.
+        renderUndecryptableStack(otherIdStr);
       });
     });
   }
@@ -2233,6 +2237,70 @@
   function scrollChatBottom() {
     var scroller = document.querySelector('.chat-scroll');
     if (scroller) scroller.scrollTop = scroller.scrollHeight;
+  }
+
+  // Collapse every message this device failed to decrypt (bubble reads
+  // `[unable to decrypt]`) into ONE expandable stack element. Clicking the
+  // stack toggles the individual failed messages back into view. Purely
+  // device-local: the server copy and other devices are untouched.
+  var dmStackKey = null;
+  function renderUndecryptableStack(otherIdStr) {
+    var container = document.querySelector('.chat-messages');
+    if (!container) return;
+    var failed = [];
+    container.querySelectorAll('.chat-msg').forEach(function (el) {
+      var bubble = el.querySelector('.chat-bubble');
+      if (!bubble) return;
+      if (bubble.textContent === '[unable to decrypt]') {
+        failed.push(el);
+      }
+    });
+    if (!failed.length) return;
+    var key = failed.map(function (el) { return String(el.getAttribute('data-msg-id') || ''); }).sort().join(',');
+    if (key === dmStackKey && container.querySelector('.undecryptable-stack')) return;
+    dmStackKey = key;
+    // If a stack element already exists, rebuild it (it may be stale after a
+    // new failure or after messages were decrypted on a later load).
+    var existingStack = container.querySelector('.undecryptable-stack');
+    if (existingStack && existingStack.parentNode) existingStack.parentNode.removeChild(existingStack);
+
+    // Remove the failed messages from their positions and remember the first
+    // position so the stack can be inserted there.
+    var container2 = container;
+    var firstSibling = null;
+    failed.forEach(function (el) {
+      if (!firstSibling && el.previousSibling) firstSibling = el.previousSibling;
+      if (el.parentNode) el.parentNode.removeChild(el);
+    });
+
+    var stack = document.createElement('div');
+    stack.className = 'chat-msg undecryptable-stack';
+    var header = document.createElement('div');
+    header.className = 'chat-bubble undecryptable-stack-header';
+    header.style.cssText = 'cursor:pointer;opacity:0.85;border:1px dashed var(--border);font-size:0.85rem;text-align:center;padding:8px 12px;user-select:none';
+    header.textContent = failed.length + (failed.length === 1 ? ' message couldn\'t be decrypted' : ' messages couldn\'t be decrypted') + ' \u25b8';
+    stack.appendChild(header);
+
+    var body = document.createElement('div');
+    body.style.cssText = 'display:none;flex-direction:column';
+    failed.forEach(function (el) {
+      el.style.display = 'flex';
+      body.appendChild(el);
+    });
+    stack.appendChild(body);
+
+    header.addEventListener('click', function () {
+      var open = body.style.display !== 'none';
+      body.style.display = open ? 'none' : 'flex';
+      header.textContent = failed.length + (failed.length === 1 ? ' message couldn\'t be decrypted' : ' messages couldn\'t be decrypted') + (open ? ' \u25b8' : ' \u25be');
+      scrollChatBottom();
+    });
+
+    if (firstSibling && firstSibling.parentNode) {
+      firstSibling.parentNode.insertBefore(stack, firstSibling.nextSibling);
+    } else {
+      container2.insertBefore(stack, container2.firstChild);
+    }
   }
 
   function addChatMsg(container, msg) {
@@ -2581,11 +2649,12 @@
       scrollChatBottom();
     }).catch(function (err) {
       console.warn('Live message decrypt failed', err);
-      // Device-local: this device could not decrypt this message. Record it as
-      // seen (placeholder never shown again on this device) and remove the
-      // message element. Other devices and the server copy are untouched.
+      // Device-local: this device could not decrypt this message. Record it and
+      // keep the placeholder; failed messages collapse into one expandable
+      // stack via renderUndecryptableStack. Other devices are untouched.
+      bubble.textContent = '[unable to decrypt]';
       markUndecryptableSeen(undecryptableDmKey(otherIdStr), m.id).then(function () {
-        if (div.parentNode) div.parentNode.removeChild(div);
+        renderUndecryptableStack(otherIdStr);
         scrollChatBottom();
       });
     });

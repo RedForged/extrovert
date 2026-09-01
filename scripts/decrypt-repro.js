@@ -617,13 +617,15 @@ async function main() {
   }
   ok(ownOk, 'fresh bob decrypts his own sent copies (except the newest) via the restored self-session');
 
-  console.log('\nTEST 7.6: "seen undecryptable" is device-local — one device hides, others keep');
+  console.log('\nTEST 7.6: "seen undecryptable" is device-local — stacked, not deleted');
   // The browser records a message as seen-undecryptable per DEVICE (the
-  // securemsgs store, Kd-encrypted). Verify the contract the client relies on:
-  // (1) marking is per-conversation and per-account; (2) a message marked on
-  // one device's store does not appear in another device's store (devices that
-  // decrypt never mark); (3) marking is idempotent; (4) the stored shape is a
-  // JSON array of message-id strings (what loadUndecryptable parses).
+  // securemsgs store, Kd-encrypted). Failed messages are collapsed into one
+  // expandable stack on that device; they are NOT deleted and other devices
+  // (which can decrypt) are unaffected. Verify the contract the client relies
+  // on: (1) marking is per-conversation and per-account; (2) a message marked
+  // on one device's store does not appear in another device's store (devices
+  // that decrypt never mark); (3) marking is idempotent; (4) the stored shape
+  // is a JSON array of message-id strings (what loadUndecryptable parses).
   const undecKey = 'undecryptable:' + bobId + ':dm:' + aliceId;
   const undecOtherKey = 'undecryptable:' + bobId + ':dm:999'; // different peer
   const undecAliceKey = 'undecryptable:' + aliceId + ':dm:' + bobId; // different account
@@ -646,12 +648,15 @@ async function main() {
   const seenParsed = JSON.parse(stored);
   const seenMap = {};
   seenParsed.forEach(function (id) { seenMap[String(id)] = true; });
+  // New behavior: marked messages are NOT dropped — they stay in the DOM,
+  // collapsed into one expandable stack. The client's renderUndecryptableStack
+  // groups every bubble reading `[unable to decrypt]` under a single header.
   const domIds = ['3', '4'];
-  const surviving = domIds.filter(function (id) { return !seenMap[String(id)]; });
-  ok(surviving.length === 1 && surviving[0] === '4', 'render filter drops the marked message, keeps the decryptable one');
+  const stacked = domIds.filter(function (id) { return seenMap[String(id)]; });
+  ok(stacked.length === 1 && stacked[0] === '3', 'marked message is retained and grouped into the stack');
+  ok(domIds.indexOf('4') !== -1, 'decryptable message stays rendered normally');
 
   console.log('\nTEST 8: fresh device (restored account, empty cache, no sessions)');
-  // A fresh device restores the account + every DM session from the password
   // A fresh device restores the account + every DM session from the password
   // backup (the v3 vault). With sessions restored, all DECRYPTED history is
   // readable again — only the single newest ratchet message needs the peer's
