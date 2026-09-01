@@ -90,19 +90,57 @@
   }
 
   function decryptExistingMessages() {
-    document.querySelectorAll('#room-messages .room-msg[data-proto="megolm"]').forEach(function (el) {
-      var senderId = el.getAttribute('data-sender-id');
-      var ciphertext = el.getAttribute('data-ciphertext');
-      var gsid = el.getAttribute('data-group-session-id');
-      var textEl = el.querySelector('.room-msg-text');
-      if (!textEl) return;
-      if (textEl.textContent && textEl.textContent !== '[unable to decrypt]') return;
-      decryptMessage(senderId, ciphertext, gsid).then(function (plain) {
-        textEl.textContent = plain;
-        textEl.classList.remove('e2ee-pending');
-      }).catch(function () {
-        textEl.textContent = '[unable to decrypt]';
-        textEl.classList.remove('e2ee-pending');
+    var e2ee = window.ExtrovertE2EE;
+    if (!e2ee || !e2ee.loadUndecryptable || !e2ee.undecryptableRoomKey) {
+      // Older/partial bridge: fall back to the plain placeholder behavior.
+      document.querySelectorAll('#room-messages .room-msg[data-proto="megolm"]').forEach(function (el) {
+        var senderId = el.getAttribute('data-sender-id');
+        var ciphertext = el.getAttribute('data-ciphertext');
+        var gsid = el.getAttribute('data-group-session-id');
+        var textEl = el.querySelector('.room-msg-text');
+        if (!textEl) return;
+        if (textEl.textContent && textEl.textContent !== '[unable to decrypt]') return;
+        decryptMessage(senderId, ciphertext, gsid).then(function (plain) {
+          textEl.textContent = plain;
+          textEl.classList.remove('e2ee-pending');
+        }).catch(function () {
+          textEl.textContent = '[unable to decrypt]';
+          textEl.classList.remove('e2ee-pending');
+        });
+      });
+      return;
+    }
+    e2ee.loadUndecryptable(e2ee.undecryptableRoomKey(roomId)).then(function (seen) {
+      var seenMap = {};
+      (seen || []).forEach(function (id) { seenMap[String(id)] = true; });
+      document.querySelectorAll('#room-messages .room-msg[data-proto="megolm"]').forEach(function (el) {
+        var senderId = el.getAttribute('data-sender-id');
+        var ciphertext = el.getAttribute('data-ciphertext');
+        var gsid = el.getAttribute('data-group-session-id');
+        var mid = el.getAttribute('data-msg-id') || el.getAttribute('data-id') || '';
+        var textEl = el.querySelector('.room-msg-text');
+        if (!textEl) return;
+        // This device already saw this message as undecryptable: remove it —
+        // never re-render the placeholder. Server copy + other devices untouched.
+        if (mid && seenMap[String(mid)]) {
+          if (el.parentNode) el.parentNode.removeChild(el);
+          return;
+        }
+        if (textEl.textContent && textEl.textContent !== '[unable to decrypt]') return;
+        decryptMessage(senderId, ciphertext, gsid).then(function (plain) {
+          textEl.textContent = plain;
+          textEl.classList.remove('e2ee-pending');
+        }).catch(function () {
+          textEl.textContent = '[unable to decrypt]';
+          textEl.classList.remove('e2ee-pending');
+          // Device-local: record as seen so the placeholder is never shown again
+          // on this device, then remove the message element.
+          if (mid && e2ee.markUndecryptableSeen) {
+            e2ee.markUndecryptableSeen(e2ee.undecryptableRoomKey(roomId), mid).then(function () {
+              if (el.parentNode) el.parentNode.removeChild(el);
+            });
+          }
+        });
       });
     });
   }

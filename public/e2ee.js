@@ -640,22 +640,78 @@
     return next;
   }
 
-  function secureDeleteMessage(otherIdStr, msgId) {
-    var prev = secureWriteQueues[otherIdStr] || Promise.resolve();
-    var next = prev.then(function () {
-      return secureLoadMessages(otherIdStr).then(function (msgs) {
-        var filtered = msgs.filter(function (m) { return String(m.id) !== String(msgId); });
-        return secureSaveMessages(otherIdStr, filtered).then(function () {
-          scheduleHistorySync();
-        });
-      });
-    });
-    secureWriteQueues[otherIdStr] = next.catch(function () {});
-    return next;
-  }
+     function secureDeleteMessage(otherIdStr, msgId) {
+     var prev = secureWriteQueues[otherIdStr] || Promise.resolve();
+     var next = prev.then(function () {
+       return secureLoadMessages(otherIdStr).then(function (msgs) {
+         var filtered = msgs.filter(function (m) { return String(m.id) !== String(msgId); });
+         return secureSaveMessages(otherIdStr, filtered).then(function () {
+           scheduleHistorySync();
+         });
+       });
+     });
+     secureWriteQueues[otherIdStr] = next.catch(function () {});
+     return next;
+   }
 
-  // Tell the server we received these secure messages. It deletes them once the
-  // other side has acknowledged too. Best-effort: failures are non-fatal.
+   // ---- "Seen undecryptable" list (device-local, never synced) ----
+   // When a message renders `[unable to decrypt]` on THIS device, its id is
+   // recorded here so the placeholder is never shown again on this device. The
+   // list is per-account and per-conversation, stored in the device-local
+   // secure store (Kd-encrypted) exactly like message plaintexts. It is never
+   // uploaded, never sent to the server, and never affects other devices —
+   // a device that CAN decrypt a message never records it and always shows it.
+   function undecryptableKey(scope) {
+     return 'undecryptable:' + activeUserId() + ':' + scope;
+   }
+   function undecryptableDmKey(otherIdStr) { return undecryptableKey('dm:' + otherIdStr); }
+   function undecryptableRoomKey(roomId) { return undecryptableKey('room:' + roomId); }
+
+   function loadUndecryptable(key) {
+     return idbGet(STORE_SECURE, key).then(function (enc) {
+       if (!enc) return [];
+       return decryptWithKd(enc).then(function (json) {
+         var arr;
+         try { arr = JSON.parse(json); } catch (_) { arr = []; }
+         return Array.isArray(arr) ? arr : [];
+       }).catch(function () { return []; });
+     });
+   }
+
+   // Serialize read-modify-write so parallel failures can't clobber each other.
+   var undecryptableWriteQueues = {};
+   function markUndecryptableSeen(key, msgId) {
+     var prev = undecryptableWriteQueues[key] || Promise.resolve();
+     var next = prev.then(function () {
+       return loadUndecryptable(key).then(function (ids) {
+         var id = String(msgId);
+         if (ids.indexOf(id) !== -1) return;
+         ids.push(id);
+         return encryptWithKd(JSON.stringify(ids)).then(function (enc) {
+           return idbSet(STORE_SECURE, key, enc);
+         });
+       });
+     });
+     undecryptableWriteQueues[key] = next.catch(function () {});
+     return next;
+   }
+
+   function forgetUndecryptable(key, msgId) {
+     var prev = undecryptableWriteQueues[key] || Promise.resolve();
+     var next = prev.then(function () {
+       return loadUndecryptable(key).then(function (ids) {
+         var filtered = ids.filter(function (id) { return String(id) !== String(msgId); });
+         return encryptWithKd(JSON.stringify(filtered)).then(function (enc) {
+           return idbSet(STORE_SECURE, key, enc);
+         });
+       });
+     });
+     undecryptableWriteQueues[key] = next.catch(function () {});
+     return next;
+   }
+
+   // Tell the server we received these secure messages. It deletes them once the
+   // other side has acknowledged too. Best-effort: failures are non-fatal.
   function ackSecureMessages(otherUsername, ids) {
     ids = (ids || []).filter(Boolean);
     if (!ids.length || !otherUsername) return Promise.resolve();
@@ -2059,7 +2115,14 @@
     var secureAckIds = [];
     var myId = currentUserId();
 
-    return secureLoadMessages(otherIdStr).then(function (savedMsgs) {
+    return Promise.all([
+      secureLoadMessages(otherIdStr),
+      loadUndecryptable(undecryptableDmKey(otherIdStr)),
+    ]).then(function (res) {
+      var savedMsgs = res[0];
+      var seenUndecryptable = res[1] || [];
+      var seenMap = {};
+      seenUndecryptable.forEach(function (id) { seenMap[String(id)] = true; });
       var localMap = {};
       (savedMsgs || []).forEach(function (m) {
         if (m && m.id && m.plaintext !== undefined) localMap[String(m.id)] = m.plaintext;
@@ -2069,6 +2132,16 @@
       resetSessionBaseline(otherIdStr);
 
       var msgElements = Array.prototype.slice.call(document.querySelectorAll('.chat-msg'));
+      // Messages this device already saw as undecryptable are removed from the
+      // DOM now — never re-render the placeholder for them on this device.
+      msgElements = msgElements.filter(function (el) {
+        var mid = el.getAttribute('data-msg-id');
+        if (mid && seenMap[String(mid)]) {
+          if (el.parentNode) el.parentNode.removeChild(el);
+          return false;
+        }
+        return true;
+      });
       var chain = Promise.resolve();
 
       msgElements.forEach(function (el) {
@@ -2124,7 +2197,13 @@
               if (msgSecure) markSecure(recordFor(plain));
             }).catch(function (err) {
               console.error('DM decrypt failed', isOwn ? 'own' : 'incoming', 'msg', el.getAttribute('data-msg-id'), err && err.message);
-              blobFail(bubble);
+              // Device-local: this device could not decrypt this message. Record
+              // it as seen so the placeholder is never shown again here, and
+              // remove the bubble. Other devices (and the server copy) are
+              // untouched — a device that CAN decrypt always shows the message.
+              markUndecryptableSeen(undecryptableDmKey(otherIdStr), msgId).then(function () {
+                if (el.parentNode) el.parentNode.removeChild(el);
+              });
             });
           }
 
@@ -2149,11 +2228,6 @@
         });
       });
     });
-  }
-
-  function blobFail(bubble) {
-    if (bubble.textContent === '[unable to decrypt]') return;
-    bubble.textContent = '[unable to decrypt]';
   }
 
   function scrollChatBottom() {
@@ -2334,7 +2408,14 @@
     var container = document.querySelector('.chat-messages');
     if (!container) return Promise.resolve();
     var myId = currentUserId();
-    return secureLoadMessages(otherIdStr).then(function (msgs) {
+    return Promise.all([
+      secureLoadMessages(otherIdStr),
+      loadUndecryptable(undecryptableDmKey(otherIdStr)),
+    ]).then(function (res) {
+      var msgs = res[0];
+      var seenUndecryptable = res[1] || [];
+      var seenMap = {};
+      seenUndecryptable.forEach(function (id) { seenMap[String(id)] = true; });
       if (!msgs || !msgs.length) return;
       var existing = {};
       container.querySelectorAll('.chat-msg').forEach(function (el) {
@@ -2350,7 +2431,7 @@
 
       // Only ephemeral/secure=1 messages are meant to be rendered when missing from server
       var missing = msgs.filter(function (m) {
-        return !existing[String(m.id)] && (m.msg_secure || m.secure);
+        return !existing[String(m.id)] && (m.msg_secure || m.secure) && !seenMap[String(m.id)];
       });
       if (!missing.length) return;
       // Static snapshot of the server-rendered nodes (insertBefore keeps the
@@ -2500,8 +2581,13 @@
       scrollChatBottom();
     }).catch(function (err) {
       console.warn('Live message decrypt failed', err);
-      bubble.textContent = '[unable to decrypt]';
-      scrollChatBottom();
+      // Device-local: this device could not decrypt this message. Record it as
+      // seen (placeholder never shown again on this device) and remove the
+      // message element. Other devices and the server copy are untouched.
+      markUndecryptableSeen(undecryptableDmKey(otherIdStr), m.id).then(function () {
+        if (div.parentNode) div.parentNode.removeChild(div);
+        scrollChatBottom();
+      });
     });
     scrollChatBottom();
   }
@@ -2535,6 +2621,7 @@
       if (el) el.remove();
       if (liveOtherIdStr || recipientId) {
         secureDeleteMessage(liveOtherIdStr || recipientId, mid);
+        forgetUndecryptable(undecryptableDmKey(liveOtherIdStr || recipientId), mid);
       }
     });
   }
@@ -3134,13 +3221,17 @@
     startRekeyPolling(otherIdStr, otherUsername);
   }
 
-  // Room pages (and any future consumer) drive Megolm through this global.
+    // Room pages (and any future consumer) drive Megolm through this global.
   window.ExtrovertE2EE = {
     ensureReady: ensureReady,
     initOlm: initOlm,
     syncRoomSessions: syncRoomSessions,
     encryptRoomMessage: encryptRoomMessage,
     decryptRoomMessage: decryptRoomMessage,
+    // Room "seen undecryptable" — device-local, never synced.
+    undecryptableRoomKey: undecryptableRoomKey,
+    loadUndecryptable: loadUndecryptable,
+    markUndecryptableSeen: markUndecryptableSeen,
     showUnlockOverlay: showUnlockOverlay,
     // ---- DM bridge (used by the native client; web pages use the DOM wiring) ----
     unlock: unlockWithPassword,

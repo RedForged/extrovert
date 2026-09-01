@@ -608,16 +608,50 @@ async function main() {
   // And bob's OWN sent copies decrypt via the restored self-session pair.
   const ownMsgs = fetchMessages(bobId, aliceId);
   let ownOk = true;
-    // Bob's sent copies: the newest one (#2) was also consumed by bob's own read.
+  // Bob's sent copies: the newest one (#2) was also consumed by bob's own read.
   for (let i = 0; i < ownMsgs.length - 1; i++) {
     try {
       const p = await freshBob.decryptOlm(ownMsgs[i], true, String(aliceId), aliceCurve);
       if (p !== 'hello alice #' + (i + 1)) { ownOk = false; }
     } catch (err) { ownOk = false; }
   }
-     ok(ownOk, 'fresh bob decrypts his own sent copies (except the newest) via the restored self-session');
+  ok(ownOk, 'fresh bob decrypts his own sent copies (except the newest) via the restored self-session');
+
+  console.log('\nTEST 7.6: "seen undecryptable" is device-local — one device hides, others keep');
+  // The browser records a message as seen-undecryptable per DEVICE (the
+  // securemsgs store, Kd-encrypted). Verify the contract the client relies on:
+  // (1) marking is per-conversation and per-account; (2) a message marked on
+  // one device's store does not appear in another device's store (devices that
+  // decrypt never mark); (3) marking is idempotent; (4) the stored shape is a
+  // JSON array of message-id strings (what loadUndecryptable parses).
+  const undecKey = 'undecryptable:' + bobId + ':dm:' + aliceId;
+  const undecOtherKey = 'undecryptable:' + bobId + ':dm:999'; // different peer
+  const undecAliceKey = 'undecryptable:' + aliceId + ':dm:' + bobId; // different account
+  const markSeen = async function (browser, key, msgId) {
+    const raw = await browser.idb.get(key);
+    let arr = [];
+    if (raw) { try { arr = JSON.parse(raw); } catch (_) {} }
+    const id = String(msgId);
+    if (arr.indexOf(id) === -1) arr.push(id);
+    await browser.idb.set(key, JSON.stringify(arr));
+  };
+  await markSeen(bob, undecKey, '3');
+  const stored = await bob.idb.get(undecKey);
+  ok(stored && JSON.parse(stored).indexOf('3') !== -1, 'bob device marks msg 3 as seen-undecryptable');
+  await markSeen(bob, undecKey, '3');
+  ok(JSON.parse(await bob.idb.get(undecKey)).length === 1, 'marking is idempotent (no duplicates)');
+  ok(!(await bob.idb.get(undecOtherKey)), 'different peer is not marked');
+  ok(!(await bob.idb.get(undecAliceKey)), 'different account is not marked');
+  ok(!(await alice.idb.get(undecKey)), 'alice\'s device never sees bob\'s device-local mark');
+  const seenParsed = JSON.parse(stored);
+  const seenMap = {};
+  seenParsed.forEach(function (id) { seenMap[String(id)] = true; });
+  const domIds = ['3', '4'];
+  const surviving = domIds.filter(function (id) { return !seenMap[String(id)]; });
+  ok(surviving.length === 1 && surviving[0] === '4', 'render filter drops the marked message, keeps the decryptable one');
 
   console.log('\nTEST 8: fresh device (restored account, empty cache, no sessions)');
+  // A fresh device restores the account + every DM session from the password
   // A fresh device restores the account + every DM session from the password
   // backup (the v3 vault). With sessions restored, all DECRYPTED history is
   // readable again — only the single newest ratchet message needs the peer's

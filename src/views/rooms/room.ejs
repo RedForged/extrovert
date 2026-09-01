@@ -46,7 +46,7 @@
     <div class="room-messages" id="room-messages" data-channel-id="<%= firstChannel ? firstChannel.id : '' %>" data-room-id="<%= room.id %>" data-user-id="<%= locals.currentUser.id %>">
       <% messages.forEach(function(m) { %>
         <% var mRole = roles.find(function(r) { var mem = members.find(function(mm) { return mm.user_id === m.user_id; }); return mem && mem.role_id === r.id; }); %>
-        <div class="room-msg<%= m.user_id === locals.currentUser.id ? ' self' : '' %>"<% if (m.proto === 'megolm') { %> data-proto="megolm" data-sender-id="<%= m.user_id %>" data-ciphertext="<%= m.ciphertext || '' %>" data-group-session-id="<%= m.group_session_id || '' %>"<% } %>>
+        <div class="room-msg<%= m.user_id === locals.currentUser.id ? ' self' : '' %>" data-msg-id="<%= m.id %>"<% if (m.proto === 'megolm') { %> data-proto="megolm" data-sender-id="<%= m.user_id %>" data-ciphertext="<%= m.ciphertext || '' %>" data-group-session-id="<%= m.group_session_id || '' %>"<% } %>>
           <div class="room-msg-body">
             <div class="room-msg-row">
               <div class="room-msg-avatar-wrap">

@@ -202,6 +202,7 @@ document.addEventListener('DOMContentLoaded', function() {
     messages.forEach(function(m) {
       var div = document.createElement('div');
       div.className = 'room-msg' + (m.user_id === currentUserId ? ' self' : '');
+      div.setAttribute('data-msg-id', m.id);
       var bodyDiv = document.createElement('div');
       bodyDiv.className = 'room-msg-body';
       var headerDiv = document.createElement('div');
