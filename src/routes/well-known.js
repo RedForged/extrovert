@@ -7,11 +7,14 @@ const { contactMailto } = require('./security');
 const router = express.Router();
 
 // RFC 9116 security.txt — machine-readable disclosure policy + private contact.
+// The mailto Contact line is only emitted when SECURITY_CONTACT_EMAIL is set;
+// the <issuer>/security URL always serves as the contact otherwise.
 router.get('/security.txt', (req, res) => {
   const expires = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
+  const mailto = contactMailto();
   const lines = [
     '# Extrovert security policy',
-    `Contact: ${contactMailto()}`,
+    ...(mailto ? [`Contact: ${mailto}`] : []),
     `Contact: ${ISSUER}/security`,
     `Expires: ${expires}`,
     `Policy: ${ISSUER}/security`,

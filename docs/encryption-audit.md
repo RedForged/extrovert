@@ -33,10 +33,21 @@ each other:
    is **actively purged** for anything outside the visible window (P1-6), and the
    visible window itself fetches the wrong end of the history (P1-7).
 
-Net effect: everything works while the plaintext cache covers the conversation;
-the moment a message falls out of that window, or a session rotates, or a second
-device/tab is involved, it becomes `[unable to decrypt]` and can never recover
-except via a full manual key reset.
+ Net effect: everything works while the plaintext cache covers the conversation;
+ the moment a message falls out of that window, or a session rotates, or a second
+ device/tab is involved, it becomes `[unable to decrypt]` and can never recover
+ except via a full manual key reset.
+
+**Status (post-audit):** the P0/P1 items are fixed — bundle reads no longer
+claim prekeys (P0-1), inbound state survives outbound rebuilds (P0-2/P0-5), the
+rekey heal is wired (P0-3/P0-4), and the plaintext cache is only purged on
+explicit deletes (P1-6). The cross-device gap — a **new** device had no session
+chains and could not decrypt stored history — is closed by the backup vault v3:
+every DM session + baseline pickle is now uploaded (password-KEK-encrypted)
+alongside the account and restored on unlock, so a new device decrypts the
+stored history again. The single newest ratchet-advance message remains
+non-replayable (an Olm property — its message key was consumed by the sending
+device's own decrypt), and the rekey heal recovers the conversation forward.
 
 ---
 

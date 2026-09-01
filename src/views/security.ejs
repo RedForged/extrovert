@@ -9,7 +9,7 @@
       <div class="flash err">Please fill in both a summary and the details.</div>
     <% } %>
     <% if (locals.error === 'storage') { %>
-      <div class="flash err">Your report could not be stored. Please email it instead: <code><%= contactEmail %></code></div>
+      <div class="flash err">Your report could not be stored. <% if (contactEmail) { %>Please email it instead: <code><%= contactEmail %></code><% } else { %>Please try again later or contact the instance admins directly.<% } %></div>
     <% } %>
 
     <div class="card elevated" style="padding:20px">
@@ -38,7 +38,7 @@
       <h3>Report a vulnerability (private)</h3>
       <p class="muted" style="font-size:0.85rem;margin-top:-4px">
         This form goes straight to the instance admins' private security inbox. It is never shown publicly.
-        You can also email <code><%= contactEmail %></code> — the machine-readable policy is at
+        <% if (contactEmail) { %>You can also email <code><%= contactEmail %></code> — <% } %>the machine-readable policy is at
         <code>/.well-known/security.txt</code>.
       </p>
       <form method="post" action="/security/report">

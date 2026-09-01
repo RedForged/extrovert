@@ -19,7 +19,7 @@ Extrovert is configured entirely through environment variables. There is no conf
 | `VAPID_PUBLIC_KEY` | no | — | Web Push public key (see Push section). Without it, push endpoints 404 and no notifications are sent. |
 | `VAPID_PRIVATE_KEY` | no | — | Web Push private key. |
 | `VAPID_SUBJECT` | no | `mailto:admin@extrovert.local` | VAPID contact — some push services require a `mailto:`. |
-| `SECURITY_CONTACT_EMAIL` | no | `admin@extrovert.local` | Contact shown on the responsible-disclosure page (`/security`) and in `/.well-known/security.txt`. |
+| `SECURITY_CONTACT_EMAIL` | no | — | Contact shown on the responsible-disclosure page (`/security`) and in `/.well-known/security.txt`. When unset, no email is advertised and the in-app form plus the `/security` URL serve as the contact. |
 | `EXTV_EMAIL_POLICY` | no | `off` | Email verification policy: `off` / `optional` / `required` (see [docs/mail.md](mail.md)). |
 | `EXTV_MAIL_*` | no | see [docs/mail.md](mail.md) | Built-in mail server settings (From address, DKIM, relay, STARTTLS, …). Also configurable live from `/admin/mail`. |
 | `TOTP_ENCRYPTION_KEY` | for 2FA | — | Key used to encrypt TOTP secrets at rest (AES-256-GCM). Generate with `openssl rand -base64 32`. Without it, users can't enable 2FA (passkeys still work). Changing it invalidates existing TOTP enrollments. |

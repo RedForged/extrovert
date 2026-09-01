@@ -485,6 +485,7 @@
   function saveOutboundSession(fullKey, session) {
     outboundSessions[fullKey] = session;
     sessions[fullKey] = session;
+    scheduleVaultBackup();
     return encryptWithKd(session.pickle(PICKLE_KEY)).then(function (enc) {
       return Promise.all([
         idbSet(STORE_OLM, sessionOutKey(fullKey), enc),
@@ -509,6 +510,7 @@
   function saveInboundSession(fullKey, session) {
     inboundSessions[fullKey] = session;
     sessions[fullKey] = session;
+    scheduleVaultBackup();
     return encryptWithKd(session.pickle(PICKLE_KEY)).then(function (enc) {
       return Promise.all([
         idbSet(STORE_OLM, sessionInKey(fullKey), enc),
@@ -521,6 +523,7 @@
     var pickle = session.pickle(PICKLE_KEY);
     inboundBaselinePickles[fullKey] = pickle;
     sessionBaselinePickles[fullKey] = pickle;
+    scheduleVaultBackup();
     return encryptWithKd(pickle).then(function (enc) {
       return Promise.all([
         idbSet(STORE_OLM, sessionInBaseKey(fullKey), enc),
@@ -742,40 +745,237 @@
     return csrfFetch(PREKEYS_BACKUP_URL).then(function (r) { return r.json(); });
   }
 
+  // Debounced upload of the session+account vault. Called on every session
+  // mutation so the backup stays current (a device used for a while still
+  // exports its chains); the 2s delay coalesces bursts (multi-device sends
+  // touch many sessions at once).
+  var vaultBackupTimer = null;
+  function scheduleVaultBackup() {
+    if (!kek || !account) return;
+    clearTimeout(vaultBackupTimer);
+    vaultBackupTimer = setTimeout(function () {
+      vaultBackupTimer = null;
+      uploadBackup(account.pickle(PICKLE_KEY)).catch(function () {});
+    }, 2000);
+  }
+
+  // Collect every per-(peer,device) DM session pickle for the backup vault.
+  // Merges the live in-memory sessions with anything persisted in IndexedDB
+  // (a fresh page load may not have touched a conversation yet), so the vault
+  // is complete even right after login. Each entry is encrypted with the
+  // password KEK downstream; the server only ever stores ciphertext.
+  function collectSessionBackupPickles() {
+    var uid = activeUserId();
+    var out = { sessions: {}, baselines: {} };
+    var addPickle = function (fullKey, pickle, isBaseline) {
+      if (!pickle) return;
+      if (isBaseline) out.baselines[fullKey] = pickle;
+      else out.sessions[fullKey] = pickle;
+    };
+    // In-memory outbound + inbound sessions (the live copies used for sending).
+    Object.keys(sessions).forEach(function (fullKey) {
+      if (String(fullKey).indexOf(uid + ':') !== 0) return; // only this account's
+      try {
+        var s = sessions[fullKey];
+        if (s && s.pickle) addPickle(fullKey, s.pickle(PICKLE_KEY), false);
+      } catch (_) {}
+    });
+    Object.keys(outboundSessions).forEach(function (fullKey) {
+      if (String(fullKey).indexOf(uid + ':') !== 0) return;
+      try { addPickle(fullKey, outboundSessions[fullKey].pickle(PICKLE_KEY), false); } catch (_) {}
+    });
+    Object.keys(inboundBaselinePickles).forEach(function (fullKey) {
+      if (String(fullKey).indexOf(uid + ':') !== 0) return;
+      addPickle(fullKey, inboundBaselinePickles[fullKey], true);
+    });
+    // Self-session pair.
+    if (selfOutbound) { try { addPickle('selfOutbound:' + uid, selfOutbound.pickle(PICKLE_KEY), false); } catch (_) {} }
+    if (selfInboundBaseline) addPickle('selfInbound:' + uid, selfInboundBaseline, true);
+    // Merge persisted pickles from IDB (covers sessions not yet loaded into
+    // memory after a fresh page load). Read via the isolated slots; baselines
+    // come from the baseline list + single-slot fallbacks.
+    if (USE_FILE_STORE) return Promise.resolve(out);
+    return openDB().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(STORE_OLM, 'readonly');
+        var req = tx.objectStore(STORE_OLM).openCursor();
+        req.onsuccess = function () {
+          var cursor = req.result;
+          if (!cursor) { resolve(out); return; }
+          var k = String(cursor.key);
+          if (k.indexOf('sessionOut:' + uid + ':') === 0) {
+            decryptWithKd(cursor.value).then(function (pickle) {
+              addPickle('out:' + k.slice('sessionOut:'.length), pickle, false);
+            }).catch(function () {});
+          } else if (k.indexOf('sessionIn:' + uid + ':') === 0) {
+            decryptWithKd(cursor.value).then(function (pickle) {
+              addPickle('in:' + k.slice('sessionIn:'.length), pickle, false);
+            }).catch(function () {});
+          } else if (k.indexOf('sessionInBaseList:' + uid + ':') === 0) {
+            decryptWithKd(cursor.value).then(function (json) {
+              try {
+                var arr = JSON.parse(json);
+                if (Array.isArray(arr)) {
+                  var baseKey = k.slice('sessionInBaseList:'.length);
+                  arr.forEach(function (p, idx) {
+                    if (idx === 0) addPickle(baseKey, p, true);
+                  });
+                }
+              } catch (_) {}
+            }).catch(function () {});
+          } else if (k.indexOf('sessionBase:' + uid + ':') === 0) {
+            decryptWithKd(cursor.value).then(function (pickle) {
+              var baseKey = k.slice('sessionBase:'.length);
+              if (!out.baselines[baseKey]) addPickle(baseKey, pickle, true);
+            }).catch(function () {});
+          }
+          cursor.continue();
+        };
+        req.onerror = function () { resolve(out); }; // best-effort merge
+      });
+    }).catch(function () { return out; });
+  }
+
   function uploadBackup(accountPickle) {
     if (!kek) return Promise.resolve();
     var selfOutPickle = selfOutbound ? selfOutbound.pickle(PICKLE_KEY) : null;
     var selfInPickle = selfInboundBaseline || (selfInbound ? selfInbound.pickle(PICKLE_KEY) : null);
-    return Promise.all([
+    var sessionPicklesP = collectSessionBackupPickles();
+    return sessionPicklesP.then(function (sessionPickles) {
+    var encTasks = [
       encryptWithKek(accountPickle, kek),
       selfOutPickle ? encryptWithKek(selfOutPickle, kek) : Promise.resolve(null),
       selfInPickle ? encryptWithKek(selfInPickle, kek) : Promise.resolve(null),
-    ]).then(function (parts) {
+    ];
+    // Encrypt every DM session + baseline pickle with the KEK.
+    var sessionKeys = Object.keys(sessionPickles.sessions);
+    var baselineKeys = Object.keys(sessionPickles.baselines);
+    sessionKeys.forEach(function (k) {
+      encTasks.push(encryptWithKek(sessionPickles.sessions[k], kek).then(function (c) { return { k: k, c: c }; }));
+    });
+    baselineKeys.forEach(function (k) {
+      encTasks.push(encryptWithKek(sessionPickles.baselines[k], kek).then(function (c) { return { k: k, c: c }; }));
+    });
+    return Promise.all(encTasks).then(function (parts) {
+      var accountEnc = parts[0], selfOutEnc = parts[1], selfInEnc = parts[2];
+      var sessionsEnc = {}, baselinesEnc = {};
+      var idx = 3;
+      sessionKeys.forEach(function (k) { sessionsEnc[k] = parts[idx++].c; });
+      baselineKeys.forEach(function (k) { baselinesEnc[k] = parts[idx++].c; });
       var payload;
-      if (parts[1] || parts[2]) {
-        payload = JSON.stringify({ v: 2, account: parts[0], selfOutbound: parts[1], selfInbound: parts[2] });
+      if (selfOutEnc || selfInEnc || sessionKeys.length || baselineKeys.length) {
+        payload = JSON.stringify({
+          v: 3,
+          account: accountEnc,
+          selfOutbound: selfOutEnc,
+          selfInbound: selfInEnc,
+          sessions: sessionsEnc,
+          baselines: baselinesEnc,
+        });
       } else {
-        payload = parts[0];
+        payload = accountEnc;
       }
       return csrfFetch(PREKEYS_URL, {
         method: 'POST',
         body: JSON.stringify({ backup: payload, backup_identity: myIdKeys ? myIdKeys.curve25519 : undefined, kek_salt: kekSalt || undefined })
       }).then(function (r) { return r.json(); });
     });
+  });
   }
 
   function unwrapBackup(enc) {
     if (String(enc).indexOf('{') !== 0) return { account: enc };
     try {
       var parsed = JSON.parse(enc);
-      if (parsed && parsed.v === 2) return parsed;
+      if (parsed && (parsed.v === 2 || parsed.v === 3)) return parsed;
     } catch (e) {}
     return { account: enc };
   }
 
+  // Restore DM session pickles from the backup vault into local storage
+  // (wrapped with the device key Kd). Called on new-device unlock so the
+  // decrypt ladder finds the right chains for the full stored history.
+  function restoreSessionsFromBackup(data) {
+    var parsed = data && data.backup ? unwrapBackup(data.backup) : null;
+    if (!parsed || parsed.v !== 3) return Promise.resolve();
+    var uid = activeUserId();
+    var restoreTasks = [];
+    var sessionsEnc = parsed.sessions || {};
+    var baselinesEnc = parsed.baselines || {};
+    Object.keys(sessionsEnc).forEach(function (fullKey) {
+      // Only restore this account's sessions; ignore foreign keys. Vault keys
+      // are `out:<uid>:<peer>` / `in:<uid>:<peer>` (isolated slots) or the
+      // legacy `<uid>:<peer>` form.
+      var isSelfOut = String(fullKey).indexOf('selfOutbound:' + uid) === 0;
+      var isSelfIn = String(fullKey).indexOf('selfInbound:' + uid) === 0;
+      var isPeerOut = String(fullKey).indexOf('out:' + uid + ':') === 0;
+      var isPeerIn = String(fullKey).indexOf('in:' + uid + ':') === 0;
+      var isPeerPlain = String(fullKey).indexOf(uid + ':') === 0;
+      if (!isSelfOut && !isSelfIn && !isPeerOut && !isPeerIn && !isPeerPlain) return;
+      restoreTasks.push(decryptWithKek(sessionsEnc[fullKey], kek).then(function (pickle) {
+        var s = safeUnpickle(pickle);
+        if (!s) return;
+        if (isSelfOut) {
+          selfOutbound = s;
+        } else if (isSelfIn) {
+          selfInbound = s;
+          selfInboundBaseline = pickle;
+        } else if (isPeerOut) {
+          var outKey = String(fullKey).slice(('out:' + uid + ':').length);
+          sessions[uid + ':' + outKey] = s;
+          outboundSessions[uid + ':' + outKey] = s;
+        } else if (isPeerIn) {
+          var inKey = String(fullKey).slice(('in:' + uid + ':').length);
+          sessions[uid + ':' + inKey] = s;
+        } else {
+          sessions[fullKey] = s;
+          outboundSessions[fullKey] = s;
+        }
+        // Persist wrapped with Kd so the normal load path finds it.
+        return encryptWithKd(pickle).then(function (enc) {
+          var writes = [];
+          if (isSelfOut) writes.push(idbSet(STORE_OLM, selfOutKey(), enc));
+          else if (isSelfIn) writes.push(idbSet(STORE_OLM, selfInKey(), enc));
+          else if (isPeerOut) {
+            writes.push(idbSet(STORE_OLM, sessionOutKey(uid + ':' + outKey), enc));
+            writes.push(idbSet(STORE_OLM, sessionKey(uid + ':' + outKey), enc));
+          } else if (isPeerIn) {
+            writes.push(idbSet(STORE_OLM, sessionInKey(uid + ':' + inKey), enc));
+            writes.push(idbSet(STORE_OLM, sessionKey(uid + ':' + inKey), enc));
+          } else {
+            writes.push(idbSet(STORE_OLM, sessionOutKey(fullKey), enc));
+            writes.push(idbSet(STORE_OLM, sessionInKey(fullKey), enc));
+            writes.push(idbSet(STORE_OLM, sessionKey(fullKey), enc));
+          }
+          return Promise.all(writes);
+        });
+      }).catch(function () {}));
+    });
+    Object.keys(baselinesEnc).forEach(function (fullKey) {
+      if (String(fullKey).indexOf('selfInbound:' + uid) === 0 || String(fullKey).indexOf(uid + ':') === 0) {
+        restoreTasks.push(decryptWithKek(baselinesEnc[fullKey], kek).then(function (pickle) {
+          if (String(fullKey).indexOf('selfInbound:') === 0) {
+            selfInboundBaseline = pickle;
+            return Promise.resolve();
+          }
+          inboundBaselinePickles[fullKey] = pickle;
+          sessionBaselinePickles[fullKey] = pickle;
+          return encryptWithKd(pickle).then(function (enc) {
+            return Promise.all([
+              idbSet(STORE_OLM, sessionInBaseKey(fullKey), enc),
+              idbSet(STORE_OLM, sessionBaseKey(fullKey), enc),
+              idbSet(STORE_OLM, sessionInKey(fullKey), enc),
+            ]);
+          });
+        }).catch(function () {}));
+      }
+    });
+    return Promise.all(restoreTasks);
+  }
+
   function restoreSelfSessionsFromBackup(data) {
     var parsed = data && data.backup ? unwrapBackup(data.backup) : null;
-    if (!parsed || parsed.v !== 2) return Promise.resolve();
+    if (!parsed || (parsed.v !== 2 && parsed.v !== 3)) return Promise.resolve();
     var restoreIn = parsed.selfInbound ? decryptWithKek(parsed.selfInbound, kek).then(function (pickle) {
       var s = new Olm.Session();
       s.unpickle(PICKLE_KEY, pickle);
@@ -2605,7 +2805,11 @@
               account.unpickle(PICKLE_KEY, pickle);
               var k2 = JSON.parse(account.identity_keys());
               myIdKeys = { curve25519: k2.curve25519, ed25519: k2.ed25519 };
-              return restoreSelfSessionsFromBackup(data);
+              // Restore the account, self-session pair, AND every DM session
+              // chain so this device can decrypt the full stored history.
+              return restoreSelfSessionsFromBackup(data).then(function () {
+                return restoreSessionsFromBackup(data);
+              });
             }).catch(function () { throw new Error('Wrong password.'); });
           }).then(function () {
             // Upgrade a legacy (unsalted) backup to a random salt now that the
@@ -2646,7 +2850,7 @@
       return saveAccount().then(function () { return loadSelfSessions(); });
     }).then(function () {
       sessionStorage.removeItem(KEK_SESSION_KEY);
-      saveSelfSessions();
+      saveSelfSessions().then(function () { scheduleVaultBackup(); });
       return username;
     });
   }

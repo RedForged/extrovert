@@ -68,7 +68,7 @@ router.post('/pubkey', express.json(), (req, res) => {
 });
 
 // Publish / refresh Olm identity + prekey bundle (supports per-device multi-ID).
-router.post('/prekeys', express.json(), (req, res) => {
+router.post('/prekeys', express.json({ limit: '10mb' }), (req, res) => {
   const user = res.locals.currentUser;
   if (!user) return res.status(401).json({ error: 'not logged in' });
   const deviceId = String(req.body.device_id || '').trim();
@@ -77,7 +77,10 @@ router.post('/prekeys', express.json(), (req, res) => {
   const fallbackKey = String(req.body.fallback_key || '').trim() || null;
   const deviceName = String(req.body.device_name || '').trim() || null;
   const oneTimeKeys = Array.isArray(req.body.one_time_keys) ? req.body.one_time_keys : [];
-  const backup = String(req.body.backup || '').trim().slice(0, 200000) || null;
+  // The backup vault now carries every DM session + baseline pickle (v3), so
+  // it can grow well past the old account-only payload. Cap generously; the
+  // body limit above (10mb) bounds the wire size.
+  const backup = String(req.body.backup || '').trim().slice(0, 8000000) || null;
 
   if (deviceId && identityKey && ed25519Key) {
     registerUserDevice(user.id, deviceId, identityKey, ed25519Key, fallbackKey, deviceName);

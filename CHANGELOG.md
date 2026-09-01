@@ -3,7 +3,20 @@
 All notable changes to **Extrovert** are documented in this file. The project
 follows [Semantic Versioning](https://semver.org/). This is the first tagged
 release: the codebase carries its version in `package.json`, and the sections
-below reconstruct the history behind each version.
+ below reconstruct the history behind each version.
+
+## [Unreleased]
+
+### Features
+- **Cross-device DM history**: the password-encrypted backup vault (v3) now
+  carries every per-conversation Olm session + baseline pickle, not just the
+  account and self-session pair. A new device unlocks with the password and
+  restores the DM session chains, so stored message history decrypts again —
+  instead of every old message rendering `[unable to decrypt]`. Sessions are
+  re-uploaded on each send/decrypt (debounced), keeping the vault current.
+  The single newest ratchet-advance message remains non-replayable (an Olm
+  property — its message key was consumed), and the existing rekey heal
+  recovers the conversation forward from there.
 
 ## [1.0.3] - 2026-08-30
 

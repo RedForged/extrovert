@@ -9,15 +9,15 @@ const { createSecurityReport } = require('../db');
 const { ISSUER } = require('../oidc');
 
 const router = express.Router();
+// Security contact email. Optional: when unset, the /security page and
+// security.txt advertise no email at all (the in-app form and the
+// <issuer>/security URL remain the contact) instead of a misleading placeholder.
+const CONTACT_EMAIL = (process.env.SECURITY_CONTACT_EMAIL || '').trim() || null;
 
-const CONTACT_EMAIL = process.env.SECURITY_CONTACT_EMAIL || 'admin@extrovert.local';
-
+// The mailto form for security.txt; null when no contact email is configured.
 function contactMailto() {
-  const e = CONTACT_EMAIL.trim();
-  return /^mailto:/i.test(e) ? e : `mailto:${e}`;
+  return CONTACT_EMAIL ? (/^mailto:/i.test(CONTACT_EMAIL) ? CONTACT_EMAIL : `mailto:${CONTACT_EMAIL}`) : null;
 }
-
-// Human-readable disclosure policy + private report form (public page).
 router.get('/security', (req, res) => {
   res.render('security', {
     sent: req.query.sent === '1',

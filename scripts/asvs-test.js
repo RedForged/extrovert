@@ -635,7 +635,11 @@ describe('OWASP ASVS v4.0 (automatable subset)', () => {
       assert.strictEqual(resp.status, 200);
       assert.match(resp.headers.get('content-type') || '', /text\/plain/);
       const body = await resp.text();
-      assert.ok(body.includes('Contact: mailto:'), 'has a private Contact');
+      assert.ok(body.includes('Contact:'), 'has a contact');
+      // SECURITY_CONTACT_EMAIL unset: no misleading placeholder mailto, the
+      // in-app /security URL is the contact instead.
+      assert.ok(!body.includes('mailto:'), 'no placeholder mailto when email unset');
+      assert.ok(body.includes('Contact: http') || body.includes('Contact: mailto:'), 'contact is a resolvable address');
       assert.ok(body.includes('Expires:'), 'has an Expires date');
       assert.ok(body.includes('Policy:'), 'has a Policy link');
     });

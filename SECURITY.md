@@ -6,7 +6,7 @@ Security researchers are welcome. Please report findings **privately**:
 
 - In-app: the **/security** page invites testing and has a private report form — the page itself is public, the submitted **reports are visible only to instance admins** (`/admin/security-reports`).
 - Machine-readable policy: `/.well-known/security.txt` (RFC 9116).
-- Direct email: set `SECURITY_CONTACT_EMAIL` on the instance to choose the contact address (default `admin@extrovert.local`).
+- Direct email: optional — set `SECURITY_CONTACT_EMAIL` on the instance to advertise a contact address; when unset, no email is shown and the in-app form is the contact.
 
 Do not publicly disclose findings before they are fixed, and do not test instances you do not own or are not authorized to test.
 
