@@ -1,6 +1,6 @@
 {
   "name": "extrovert",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "A social network where you only discover content from friends and friends of friends.",
   "license": "GPL-3.0-or-later",
   "main": "src/server.js",
