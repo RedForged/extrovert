@@ -10,6 +10,7 @@ fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
 const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA journal_mode = WAL;');
+db.exec('PRAGMA busy_timeout = 5000;');
 db.exec('PRAGMA foreign_keys = ON;');
 
 function init() {
@@ -339,6 +340,9 @@ try { db.exec(`ALTER TABLE messages ADD COLUMN edited_at INTEGER`); } catch {}
 try { db.exec(`ALTER TABLE room_messages ADD COLUMN edited_at INTEGER`); } catch {}
 try { db.exec(`ALTER TABLE oauth_codes ADD COLUMN nonce TEXT`); } catch {}
 try { db.exec(`ALTER TABLE oauth_tokens ADD COLUMN refresh_expires_at INTEGER`); } catch {}
+// Refresh-token reuse detection: a rotated (superseded) refresh token is kept
+// with revoked_at set instead of deleted, so replaying it is detectable.
+try { db.exec(`ALTER TABLE oauth_tokens ADD COLUMN revoked_at INTEGER`); } catch {}
 try { db.exec(`CREATE TABLE IF NOT EXISTS reports (id INTEGER PRIMARY KEY AUTOINCREMENT, reporter_id INTEGER NOT NULL REFERENCES users(id), reported_user_id INTEGER NOT NULL REFERENCES users(id), message_id INTEGER NOT NULL, message_body TEXT NOT NULL, channel_id INTEGER NOT NULL, room_id INTEGER NOT NULL, reason TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at INTEGER NOT NULL)`); } catch {}
 // Private security reports from the responsible-disclosure form (/security).
 // Visible only to admins — never rendered on public pages.
@@ -1921,16 +1925,32 @@ function getPendingRoomSessionKeys(userId) {
     WHERE k.recipient_id = ? AND k.delivered = 0 AND k.encrypted_key <> ''
   `).all(userId);
 }
+function getRoomSessionKeyById(id) {
+  return db.prepare(`SELECT k.*, gs.room_id FROM room_group_session_keys k JOIN room_group_sessions gs ON gs.id = k.session_id WHERE k.id = ?`).get(id) || null;
+}
 function markRoomSessionKeyDelivered(keyId) {
   db.prepare(`UPDATE room_group_session_keys SET delivered = 1 WHERE id = ?`).run(keyId);
 }
+function getUserMediaUsage(userId) {
+  return db.prepare(`SELECT COALESCE(SUM(file_size),0) AS n FROM media_attachments WHERE user_id = ?`).get(userId).n;
+}
 // Everyone ever given (or targeted for) a key for this session.
 function getRoomSessionRecipients(sessionId) {
+
   return db.prepare(`SELECT DISTINCT recipient_id FROM room_group_session_keys WHERE session_id = ?`).all(sessionId).map(r => r.recipient_id);
 }
 // Members who are covered but have no real key yet — the sender should re-share.
 function getRoomSessionEmptyKeyRecipients(sessionId) {
   return db.prepare(`SELECT DISTINCT recipient_id FROM room_group_session_keys WHERE session_id = ? AND encrypted_key = ''`).all(sessionId).map(r => r.recipient_id);
+}
+// ---------- retention pruning ----------
+function pruneAuditLog() {
+  return db.prepare(`DELETE FROM audit_log WHERE created_at < ?`).run(Date.now() - 90 * 86400000);
+}
+function pruneNotifications() {
+  const now = Date.now();
+  return db.prepare(`DELETE FROM notifications WHERE (read = 1 AND created_at < ?) OR created_at < ?`)
+    .run(now - 30 * 86400000, now - 90 * 86400000);
 }
 function joinDefaultRole(roomId) {
   return db.prepare(`SELECT id FROM room_roles WHERE room_id = ? AND is_founder = 0 ORDER BY position DESC, id LIMIT 1`).get(roomId);
@@ -1985,6 +2005,9 @@ function createJoinRequest(roomId, userId) {
 }
 function getJoinRequests(roomId) {
   return db.prepare(`SELECT j.*, u.username, u.display_name, u.avatar FROM join_requests j INNER JOIN users u ON u.id = j.user_id WHERE j.room_id = ? AND j.status = 'pending' ORDER BY j.created_at ASC`).all(roomId);
+}
+function getJoinRequestById(id) {
+  return db.prepare(`SELECT * FROM join_requests WHERE id = ?`).get(id) || null;
 }
 function approveJoinRequest(requestId) {
   const req = db.prepare(`SELECT * FROM join_requests WHERE id = ?`).get(requestId);
@@ -2102,7 +2125,7 @@ function createOAuthToken(token, refreshToken, appId, userId, scopes, expiresAt)
 }
 
 function getOAuthToken(token) {
-  return db.prepare(`SELECT * FROM oauth_tokens WHERE token = ?`).get(hashOAuthToken(token));
+  return db.prepare(`SELECT * FROM oauth_tokens WHERE token = ? AND revoked_at IS NULL`).get(hashOAuthToken(token));
 }
 
 function getOAuthTokenByRefresh(refreshToken) {
@@ -2110,7 +2133,7 @@ function getOAuthTokenByRefresh(refreshToken) {
 }
 
 function revokeOAuthToken(token) {
-  db.prepare(`DELETE FROM oauth_tokens WHERE token = ?`).run(hashOAuthToken(token));
+  db.prepare(`UPDATE oauth_tokens SET revoked_at = ? WHERE token = ? AND revoked_at IS NULL`).run(Date.now(), hashOAuthToken(token));
 }
 
 function revokeOAuthTokensForUser(userId, appId) {
@@ -2125,7 +2148,9 @@ function rotateRefreshToken(oldRefreshToken, newToken, newRefreshToken, expiresA
   const now = Date.now();
   const existing = db.prepare(`SELECT * FROM oauth_tokens WHERE refresh_token = ?`).get(hashOAuthToken(oldRefreshToken));
   if (!existing) return null;
-  db.prepare(`DELETE FROM oauth_tokens WHERE refresh_token = ?`).run(hashOAuthToken(oldRefreshToken));
+  // Revoke (don't delete) the old row: a replay of the old refresh token
+  // must be distinguishable from an invalid one so theft can be detected.
+  db.prepare(`UPDATE oauth_tokens SET revoked_at = ? WHERE refresh_token = ?`).run(now, hashOAuthToken(oldRefreshToken));
   const refreshExpiresAt = now + 90 * 24 * 60 * 60 * 1000; // 90 days
   db.prepare(`
     INSERT INTO oauth_tokens (token, refresh_token, app_id, user_id, scopes, expires_at, refresh_expires_at, created_at)
@@ -2488,7 +2513,7 @@ module.exports = {
   createRoomRole, getRoomRole, getRoomRoles, updateRoomRole, deleteRoomRole, transferFounder,
   createRoomChannel, getRoomChannel, getRoomChannels, updateRoomChannel, deleteRoomChannel,
   getRoomMessages, sendRoomMessage, deleteRoomMessage, joinDefaultRole, hasRoomPermission,
-  publishRoomGroupSession, getRoomGroupSession, isRoomGroupSessionUsable, pruneSupersededRoomGroupSessions, saveRoomSessionKeys, ensureRoomSessionRecipient, getPendingRoomSessionKeys, markRoomSessionKeyDelivered, getRoomSessionRecipients, getRoomSessionEmptyKeyRecipients,
+  publishRoomGroupSession, getRoomGroupSession, isRoomGroupSessionUsable, pruneSupersededRoomGroupSessions, saveRoomSessionKeys, ensureRoomSessionRecipient, getPendingRoomSessionKeys, getRoomSessionKeyById, markRoomSessionKeyDelivered, getRoomSessionRecipients, getRoomSessionEmptyKeyRecipients,
   // reports
   createReport, getPendingReports, getReport, resolveReport, dismissReport,
   // security reports (private responsible-disclosure inbox)
@@ -2496,7 +2521,7 @@ module.exports = {
   // admin rooms
   getAllRooms,
   // join requests
-  createJoinRequest, getJoinRequests, approveJoinRequest, rejectJoinRequest, hasPendingRequest,
+  createJoinRequest, getJoinRequests, getJoinRequestById, approveJoinRequest, rejectJoinRequest, hasPendingRequest,
   // OAuth Apps
   createOAuthApp, getOAuthAppByClientId, getOAuthAppById, getOAuthAppsByOwner,
   getAuthorizedAppsForUser, deleteOAuthApp,
@@ -2507,10 +2532,10 @@ module.exports = {
   revokeOAuthToken, revokeOAuthTokensForUser, revokeAllOAuthTokensForUser,
   rotateRefreshToken, migrateOAuthTokenHashes, hashOAuthToken,
   // media
-  createMediaAttachment, getMediaAttachment, getMediaAttachmentsByUser, updateMediaAttachmentDimensions,
+  createMediaAttachment, getMediaAttachment, getMediaAttachmentsByUser, updateMediaAttachmentDimensions, getUserMediaUsage,
   // idempotency
   getIdempotencyKey, setIdempotencyKey,
-  // search
+  getUserMediaUsage, pruneAuditLog, pruneNotifications,
   searchUsers, searchPosts,
   // audit
   auditLog,

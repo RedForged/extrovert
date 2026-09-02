@@ -4,6 +4,17 @@ const express = require('express');
 const multer = require('multer');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const fs = require('node:fs');
+
+// Best-effort unlink of a deleted post's media file (ENOENT is fine — the
+// file may already be gone). Keeps deleted posts from leaking up-to-60MB
+// files on disk forever.
+function unlinkPostMedia(post) {
+  if (post && post.media_path && post.media_path.startsWith('/uploads/')) {
+    fs.unlink(path.join(__dirname, '..', '..', post.media_path), () => {});
+  }
+}
+
 const {
   db, createPost, getPostById, getDisplayPost, getUserById,
   toggleLike, addComment, commentsForPost, hasLiked, hasShared,
@@ -273,8 +284,10 @@ router.get('/:id/delete', (req, res) => {
 router.post('/:id/delete', (req, res) => {
   const user = res.locals.currentUser;
   if (!user) return req.xhr ? res.json({ error: 'not logged in' }) : res.redirect('/login');
+  const post = getPostById(Number(req.params.id));
   const deleted = deletePost(Number(req.params.id), user.id);
   if (!deleted) return req.xhr ? res.json({ error: 'not found' }) : res.status(404).send('Post not found or not yours.');
+  unlinkPostMedia(post);
   if (req.xhr) return res.json({ ok: true });
   res.redirect('/u/' + user.username);
 });

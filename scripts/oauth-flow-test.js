@@ -243,7 +243,7 @@ async function main() {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ grant_type: 'refresh_token', client_id: confClientId, client_secret: confSecret, refresh_token: victimRefresh }),
   });
-  ok(replay.status === 400, 'rotated (reused) refresh token rejected');
+  ok(replay.status === 401, 'rotated (reused) refresh token rejected as theft (401, tokens revoked)');
 
   console.log('\nTEST 8: scope capping (requested ⊆ registered)');
   const readOnlyApp = await registerApp({ name: 'Read only', redirect_uris: 'https://ro.example/cb', scopes: 'read' });

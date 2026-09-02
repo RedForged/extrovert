@@ -10,8 +10,8 @@ const {
   createRoomChannel, getRoomChannel, getRoomChannels, updateRoomChannel, deleteRoomChannel,
   getRoomMessages, sendRoomMessage, joinDefaultRole, hasRoomPermission, getUserById, getUserByUsername, db,
   createReport,
-  createJoinRequest, getJoinRequests, approveJoinRequest, rejectJoinRequest, hasPendingRequest,
-  publishRoomGroupSession, getRoomGroupSession, isRoomGroupSessionUsable, saveRoomSessionKeys, ensureRoomSessionRecipient, getPendingRoomSessionKeys, markRoomSessionKeyDelivered, getRoomSessionRecipients, getRoomSessionEmptyKeyRecipients,
+  createJoinRequest, getJoinRequests, getJoinRequestById, approveJoinRequest, rejectJoinRequest, hasPendingRequest,
+  publishRoomGroupSession, getRoomGroupSession, isRoomGroupSessionUsable, saveRoomSessionKeys, ensureRoomSessionRecipient, getPendingRoomSessionKeys, getRoomSessionKeyById, markRoomSessionKeyDelivered, getRoomSessionRecipients, getRoomSessionEmptyKeyRecipients,
   getOlmIdentity, getAllDeviceBundlesForUser, claimAllDevicePrekeysForUser,
 } = require('../db');
 
@@ -235,7 +235,7 @@ router.post('/:id/roles/create', (req, res) => {
   if (!checkPerm(room.id, res.locals.currentUser.id, PERM.MANAGE_ROLES)) return res.status(403).send('No permission');
   const name = String(req.body.name || '').trim();
   if (!name) return res.redirect('/rooms/' + room.id + '/roles');
-  const color = String(req.body.color || '#cccccc').trim();
+  const color = /^#[0-9a-fA-F]{6}$/.test(String(req.body.color || '').trim()) ? String(req.body.color).trim() : '#cccccc';
   let permissions = 0;
   if (req.body.can_view) permissions |= PERM.VIEW;
   if (req.body.can_write) permissions |= PERM.WRITE;
@@ -257,7 +257,7 @@ router.post('/:id/roles/:rid/update', (req, res) => {
   if (!role || role.room_id !== room.id) return res.status(404).send('Role not found');
   if (role.is_founder) return res.status(400).send('Cannot edit founder role');
   const name = String(req.body.name || '').trim();
-  const color = String(req.body.color || '#cccccc').trim();
+  const color = /^#[0-9a-fA-F]{6}$/.test(String(req.body.color || '').trim()) ? String(req.body.color).trim() : '#cccccc';
   let permissions = 0;
   if (req.body.can_view) permissions |= PERM.VIEW;
   if (req.body.can_write) permissions |= PERM.WRITE;
@@ -462,7 +462,14 @@ router.post('/:id/session/keys/delivered', (req, res) => {
   if (!room) return res.status(404).json({ error: 'Room not found' });
   if (!isRoomMember(room.id, res.locals.currentUser.id)) return res.status(403).json({ error: 'Not a member' });
   const ids = Array.isArray(req.body.key_ids) ? req.body.key_ids.map(Number) : [];
-  for (const id of ids) markRoomSessionKeyDelivered(id);
+  // Only keys actually addressed to this caller in THIS room may be marked
+  // delivered; silently skip everything else (unknown ids behave the same).
+  for (const id of ids) {
+    const key = getRoomSessionKeyById(id);
+    if (key && key.recipient_id === res.locals.currentUser.id && key.room_id === room.id) {
+      markRoomSessionKeyDelivered(id);
+    }
+  }
   res.json({ ok: true });
 });
 
@@ -614,17 +621,25 @@ router.post('/:id/request', (req, res) => {
 // Approve join request
 router.post('/:id/requests/:rid/approve', (req, res) => {
   if (!res.locals.currentUser) return res.redirect('/login');
-  if (!checkPerm(Number(req.params.id), res.locals.currentUser.id, PERM.MANAGE_MEMBERS)) return res.status(403).send('No permission');
+  const room = getRoom(Number(req.params.id));
+  if (!room) return res.status(404).send('Room not found');
+  if (!checkPerm(room.id, res.locals.currentUser.id, PERM.MANAGE_MEMBERS)) return res.status(403).send('No permission');
+  const jreq = getJoinRequestById(Number(req.params.rid));
+  if (!jreq || jreq.room_id !== room.id) return res.status(404).send('Request not found');
   approveJoinRequest(Number(req.params.rid));
-  res.redirect('/rooms/' + req.params.id + '/members');
+  res.redirect('/rooms/' + room.id + '/members');
 });
 
 // Reject join request
 router.post('/:id/requests/:rid/reject', (req, res) => {
   if (!res.locals.currentUser) return res.redirect('/login');
-  if (!checkPerm(Number(req.params.id), res.locals.currentUser.id, PERM.MANAGE_MEMBERS)) return res.status(403).send('No permission');
+  const room = getRoom(Number(req.params.id));
+  if (!room) return res.status(404).send('Room not found');
+  if (!checkPerm(room.id, res.locals.currentUser.id, PERM.MANAGE_MEMBERS)) return res.status(403).send('No permission');
+  const jreq = getJoinRequestById(Number(req.params.rid));
+  if (!jreq || jreq.room_id !== room.id) return res.status(404).send('Request not found');
   rejectJoinRequest(Number(req.params.rid));
-  res.redirect('/rooms/' + req.params.id + '/members');
+  res.redirect('/rooms/' + room.id + '/members');
 });
 
 // Invite user to private room

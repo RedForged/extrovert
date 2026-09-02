@@ -208,7 +208,16 @@ document.addEventListener('DOMContentLoaded', function() {
       var headerDiv = document.createElement('div');
       headerDiv.className = 'room-msg-header';
       var color = roleMap[m.user_id] || '#ccc';
-      headerDiv.innerHTML = '<span class="room-msg-author" style="color:' + color + '">' + escHtml(m.display_name || m.username) + '</span><span class="room-msg-time">' + relTime(m.created_at) + '</span>';
+      if (!/^#[0-9a-fA-F]{6}$/.test(color)) color = '#ccc';
+      var author = document.createElement('span');
+      author.className = 'room-msg-author';
+      author.style.color = color;
+      author.textContent = m.display_name || m.username;
+      var time = document.createElement('span');
+      time.className = 'room-msg-time';
+      time.textContent = relTime(m.created_at);
+      headerDiv.appendChild(author);
+      headerDiv.appendChild(time);
       bodyDiv.appendChild(headerDiv);
       var rowDiv = document.createElement('div');
       rowDiv.className = 'room-msg-row';

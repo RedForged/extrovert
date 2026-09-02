@@ -2,6 +2,12 @@ services:
   extrovert:
     image: axoisaxo/extrovert:latest
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    mem_limit: 1g
     expose:
       - "3000"
     networks:

@@ -125,10 +125,23 @@ function decryptSecret(stored) {
 }
 
 // ---------- recovery codes ----------
+// 80 bits of entropy per code, base32 (Crockford-safe subset), formatted
+// XXXXX-XXXXX-XXXXX-XXXXX. Old 40-bit hex codes remain valid — verification
+// hashes the presented string either way.
+const CODE_ALPHABET = 'abcdefghijklmnopqrstuvwxyz234567';
 function generateRecoveryCodes(count = RECOVERY_CODE_COUNT) {
   const codes = new Set();
   while (codes.size < count) {
-    codes.add(crypto.randomBytes(5).toString('hex')); // 10 hex chars, 40 bits
+    const bytes = crypto.randomBytes(13);
+    let bits = 0, value = 0, s = '';
+    for (const b of bytes) {
+      value = (value << 8) | b; bits += 8;
+      while (bits >= 5 && s.replace(/-/g, '').length < 20) {
+        s += CODE_ALPHABET[(value >>> (bits - 5)) & 31];
+        bits -= 5;
+      }
+    }
+    codes.add(s.replace(/(.{5})(?=.)/g, '$1-'));
   }
   return [...codes];
 }

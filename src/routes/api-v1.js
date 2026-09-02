@@ -590,6 +590,13 @@ router.post('/oauth/token', clientAppAuth, (req, res) => {
     if (!existing) {
       return errorResponse(res, 400, 'Bad Request', 'Invalid or already revoked refresh token.');
     }
+    if (existing.revoked_at) {
+      // A previously rotated refresh token is being replayed — treat it as
+      // token theft (RFC 6749 BCP) and kill every token for this user.
+      db.revokeAllOAuthTokensForUser(existing.user_id);
+      db.auditLog('oauth_refresh_reuse', existing.user_id, `App "${app.name}"`);
+      return errorResponse(res, 401, 'Unauthorized', 'Refresh token reuse detected; all tokens have been revoked.');
+    }
     if (existing.app_id !== app.id) {
       // Refresh tokens are bound to the client they were issued to; another
       // registered client must not be able to mint tokens with them.
@@ -914,8 +921,12 @@ router.get('/statuses/:id', requireApiAuth('read'), (req, res) => {
 });
 
 router.delete('/statuses/:id', requireApiAuth('write'), (req, res) => {
+  const post = db.getPostById(parseInt(req.params.id, 10));
   const deleted = db.deletePost(parseInt(req.params.id, 10), req.apiUser.id);
   if (!deleted) return errorResponse(res, 404, 'Not Found', 'Post not found or not yours.');
+  if (post && post.media_path && post.media_path.startsWith('/uploads/')) {
+    fs.unlink(path.join(__dirname, '..', '..', post.media_path), () => {});
+  }
   db.auditLog('post_deleted', req.apiUser.id, `Post ${req.params.id}`);
   res.json({ data: { ok: true } });
 });
@@ -1151,6 +1162,15 @@ router.get('/notifications/stream', requireApiAuth('notifications'), (req, res) 
 router.post('/media', requireApiAuth('media.write'), upload.single('file'), async (req, res) => {
   if (!req.file) return errorResponse(res, 400, 'Bad Request', 'No file uploaded. Use multipart/form-data with field "file".');
 
+  // Per-account disk quota: reject uploads that would exceed 2 GiB of
+  // stored media so a single account can't grow uploads/ without bound.
+  const MEDIA_QUOTA_BYTES = 2 * 1024 * 1024 * 1024;
+  const existing = db.getUserMediaUsage(req.apiUser.id);
+  if (existing + req.file.size > MEDIA_QUOTA_BYTES) {
+    try { fs.unlink(req.file.path, () => {}); } catch {}
+    return errorResponse(res, 413, 'Payload Too Large', 'Media storage quota exceeded (2 GiB per account).');
+  }
+
   const mimeType = req.file.mimetype;
   const fileSize = req.file.size;
   const filePath = req.file.filename;
@@ -1245,6 +1265,12 @@ router.get('/calls/presence', requireApiAuth(), (req, res) => {
 });
 
 router.get('/calls/presence/:username', requireApiAuth(), (req, res) => {
+  // Presence is only visible to mutual followers (matches the list endpoint
+  // and WS presence broadcasts); everyone else sees a plain-offline response.
+  const other = db.getUserByUsername(req.params.username);
+  if (!other || !db.areMutualFollowers(req.apiUser.id, other.id)) {
+    return res.json({ online: false, in_call: false });
+  }
   const presence = getUserPresence(req.params.username);
   res.json(presence);
 });
@@ -1300,6 +1326,19 @@ router.get('/rooms/:id', requireApiAuth('read'), (req, res) => {
   const room = db.getRoom(parseInt(req.params.id, 10));
   if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
   const isMember = db.isRoomMember(room.id, req.apiUser.id);
+  if (!room.is_public && !isMember && !req.apiUser.is_admin) return errorResponse(res, 404, 'Not Found', 'Room not found.');
+  if (!isMember && !req.apiUser.is_admin) {
+    // Public room, non-member: limited profile only — no member roster,
+    // no channels, no custom html/css.
+    return responseEnvelope(res, {
+      id: String(room.id),
+      name: room.name,
+      description: room.description || '',
+      is_public: true,
+      is_member: false,
+      member_count: db.countRoomMembers(room.id),
+    });
+  }
   const channels = db.getRoomChannels(room.id).map(c => ({
     id: String(c.id),
     name: c.name,
@@ -1330,8 +1369,18 @@ router.get('/rooms/:id/channels/:cid/messages', requireApiAuth('read'), (req, re
   if (!db.isRoomMember(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'Not a member.');
   const channel = db.getRoomChannel(parseInt(req.params.cid, 10));
   if (!channel || channel.room_id !== room.id) return errorResponse(res, 404, 'Not Found', 'Channel not found.');
+  // Per-channel view restriction — mirrors the web route's semantics: a null
+  // or unparseable view_role_ids column means open to all members.
+  const role = db.getUserRoomRole(room.id, req.apiUser.id);
+  if (channel.view_role_ids) {
+    try {
+      const viewRoles = JSON.parse(channel.view_role_ids);
+      if (Array.isArray(viewRoles) && !viewRoles.includes(role.id)) return errorResponse(res, 403, 'Forbidden', 'No view permission.');
+    } catch {}
+  }
 
   const cursor = req.query.cursor ? parseInt(req.query.cursor, 10) : null;
+
   const messages = db.getRoomMessages(channel.id, cursor);
   const next = messages.length >= 50 ? String(messages[messages.length - 1].id) : null;
 
@@ -1360,6 +1409,16 @@ router.post('/rooms/:id/channels/:cid/messages', requireApiAuth('write'), requir
   const channel = db.getRoomChannel(parseInt(req.params.cid, 10));
   if (!channel || channel.room_id !== room.id) return errorResponse(res, 404, 'Not Found', 'Channel not found.');
 
+  // Per-channel write restriction — mirrors the web route's semantics: a null
+  // or unparseable write_role_ids column means open to all members.
+  const role = db.getUserRoomRole(room.id, req.apiUser.id);
+  if (channel.write_role_ids) {
+    try {
+      const writeRoles = JSON.parse(channel.write_role_ids);
+      if (Array.isArray(writeRoles) && !writeRoles.includes(role.id)) return errorResponse(res, 403, 'Forbidden', 'No write permission.');
+    } catch {}
+  }
+
   const body = String(req.body.body || '').trim();
   const proto = String(req.body.proto || 'plain').trim() === 'megolm' ? 'megolm' : 'plain';
   const ciphertextRaw = String(req.body.ciphertext || '').trim();
@@ -1378,6 +1437,7 @@ router.post('/rooms/:id/channels/:cid/messages', requireApiAuth('write'), requir
     }
   }
   const ciphertext = ciphertextRaw || null;
+
   const msgId = db.sendRoomMessage(channel.id, req.apiUser.id, isSticker ? body : '', proto, ciphertext, isSticker ? null : groupSessionId);
   res.status(201).json({ data: { id: String(msgId) } });
 });
@@ -1388,6 +1448,14 @@ router.delete('/rooms/:id/channels/:cid/messages/:mid', requireApiAuth('write'),
   if (!db.isRoomMember(room.id, req.apiUser.id) && !req.apiUser.is_admin) return errorResponse(res, 403, 'Forbidden', 'Not a member.');
   const channel = db.getRoomChannel(parseInt(req.params.cid, 10));
   if (!channel || channel.room_id !== room.id) return errorResponse(res, 404, 'Not Found', 'Channel not found.');
+  // Per-channel view restriction — mirrors the web route's semantics.
+  const deleterRole = db.getUserRoomRole(room.id, req.apiUser.id);
+  if (channel.view_role_ids) {
+    try {
+      const viewRoles = JSON.parse(channel.view_role_ids);
+      if (Array.isArray(viewRoles) && !viewRoles.includes(deleterRole.id)) return errorResponse(res, 403, 'Forbidden', 'No view permission.');
+    } catch {}
+  }
   const msgId = parseInt(req.params.mid, 10);
   const msgs = db.getRoomMessages(channel.id);
   const msg = msgs.find(m => m.id === msgId);
@@ -1441,7 +1509,14 @@ router.post('/rooms/:id/session/keys/delivered', requireApiAuth('write'), (req, 
   if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
   if (!db.isRoomMember(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'Not a member.');
   const ids = Array.isArray(req.body.key_ids) ? req.body.key_ids.map(Number) : [];
-  for (const id of ids) db.markRoomSessionKeyDelivered(id);
+  // Only keys actually addressed to this caller in THIS room may be marked
+  // delivered; silently skip everything else (unknown ids behave the same).
+  for (const id of ids) {
+    const key = db.getRoomSessionKeyById(id);
+    if (key && key.recipient_id === req.apiUser.id && key.room_id === room.id) {
+      db.markRoomSessionKeyDelivered(id);
+    }
+  }
   responseEnvelope(res, { ok: true });
 });
 

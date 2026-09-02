@@ -11,6 +11,7 @@ const crypto = require('node:crypto');
 const { WebSocketServer } = require('ws');
 const SqliteStore = require('./session-store');
 const { optionalAuth, requireAuth } = require('./auth');
+const db = require('./db');
 const { bearerUser } = require('./bearer-auth');
 const { initSignaling } = require('./webrtc-signaling');
 
@@ -213,7 +214,7 @@ app.use((req, res, next) => {
   // (mobile login regression).
   if (!req.session.csrfToken) {
     req.session.csrfToken = crypto.randomBytes(32).toString('hex');
-    console.log('CSRF: generated new token for session', req.sessionID, req.session.csrfToken);
+    console.log('CSRF: generated new token for session', req.sessionID);
   }
   res.locals.csrfToken = req.session.csrfToken;
 
@@ -241,7 +242,7 @@ app.use((req, res, next) => {
         const dest = req.originalUrl || req.path;
         return res.redirect(dest);
       }
-      console.log('CSRF FAIL', req.method, req.path, 'sessionToken:', req.session.csrfToken, 'received:', token, 'bodyType:', typeof req.body, 'bodyToken:', bodyToken, 'cookie:', req.headers.cookie ? req.headers.cookie.substring(0, 50) : 'none');
+      console.log('CSRF FAIL', req.method, req.path, 'tokenMatch:', !!token, 'bodyType:', typeof req.body, 'cookie:', req.headers.cookie ? req.headers.cookie.substring(0, 50) : 'none');
       return res.status(403).send('CSRF validation failed');
     }
   }
@@ -410,6 +411,16 @@ app.use('/docs', require('./routes/wiki'));
 app.get('/api/v1/openapi.json', (req, res) => res.redirect('/developers/openapi.json'));
 app.get('/api/v1/docs', (req, res) => res.redirect('/developers/docs'));
 
+// Daily retention pruning of audit_log (90d) and read/stale notifications
+// (30d read / 90d any). Runs once at boot too.
+setInterval(() => {
+  try { db.pruneAuditLog(); db.pruneNotifications(); db.pruneExpiredTrustedDevices(); } catch (e) { console.error('prune failed', e); }
+}, 86400000).unref();
+try { db.pruneAuditLog(); db.pruneNotifications(); db.pruneExpiredTrustedDevices(); } catch (e) { console.error('prune failed', e); }
+
+// Liveness/readiness probe for the container healthcheck (unauthenticated).
+app.get('/healthz', (req, res) => res.status(200).json({ ok: true }));
+
 app.use((req, res) => {
   if (req.path.startsWith('/api/')) {
     return res.status(404).json({ type: 'about:blank', title: 'Not Found', status: 404, detail: 'The requested API endpoint does not exist.' });
@@ -426,18 +437,87 @@ const server = app.listen(PORT, () => {
   console.log(`Extrovert is running on http://localhost:${PORT}`);
 });
 
-const wss = new WebSocketServer({ noServer: true });
+// Bound slowloris / header-flood exposure.
+server.headersTimeout = 20000;
+server.requestTimeout = 60000;
+server.keepAliveTimeout = 5000;
+server.maxHeadersCount = 100;
+
+
+const wss = new WebSocketServer({ noServer: true, maxPayload: 1 * 1024 * 1024 });
 initSignaling(wss);
+
+// Per-IP connection cap (reject above 10) and per-connection message rate
+// limit (60 messages / 10s token bucket) — bounds WS abuse.
+const wsConnectionsPerIp = new Map();
+const WS_MAX_PER_IP = 10;
+const WS_RATE_LIMIT = 60;
+const WS_RATE_WINDOW = 10000;
 
 server.on('upgrade', (req, socket, head) => {
   if (!req.url.startsWith('/ws')) {
     socket.destroy();
     return;
   }
+  const ip = req.socket.remoteAddress || 'unknown';
+  const count = wsConnectionsPerIp.get(ip) || 0;
+  if (count >= WS_MAX_PER_IP) {
+    socket.destroy();
+    return;
+  }
+  wsConnectionsPerIp.set(ip, count + 1);
   wss.handleUpgrade(req, socket, head, (ws) => {
     wss.emit('connection', ws, req);
   });
 });
+
+wss.on('connection', (ws, req) => {
+  const ip = req.socket.remoteAddress || 'unknown';
+  ws.on('close', () => {
+    const n = wsConnectionsPerIp.get(ip) || 1;
+    if (n <= 1) wsConnectionsPerIp.delete(ip);
+    else wsConnectionsPerIp.set(ip, n - 1);
+  });
+  let rateTokens = WS_RATE_LIMIT;
+  let rateLast = Date.now();
+  ws.on('message', () => {
+    const now = Date.now();
+    rateTokens = Math.min(WS_RATE_LIMIT, rateTokens + ((now - rateLast) / WS_RATE_WINDOW) * WS_RATE_LIMIT);
+    rateLast = now;
+    if (rateTokens < 1) {
+      try { ws.close(4009, 'Slow down'); } catch {}
+      return;
+    }
+    rateTokens -= 1;
+  });
+});
+
+// Fast-fail on unrecoverable state: compose restarts the container, which is
+// safer than a half-broken process holding open sockets.
+process.on('uncaughtException', (e) => {
+  console.error('uncaught', e);
+  process.exit(1);
+});
+process.on('unhandledRejection', (e) => {
+  console.error('unhandledRejection', e);
+  process.exit(1);
+});
+
+// Graceful shutdown: stop accepting, close WS clients, drain in-flight
+// requests, hard-exit after 10s in case something refuses to die.
+let shuttingDown = false;
+function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log('shutting down…');
+  server.close(() => process.exit(0));
+  wss.clients.forEach((c) => {
+    try { c.close(1001, 'Server shutting down'); } catch {}
+  });
+  setTimeout(() => process.exit(1), 10000).unref();
+}
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
 
 module.exports = app;
 // The module-level listener created at require time (also used by tests, which

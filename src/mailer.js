@@ -555,6 +555,11 @@ function upgradeToTls(rawSocket, host, timeoutMs, { required }) {
 // One full message delivery to a single host:port (the MX or relay).
 async function deliverToHost({ host, port, to, message, messageId, heloName }) {
   const rawSocket = net.connect({ host, port });
+  // Idle-timeout the raw socket so a stalled peer can't hold it open forever
+  // (per-command deadlines in smtpCommand/smtpExchange already bound the
+  // protocol steps; this covers silent stalls between them).
+  rawSocket.setTimeout(CFG.timeoutMs);
+  rawSocket.on('timeout', () => rawSocket.destroy(new Error('socket idle timeout')));
   let sock = rawSocket;
   const timeoutMs = CFG.timeoutMs;
   try {
@@ -651,8 +656,24 @@ function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
+async function mxHosts(domain) {
+  try {
+    // Deadline the lookup: a stalled resolver must not hang delivery.
+    const mx = await Promise.race([
+      dns.resolveMx(domain),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('dns timeout')), 5000)),
+    ]);
+    if (mx.length) {
+      return mx
+        .sort((a, b) => a.priority - b.priority)
+        .map(r => ({ host: r.exchange.replace(/\.$/, ''), port: 25 }));
+    }
+  } catch { /* no MX or resolver timeout → fall through */ }
+  return [{ host: domain, port: 25 }];
+}
+
 // Parse a relay setting that may be "host:port", "host", "[::1]:port" or
-// "[::1]" (IPv6 literals must be bracketed to carry a port).
+// just a bare host. Returns { host, port }.
 function parseRelay(relay) {
   let host = String(relay || '').trim();
   let port = 25;

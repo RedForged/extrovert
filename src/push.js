@@ -239,7 +239,7 @@ async function sendWebPush(sub, payload) {
   const check = await validatePushEndpoint(endpoint, 'web');
   if (!check.ok) return;
 
-  let sendOptions = { urgency: 'high', TTL: 120 };
+  let sendOptions = { urgency: 'high', TTL: 120, timeout: 10000 };
   try {
     const host = new URL(endpoint).hostname.toLowerCase();
     // Hostnames get a pinned connection; IPv6 literals are already validated

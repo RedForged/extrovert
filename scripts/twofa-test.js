@@ -115,7 +115,7 @@ async function main() {
   r = await s.post('/settings/security/totp/confirm', { _csrf: setupCsrf, code: goodCode });
   const recHtml = await r.text();
   ok(recHtml.includes('recovery codes'), 'confirm succeeded — recovery codes page rendered');
-  const codes = [...recHtml.matchAll(/<code style="font-size:0\.95rem;text-align:center">([a-f0-9]{10})<\/code>/g)].map((m) => m[1]);
+  const codes = [...recHtml.matchAll(/<code style="font-size:0\.95rem;text-align:center">([a-z2-7]{5}-[a-z2-7]{5}-[a-z2-7]{5}-[a-z2-7]{5})<\/code>/g)].map((m) => m[1]);
   ok(codes.length === 10, '10 recovery codes displayed');
   ok(db.getUserById(aliceId).totp_enabled === 1, 'totp_enabled flag set in DB');
   // The live secret from here on is whatever the last setup stored.

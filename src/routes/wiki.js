@@ -116,15 +116,27 @@ const NAV = buildNav();
 
 // ---- Serving ----
 
+// Only files under docs/ are served, plus two explicit repo-root allowlist
+// exceptions (README/LICENSE, linked from the wiki). Anything else — the
+// database, key material, mail spool, dotfiles — must never be reachable.
+const ROOT_ALLOWLIST = new Set(['README.md', 'LICENSE']);
+
 function resolveFile(rel) {
-  const candidates = [];
-  if (rel.toLowerCase().endsWith('.md')) {
-    candidates.push(path.join(DOCS_ROOT, rel), path.join(REPO_ROOT, rel));
-  } else {
-    candidates.push(path.join(DOCS_ROOT, rel + '.md'), path.join(REPO_ROOT, rel + '.md'));
+  // Reject dotfiles/dot-directories (.env, .git/config, …) outright.
+  if (rel.split('/').some(seg => seg.startsWith('.'))) return null;
+
+  const allowlisted = ROOT_ALLOWLIST.has(rel) || ROOT_ALLOWLIST.has(rel + '.md');
+  const resolved = path.resolve(DOCS_ROOT, rel);
+  const inDocs = resolved === DOCS_ROOT || resolved.startsWith(DOCS_ROOT + path.sep);
+
+  if (!inDocs && !allowlisted) return null;
+
+  const candidates = rel.toLowerCase().endsWith('.md')
+    ? [resolved]
+    : [resolved + '.md', resolved];
+  if (allowlisted) {
+    candidates.push(path.join(REPO_ROOT, rel), path.join(REPO_ROOT, rel + '.md'));
   }
-  // Non-markdown repo files (LICENSE, …) can be served as-is at /docs/<name>.
-  candidates.push(path.join(DOCS_ROOT, rel), path.join(REPO_ROOT, rel));
   for (const candidate of candidates) {
     if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
   }

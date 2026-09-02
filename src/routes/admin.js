@@ -1,7 +1,8 @@
 'use strict';
 
 const express = require('express');
-const { getAllUsers, getUserById, removeReferralBadge, banUser, unbanUser, deleteUser, getAllRooms, deleteRoom, getPendingReports, getReport, resolveReport, dismissReport, promoteUser, getAnnouncement, setAnnouncement, clearAnnouncement, getSecurityReports, markSecurityReportHandled, getSetting } = require('../db');
+const { getAllUsers, getUserById, removeReferralBadge, banUser, unbanUser, deleteUser, getAllRooms, deleteRoom, getPendingReports, getReport, resolveReport, dismissReport, promoteUser, getAnnouncement, setAnnouncement, clearAnnouncement, getSecurityReports, markSecurityReportHandled, getSetting, revokeAllOAuthTokensForUser, auditLog } = require('../db');
+const { destroySessionsForUser } = require('../session-store');
 
 const router = express.Router();
 
@@ -30,6 +31,9 @@ router.post('/ban/:id', requireAdmin, (req, res) => {
   if (!target) return res.status(404).send('User not found');
   if (target.is_admin) return res.status(403).send('Cannot ban another admin.');
   banUser(target.id);
+  try { destroySessionsForUser(target.id); } catch (err) { console.error('ban: session teardown failed', err); }
+  revokeAllOAuthTokensForUser(target.id);
+  auditLog('user_banned', req.session.userId, target.username);
   res.redirect('/admin');
 });
 
@@ -79,8 +83,10 @@ router.post('/reports/:id/ban', requireAdmin, (req, res) => {
   if (!target) return res.status(404).send('User not found');
   if (target.is_admin) return res.status(403).send('Cannot ban another admin');
   banUser(target.id);
+  try { destroySessionsForUser(target.id); } catch (err) { console.error('ban: session teardown failed', err); }
+  revokeAllOAuthTokensForUser(target.id);
+  auditLog('user_banned', req.session.userId, target.username);
   resolveReport(report.id);
-  res.redirect('/admin/reports');
 });
 
 router.post('/reports/:id/dismiss', requireAdmin, (req, res) => {

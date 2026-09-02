@@ -40,13 +40,20 @@ router.get('/mine', (req, res) => {
 
 router.post('/upload', (req, res) => {
   if (!res.locals.currentUser) return res.status(401).send('Not logged in');
+  // Multipart bodies bypass the global CSRF middleware, and the token is a
+  // form field inside the multipart body, so validation must happen AFTER
+  // multer parses the request (upload.single below populates req.body).
   upload.single('sticker')(req, res, async (err) => {
     if (err) {
       if (err.code === 'LIMIT_FILE_SIZE') return res.status(400).send('Sticker must be under 500 KB.');
       return res.status(400).send('Invalid file.');
     }
     if (!req.file) return res.status(400).send('No file uploaded.');
-
+    const token = (req.body && req.body._csrf) || req.get('X-CSRF-Token');
+    if (!token || token !== req.session.csrfToken) {
+      try { fs.unlink(req.file.path, () => {}); } catch {}
+      return res.status(403).send('CSRF validation failed');
+    }
     // Auto-compress if over 250 KB and not a GIF.
     const fullPath = req.file.path;
     const ext = path.extname(req.file.originalname).toLowerCase();
@@ -62,7 +69,12 @@ router.post('/upload', (req, res) => {
         if (compressed && compressed.length < stat.size) {
           fs.writeFileSync(fullPath, compressed);
         }
-      } catch {}
+      } catch (err) {
+        // Compression blew up mid-flight: drop the temp original rather than
+        // leaving stale oversize files behind.
+        try { fs.unlink(fullPath, () => {}); } catch {}
+        return res.status(400).send('Invalid file.');
+      }
     }
 
     const filePath = '/uploads/stickers/' + req.file.filename;

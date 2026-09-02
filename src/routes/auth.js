@@ -39,10 +39,15 @@ function readCookie(req, name) {
 // True when this browser presents a valid, unexpired trusted-device token
 // for exactly this account (suppresses the TOTP challenge).
 function hasTrustedDevice(req, userId) {
+  return !!lookupTrustedDeviceRow(req, userId);
+}
+
+// Resolves the presented trusted-device cookie to its DB row (or null).
+function lookupTrustedDeviceRow(req, userId) {
   const token = readCookie(req, TRUSTED_DEVICE_COOKIE);
-  if (!token) return false;
+  if (!token) return null;
   const row = db.getTrustedDevice(twofa.hashTrustedDeviceToken(token));
-  return !!row && row.user_id === userId;
+  return row && row.user_id === userId ? row : null;
 }
 
 // Shared second-factor verifier: 6-digit input is a TOTP code, anything else
@@ -368,9 +373,12 @@ router.post('/login/totp', (req, res) => {
     }
     return res.render('totp-challenge', { error: 'Invalid code.', remember: !!req.body.remember });
   }
-  // Remember this device for N days: a random token in an httpOnly cookie,
-  // only its sha256$ hash is stored server-side.
   if (req.body.remember) {
+    // Rotate: the old token row (matched by the presented cookie's hash) is
+    // deleted and a fresh token+cookie is issued, so a cookie's hash never
+    // stays valid unchanged for the whole 30-day window.
+    const oldRow = lookupTrustedDeviceRow(req, pending.userId);
+    if (oldRow) db.deleteTrustedDevice(oldRow.id, pending.userId);
     const token = twofa.generateTrustedDeviceToken();
     db.addTrustedDevice(
       pending.userId,

@@ -35,6 +35,7 @@ const pendingCalls = new Map();
 let sessionDb;
 try {
   sessionDb = new DatabaseSync(SESSION_DB_PATH);
+  sessionDb.exec('PRAGMA busy_timeout = 5000;');
 } catch (e) {
   console.error('Signaling: failed to open session DB', e);
 }
@@ -92,7 +93,7 @@ function lookupUserFromRequest(req) {
         const session = getSession(sid);
         if (session && session.userId) {
           const user = getUserById(session.userId);
-          if (user) return user;
+          if (user && !user.banned) return user;
         }
       }
     }
@@ -105,7 +106,7 @@ function lookupUserFromRequest(req) {
       const tokenRecord = getOAuthToken(token);
       if (tokenRecord && (!tokenRecord.expires_at || tokenRecord.expires_at > Date.now())) {
         const user = getUserById(tokenRecord.user_id);
-        if (user) return user;
+        if (user && !user.banned) return user;
       }
     }
   } catch {}
@@ -472,6 +473,11 @@ function initSignaling(wss) {
               try { ws.send(JSON.stringify({ type: 'user_offline', from: msg.to })); } catch {}
               break;
             }
+            if (!areMutualFollowers(user.id, target.userId)) {
+              console.log('  -> call_offer blocked: not mutual followers');
+              try { ws.send(JSON.stringify({ type: 'error', error: 'not_allowed' })); } catch {}
+              break;
+            }
             if (target.inCall) {
               console.log('  -> target busy');
               try {
@@ -498,20 +504,20 @@ function initSignaling(wss) {
             routeToChannelMember(msg, user, 'call_answered');
           } else {
             const target = findUserByUsername(msg.to);
-            if (target) {
-              console.log('  -> forwarding call_answered to', target.username);
-              try {
-                target.ws.send(JSON.stringify({
-                  type: 'call_answered',
-                  from: user.username,
-                  from_display: user.display_name,
-                  sdp: msg.sdp,
-                }));
-              } catch {}
-              clientData.inCall = true;
-            } else {
-              console.log('  -> target not found');
+            if (!target || !areMutualFollowers(user.id, target.userId)) {
+              console.log('  -> call_answer blocked: target offline or not mutual followers');
+              break;
             }
+            console.log('  -> forwarding call_answered to', target.username);
+            try {
+              target.ws.send(JSON.stringify({
+                type: 'call_answered',
+                from: user.username,
+                from_display: user.display_name,
+                sdp: msg.sdp,
+              }));
+            } catch {}
+            clientData.inCall = true;
           }
           break;
 
@@ -574,6 +580,14 @@ function initSignaling(wss) {
           const channelId = msg.channel_id;
           if (!channelId) return;
 
+          // Only room members may join a channel: prevents roster leaks of
+          // private rooms via channel_joined and ring-spam by non-members.
+          const channel = getRoomChannel(Number(channelId));
+          if (!channel || !isRoomMember(channel.room_id, user.id)) {
+            try { ws.send(JSON.stringify({ type: 'error', error: 'not_a_member' })); } catch {}
+            break;
+          }
+
           let members = voiceChannels.get(channelId);
           if (!members) {
             members = new Set();
@@ -582,6 +596,7 @@ function initSignaling(wss) {
 
           if (members.has(user.id)) return;
           members.add(user.id);
+
 
           clientData.inCall = true;
 
@@ -658,7 +673,10 @@ function initSignaling(wss) {
 
 function findUserByUsername(username) {
   for (const [id, client] of clients) {
-    if (client.username === username) return client;
+    if (client.username === username) {
+      client.userId = id;
+      return client;
+    }
   }
   return null;
 }
