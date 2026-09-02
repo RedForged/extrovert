@@ -4,7 +4,7 @@ const spec = {
   openapi: '3.1.0',
   info: {
     title: 'Extrovert REST API',
-    version: '1.0.1',
+    version: '1.0.4',
     description: `Public REST API for [Extrovert](https://extrovert.redforged.eu), a social network where content is discovered through your network of friends and friends-of-friends.
 
 > Full documentation, including every endpoint's request/response details, E2EE flows, and usage guides, lives in the [in-app wiki](/docs/developers/api-overview).
