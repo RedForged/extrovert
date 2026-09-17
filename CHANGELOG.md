@@ -17,6 +17,22 @@ release: the codebase carries its version in `package.json`, and the sections
   The single newest ratchet-advance message remains non-replayable (an Olm
   property — its message key was consumed), and the existing rekey heal
   recovers the conversation forward from there.
+- **Proxmox VE deployment scripts** (`proxmox/`): `extrovert-ct.sh` creates a
+  Debian 13 LXC container on a Proxmox host (wizard for container and
+  application, every answer stored in `/etc/extrovert/install.conf`), and
+  `extrovert-install.sh` installs Extrovert natively — Node.js from the
+  official tarball, a hardened systemd unit, an environment file, optional
+  Caddy with Let's Encrypt or its own CA — with `--wizard`, `--preseed`,
+  `--defaults` and `--show-config` modes.
+- **`extrovert-update`**: updates an installed instance from its git ref. It
+  snapshots `data/` and `uploads/` first (`rsync --link-dest`, so unchanged
+  media is not copied), restarts the service, verifies `/healthz`, rolls the
+  checkout back to the previous commit when the new revision does not come up,
+  and supports `--check` (exit code 10 = update available), `--backup`,
+  `--restore`, `--list-backups` and `--ref`.
+- **`HOST`** environment variable: the interface the server binds. Set it to
+  `127.0.0.1` when a reverse proxy on the same host terminates TLS, so port
+  3000 is not reachable directly.
 
 ## [1.0.3] - 2026-08-30
 

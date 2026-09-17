@@ -51,6 +51,16 @@ jobs:
       - name: Email verification + built-in mail server suite
         run: npm run test:email
 
+  shellcheck:
+    name: Shell scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ShellCheck the deployment scripts
+        run: shellcheck --external-sources --severity=warning proxmox/*.sh proxmox/lib/*.sh
+
   docker-build:
     name: Docker image build
     runs-on: ubuntu-latest

@@ -93,6 +93,48 @@ docker run --rm -v extrovert_data:/app/data -v extrovert_uploads:/app/uploads \
 
 Then `docker compose pull && docker compose up -d`.
 
+## Proxmox VE
+
+Two scripts in `proxmox/` install Extrovert on a Proxmox VE host without Docker — a Debian 13 LXC container running Node.js under systemd, with `data/` and `uploads/` kept outside the git checkout:
+
+| Script | Where it runs | Purpose |
+|---|---|---|
+| `proxmox/extrovert-ct.sh` | Proxmox host (root) | wizard for the container and the application, creates the LXC, installs inside it |
+| `proxmox/extrovert-install.sh` | container, VM or bare metal | the installer itself (`--wizard`, `--preseed`, `--defaults`, `--show-config`) |
+| `proxmox/extrovert-update.sh` | installed host | pulls the tracked git ref, snapshots state first, restarts and health-checks, rolls back on failure |
+
+```bash
+# on the Proxmox host, as root
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/RedForged/extrovert/master/proxmox/extrovert-ct.sh)"
+```
+
+The wizard asks for the container (ID, hostname, cores, memory, disk, storage, bridge, IPv4, root access) and then for the application (public URL, secrets, TLS: none / Caddy with Let's Encrypt / Caddy with its own CA / an external proxy, mail policy, rate limits, Node.js major, git ref to track). Everything it answers is stored in `/etc/extrovert/install.conf` and can be changed later with `extrovert-config`; the container is created non-interactively from that configuration.
+
+Unattended equivalents:
+
+```bash
+# create the container and install with built-in application defaults
+bash proxmox/extrovert-ct.sh --yes
+
+# or with an application configuration you prepared beforehand
+bash proxmox/extrovert-ct.sh --yes --app-preseed /root/extrovert.conf
+
+# inside an existing Debian/Ubuntu container, VM or bare-metal host
+curl -fsSL https://raw.githubusercontent.com/RedForged/extrovert/master/proxmox/extrovert-install.sh -o /tmp/extrovert-install.sh
+bash /tmp/extrovert-install.sh --wizard
+```
+
+Inside the instance:
+
+```bash
+extrovert-update --check     # is a newer revision available? (exit code 10 = yes)
+extrovert-update             # snapshot state, update, restart, verify; rolls back on failure
+extrovert-update --backup    # snapshot data/ and uploads/ only
+extrovert-config             # re-run the wizard and re-apply
+```
+
+Layout: code at `/opt/extrovert` (a git checkout, read-only for the service), state at `/var/lib/extrovert` (`data/` with the SQLite databases and the OIDC signing key, plus `uploads/`), configuration at `/etc/extrovert/`, snapshots at `/var/backups/extrovert`. The systemd unit runs as the unprivileged `extrovert` user with `ProtectSystem=strict` and write access only to `/var/lib/extrovert`.
+
 ## Resetting everything
 
 Stop the server, then delete:
