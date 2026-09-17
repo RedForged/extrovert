@@ -8,6 +8,7 @@ Extrovert is configured entirely through environment variables. There is no conf
 |---|---|---|---|
 | `SESSION_SECRET` | **yes** | — | Signs session cookies. Server refuses to start without it. Changing it logs everyone out. |
 | `PORT` | no | `3000` | HTTP port. |
+| `HOST` | no | `0.0.0.0` | Interface to bind. Set `127.0.0.1` when a reverse proxy on the same host terminates TLS and the app port should not be reachable directly. |
 | `NODE_ENV` | no | — | Set to `production` in production. Controls cookie `secure` mode and logging. |
 | `OIDC_ISSUER` | no | `https://extrovert.redforged.eu` | The issuer URL advertised in OpenID Connect discovery, and the `iss` claim of ID tokens. Self-hosters **must** set this to their real public URL. |
 | `OIDC_PRIVATE_KEY` | no | — | PEM private key for OIDC ID-token signing. If set, overrides the key file on disk (see below). |

@@ -17,6 +17,10 @@ const { initSignaling } = require('./webrtc-signaling');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+// Interface to bind. Defaults to every interface; set HOST=127.0.0.1 when a
+// reverse proxy on the same host terminates TLS, so the app port is not
+// reachable directly.
+const HOST = process.env.HOST || '0.0.0.0';
 const IS_PROD = process.env.NODE_ENV === 'production';
 const SESSION_SECRET = process.env.SESSION_SECRET;
 if (!SESSION_SECRET) {
@@ -433,8 +437,8 @@ app.use((err, req, res, next) => {
   res.status(500).send('Internal server error');
 });
 
-const server = app.listen(PORT, () => {
-  console.log(`Extrovert is running on http://localhost:${PORT}`);
+const server = app.listen(PORT, HOST, () => {
+  console.log(`Extrovert is running on http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
 });
 
 // Bound slowloris / header-flood exposure.
