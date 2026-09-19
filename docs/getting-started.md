@@ -108,7 +108,7 @@ Two scripts in `proxmox/` install Extrovert on a Proxmox VE host without Docker 
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/RedForged/extrovert/master/proxmox/extrovert-ct.sh)"
 ```
 
-The wizard asks for the container (ID, hostname, cores, memory, disk, storage, bridge, IPv4, root access) and then for the application (public URL, secrets, TLS: none / Caddy with Let's Encrypt / Caddy with its own CA / an external proxy, mail policy, rate limits, Node.js major, git ref to track). Everything it answers is stored in `/etc/extrovert/install.conf` and can be changed later with `extrovert-config`; the container is created non-interactively from that configuration.
+The wizard asks for the container (ID, hostname, storage, disk size and rootfs mount options, plus a **Specs** section with cores, CPU limit, CPU units, CPU type, memory, ballooning minimum and swap), then for the application (public URL, secrets, TLS: none / Caddy with Let's Encrypt / Caddy with its own CA / an external proxy, mail policy, rate limits, Node.js major, git ref to track). Everything it answers is stored in `/etc/extrovert/install.conf` and can be changed later with `extrovert-config`; the container is created non-interactively from that configuration.
 
 Unattended equivalents:
 
@@ -116,13 +116,16 @@ Unattended equivalents:
 # create the container and install with built-in application defaults
 bash proxmox/extrovert-ct.sh --yes
 
-# or with an application configuration you prepared beforehand
-bash proxmox/extrovert-ct.sh --yes --app-preseed /root/extrovert.conf
+# or size the container and use an application configuration you prepared beforehand
+bash proxmox/extrovert-ct.sh --yes --cores 4 --memory 4096 --swap 1024 --disk 32 \
+  --balloon 1024 --app-preseed /root/extrovert.conf
 
 # inside an existing Debian/Ubuntu container, VM or bare-metal host
 curl -fsSL https://raw.githubusercontent.com/RedForged/extrovert/master/proxmox/extrovert-install.sh -o /tmp/extrovert-install.sh
 bash /tmp/extrovert-install.sh --wizard
 ```
+
+Container sizing options: `--cores`, `--memory`, `--swap`, `--disk`, `--balloon` (minimum memory for ballooning), `--cputype`, `--cpuunits`, `--cpulimit` (fractions allowed, e.g. `2.5`) and `--rootfs-opts` (e.g. `noatime,discard`). `--help` lists them with their defaults; an optional one left out means "Proxmox decides".
 
 Inside the instance:
 

@@ -16,6 +16,11 @@
 #   --ctid N            container ID (default: next free)
 #   --hostname NAME     container hostname (default: extrovert)
 #   --cores N --memory MB --swap MB --disk GB
+#   --cputype TYPE      CPU type the container sees, e.g. host
+#   --cpuunits N        relative CPU weight (default: Proxmox default)
+#   --cpulimit N        cores the container may use, e.g. 2 or 2.5 (0 = unlimited)
+#   --balloon MB        minimum memory for ballooning (default: none)
+#   --rootfs-opts OPTS  root filesystem mount options, e.g. noatime,discard
 #   --storage S         storage for the container rootfs
 #   --template-storage S   storage for LXC templates
 #   --bridge BR         network bridge (default: the host's first bridge)
@@ -44,6 +49,11 @@ CORES=2
 MEMORY=2048
 SWAP=512
 DISK=16
+CPUTYPE=''
+CPUUNITS=''
+CPULIMIT=''
+BALLOON=''
+ROOTFS_OPTS=''
 STORAGE=''
 TEMPLATE_STORAGE=''
 BRIDGE=''
@@ -68,6 +78,37 @@ info() { printf '    %s\n' "$*"; }
 warn() { printf '    ! %s\n' "$*" >&2; }
 die()  { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
 
+# Spec guards. An empty value means "leave it to Proxmox" and counts as valid;
+# anything else has to be something pct accepts, so a typo fails here with a
+# readable message instead of inside `pct create`.
+spec_ok_uint()  { [[ $1 =~ ^[1-9][0-9]*$ ]]; }                          # above zero
+spec_ok_count() { [ -z "$1" ] || [[ $1 =~ ^(0|[1-9][0-9]*)$ ]]; }       # zero allowed, empty = unset
+spec_ok_ratio() { [ -z "$1" ] || [[ $1 =~ ^(0|[1-9][0-9]*)([.][0-9]+)?$ ]]; }  # decimals, empty = unset
+
+check_specs() {
+  spec_ok_uint  "$CORES"    || die "--cores expects a whole number above zero, got '$CORES'"
+  spec_ok_uint  "$MEMORY"   || die "--memory expects a whole number above zero, got '$MEMORY'"
+  spec_ok_count "$SWAP"     || die "--swap expects a whole number of MB, got '$SWAP'"
+  spec_ok_uint  "$DISK"     || die "--disk expects a whole number above zero, got '$DISK'"
+  spec_ok_count "$CPUUNITS" || die "--cpuunits expects a whole number, got '$CPUUNITS'"
+  spec_ok_ratio "$CPULIMIT" || die "--cpulimit expects a number such as 2 or 2.5, got '$CPULIMIT'"
+  spec_ok_count "$BALLOON"  || die "--balloon expects a whole number of MB, got '$BALLOON'"
+}
+
+# Asks for one spec and re-asks on a bad value instead of dropping the user back
+# to the menu. Assigns the accepted value to the named variable; returns 1 when
+# the dialog is cancelled. The value never travels on stdout: tui_msgbox draws
+# the dialog there, and a command substitution would swallow the drawing into
+# the value.
+ask_spec() { # variable title prompt current-value validator message
+  local var=$1 title=$2 prompt=$3 current=$4 validator=$5 message=$6 v
+  while :; do
+    v=$(tui_input "$title" "$prompt" "$current") || return 1
+    if "$validator" "$v"; then printf -v "$var" '%s' "$v"; return 0; fi
+    tui_msgbox "Invalid" "$message" || true
+  done
+}
+
 usage() {
   cat <<'EOF'
 extrovert-ct — create a Debian LXC container on Proxmox VE and install Extrovert in it.
@@ -78,6 +119,11 @@ Usage: extrovert-ct.sh [options]
   --ctid N             container ID (default: next free)
   --hostname NAME      container hostname (default: extrovert)
   --cores N --memory MB --swap MB --disk GB
+  --cputype TYPE       CPU type the container sees, e.g. host
+  --cpuunits N         relative CPU weight (default: Proxmox default)
+  --cpulimit N         cores the container may use, e.g. 2 or 2.5 (0 = unlimited)
+  --balloon MB         minimum memory for ballooning (default: none)
+  --rootfs-opts OPTS   root filesystem mount options, e.g. noatime,discard
   --storage S          storage for the container rootfs
   --template-storage S storage for LXC templates
   --bridge BR          network bridge (default: the host's first bridge)
@@ -88,6 +134,7 @@ Usage: extrovert-ct.sh [options]
   --password PASS      container root password (default: generated)
   --ssh-key FILE       authorized_keys for container root (default: none)
   --privileged         privileged container (default: unprivileged)
+  --unprivileged       explicit default, unprivileged container
   --nesting            allow Docker/nested containers inside (default: off)
   --ref REF            Extrovert branch/tag to install (default: master)
   --app-preseed FILE   application configuration; skips the application wizard
@@ -159,8 +206,13 @@ ct_summary() {
       "$([ "$UNPRIVILEGED" = 1 ] && printf unprivileged || printf privileged)" "$ARCH"
     printf 'Nesting           %s\n' \
       "$([ "$NESTING" = 1 ] && printf 'enabled (Docker inside)' || printf disabled)"
-    printf 'Resources         %s cores, %s MB RAM, %s MB swap, %s GB disk\n' "$CORES" "$MEMORY" "$SWAP" "$DISK"
-    printf 'Storage           %s (rootfs), %s (templates)\n' "$STORAGE" "$TEMPLATE_STORAGE"
+    printf 'CPU               %s cores, type %s, units %s, limit %s\n' \
+      "$CORES" "${CPUTYPE:-default}" "${CPUUNITS:-default}" "${CPULIMIT:-unlimited}"
+    printf 'Memory            %s MB RAM, %s MB swap, balloon minimum %s\n' \
+      "$MEMORY" "$SWAP" "$([ -n "$BALLOON" ] && printf '%s MB' "$BALLOON" || printf off)"
+    printf 'Root filesystem   %s, %s GB%s\n' \
+      "$STORAGE" "$DISK" "${ROOTFS_OPTS:+, opts $ROOTFS_OPTS}"
+    printf 'Template storage  %s\n' "$TEMPLATE_STORAGE"
     printf 'Network           %s, %s%s\n' "$BRIDGE" "$IP4" "${VLAN:+, VLAN $VLAN}"
     printf 'Gateway / DNS     %s / %s\n' "${GW:-(none)}" "${DNS:-(from DHCP)}"
     printf 'Root access       %s\n' \
@@ -178,7 +230,7 @@ wizard_container() {
   while true; do
     f=$(tui_menu "Container" "Debian 13 LXC container on this Proxmox VE host." container \
       container "Container      ${CTID}, ${HOSTNAME_CT}, ${STORAGE}, ${DISK} GB" \
-      resources "Resources      ${CORES} cores, ${MEMORY} MB RAM, ${SWAP} MB swap" \
+      specs "Specs          ${CORES} cores, ${MEMORY} MB RAM, ${SWAP} MB swap${CPULIMIT:+, limit $CPULIMIT}" \
       network "Network        ${BRIDGE}, ${IP4}${VLAN:+, VLAN $VLAN}" \
       access "Access         ${ARCH}, $([ -n "$SSH_KEY_FILE" ] && printf 'ssh key' || printf 'root password')" \
       options "Options        $([ "$UNPRIVILEGED" = 1 ] && printf unprivileged || printf privileged), nesting ${NESTING}" \
@@ -189,14 +241,32 @@ wizard_container() {
         v=$(tui_input "Container" "Container ID" "$CTID") || continue
         case $v in ''|*[!0-9]*) tui_msgbox "Invalid" "The container ID must be a number." || true; continue ;; esac
         CTID=$v
-        HOSTNAME_CT=$(tui_input "Container" "Hostname" "$HOSTNAME_CT") || continue
-        STORAGE=$(tui_input "Container" "Storage for the root filesystem" "$STORAGE") || continue
-        DISK=$(tui_input "Container" "Root filesystem size in GB" "$DISK") || continue
+        v=$(tui_input "Container" "Hostname" "$HOSTNAME_CT") || continue
+        if [ -z "$v" ]; then tui_msgbox "Invalid" "The hostname cannot be empty." || true; continue; fi
+        HOSTNAME_CT=$v
+        v=$(tui_input "Container" "Storage for the root filesystem" "$STORAGE") || continue
+        if [ -z "$v" ]; then tui_msgbox "Invalid" "The storage cannot be empty." || true; continue; fi
+        STORAGE=$v
+        ask_spec DISK "Container" "Root filesystem size in GB" "$DISK" spec_ok_uint \
+          "The disk size must be a whole number of GB." || continue
+        v=$(tui_input "Container" "Root filesystem mount options (empty = defaults, e.g. noatime,discard)" "$ROOTFS_OPTS") || continue
+        ROOTFS_OPTS=$v
         ;;
-      resources)
-        CORES=$(tui_input "Container" "CPU cores" "$CORES") || continue
-        MEMORY=$(tui_input "Container" "Memory in MB" "$MEMORY") || continue
-        SWAP=$(tui_input "Container" "Swap in MB" "$SWAP") || continue
+      specs)
+        ask_spec CORES "Specs" "CPU cores" "$CORES" spec_ok_uint \
+          "CPU cores must be a whole number above zero." || continue
+        ask_spec CPULIMIT "Specs" "CPU limit in cores, e.g. 2 or 2.5 (empty = unlimited)" "$CPULIMIT" spec_ok_ratio \
+          "The CPU limit must be a number such as 2 or 2.5." || continue
+        ask_spec CPUUNITS "Specs" "CPU units, the relative weight (empty = Proxmox default)" "$CPUUNITS" spec_ok_count \
+          "CPU units must be a whole number." || continue
+        v=$(tui_input "Specs" "CPU type the container sees (empty = Proxmox default, e.g. host)" "$CPUTYPE") || continue
+        CPUTYPE=$v
+        ask_spec MEMORY "Specs" "Memory in MB" "$MEMORY" spec_ok_uint \
+          "Memory must be a whole number of MB." || continue
+        ask_spec BALLOON "Specs" "Minimum memory in MB for ballooning (empty = disabled)" "$BALLOON" spec_ok_count \
+          "The balloon minimum must be a whole number of MB." || continue
+        ask_spec SWAP "Specs" "Swap in MB" "$SWAP" spec_ok_count \
+          "Swap must be a whole number of MB." || continue
         ;;
       network)
         BRIDGE=$(tui_input "Network" "Bridge on this host" "$BRIDGE") || continue
@@ -321,7 +391,7 @@ create_container() {
     --cores "$CORES"
     --memory "$MEMORY"
     --swap "$SWAP"
-    --rootfs "${STORAGE}:${DISK}"
+    --rootfs "${STORAGE}:${DISK}${ROOTFS_OPTS:+,${ROOTFS_OPTS}}"
     --net0 "$net0"
     --ostype debian
     --arch "$ARCH"
@@ -329,6 +399,10 @@ create_container() {
     --tags extrovert
     --unprivileged "$UNPRIVILEGED"
   )
+  [ -n "$CPUTYPE" ] && args+=(--cputype "$CPUTYPE")
+  [ -n "$CPUUNITS" ] && args+=(--cpuunits "$CPUUNITS")
+  [ -n "$CPULIMIT" ] && args+=(--cpulimit "$CPULIMIT")
+  [ -n "$BALLOON" ] && args+=(--balloon "$BALLOON")
   [ -n "$DNS" ] && args+=(--nameserver "$DNS")
   [ -n "$PASSWORD" ] && args+=(--password "$PASSWORD")
   [ -n "$keyfile" ] && args+=(--ssh-public-keys "$keyfile")
@@ -433,6 +507,11 @@ main() {
       --memory) MEMORY=${2:?}; shift 2 ;;
       --swap) SWAP=${2:?}; shift 2 ;;
       --disk) DISK=${2:?}; shift 2 ;;
+      --cputype) CPUTYPE=${2:?}; shift 2 ;;
+      --cpuunits) CPUUNITS=${2:?}; shift 2 ;;
+      --cpulimit) CPULIMIT=${2:?}; shift 2 ;;
+      --balloon) BALLOON=${2:?}; shift 2 ;;
+      --rootfs-opts) ROOTFS_OPTS=${2:?}; shift 2 ;;
       --storage) STORAGE=${2:?}; shift 2 ;;
       --template-storage) TEMPLATE_STORAGE=${2:?}; shift 2 ;;
       --bridge) BRIDGE=${2:?}; shift 2 ;;
@@ -454,10 +533,11 @@ main() {
     esac
   done
 
+  check_specs
+
   preflight
   detect
   TMPDIR_CT=$(mktemp -d)
-
   # Prefer the helper scripts of this checkout, otherwise download them.
   # BASH_SOURCE is unset when the script is piped into `bash -c`; $0 still names
   # something, and the existence checks below decide whether that is a checkout.

@@ -24,6 +24,14 @@ release: the codebase carries its version in `package.json`, and the sections
   official tarball, a hardened systemd unit, an environment file, optional
   Caddy with Let's Encrypt or its own CA — with `--wizard`, `--preseed`,
   `--defaults` and `--show-config` modes.
+- **Container sizing in the Proxmox helper**: a dedicated **Specs** section in
+  the wizard asks for CPU cores, CPU limit (`pct` accepts fractions), CPU
+  units, CPU type, memory, the ballooning minimum and swap; the container
+  section covers the root filesystem size and its mount options. Every value is
+  also an option for unattended runs — `--cores`, `--memory`, `--swap`,
+  `--disk`, `--cputype`, `--cpuunits`, `--cpulimit`, `--balloon`,
+  `--rootfs-opts` — validated before `pct create`, so a typo fails with a
+  readable message instead of a half-created container.
 - **`extrovert-update`**: updates an installed instance from its git ref. It
   snapshots `data/` and `uploads/` first (`rsync --link-dest`, so unchanged
   media is not copied), restarts the service, verifies `/healthz`, rolls the
