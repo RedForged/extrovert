@@ -570,12 +570,12 @@ main() {
 
   if [ "$ASSUME_YES" != 1 ]; then
     tui_require || die "the wizard needs whiptail"
-    ct_summary > /tmp/extrovert-ct-review.$$
-    tui_textbox "Container" /tmp/extrovert-ct-review.$$ || { rm -f /tmp/extrovert-ct-review.$$; die "cancelled"; }
-    wizard_container || { rm -f /tmp/extrovert-ct-review.$$; die "cancelled"; }
-    ct_summary > /tmp/extrovert-ct-review.$$
-    tui_textbox "Review" /tmp/extrovert-ct-review.$$ || { rm -f /tmp/extrovert-ct-review.$$; die "cancelled"; }
-    rm -f /tmp/extrovert-ct-review.$$
+    # The menu is the entry point: it lists the current values itself. The
+    # summary is only shown once the container is configured, as the review
+    # before the application wizard.
+    wizard_container || die "cancelled"
+    ct_summary > "$TMPDIR_CT/review"
+    tui_textbox "Review" "$TMPDIR_CT/review" || die "cancelled"
   fi
 
   if [ "$mode" = wizard ]; then

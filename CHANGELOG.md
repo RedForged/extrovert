@@ -31,7 +31,9 @@ release: the codebase carries its version in `package.json`, and the sections
   also an option for unattended runs — `--cores`, `--memory`, `--swap`,
   `--disk`, `--cputype`, `--cpuunits`, `--cpulimit`, `--balloon`,
   `--rootfs-opts` — validated before `pct create`, so a typo fails with a
-  readable message instead of a half-created container.
+  readable message instead of a half-created container. The wizard opens on the
+  menu (which lists the current values) and shows the summary once, as the
+  review after the container is configured.
 - **`extrovert-update`**: updates an installed instance from its git ref. It
   snapshots `data/` and `uploads/` first (`rsync --link-dest`, so unchanged
   media is not copied), restarts the service, verifies `/healthz`, rolls the
