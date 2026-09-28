@@ -445,7 +445,7 @@ push_and_install() {
   pct exec "$CTID" -- mkdir -p /root/lib >/dev/null
   pct push "$CTID" "$TMPDIR_CT/lib/tui.sh" /root/lib/tui.sh --perms 0700 >/dev/null
   case $mode in
-    preseed)
+    preseed|wizard)
       pct push "$CTID" "$PRESEED" /root/extrovert-preseed.conf --perms 0600 >/dev/null
       if pct exec "$CTID" -- bash /root/extrovert-install.sh --preseed /root/extrovert-preseed.conf; then
         pct exec "$CTID" -- rm -rf /root/extrovert-install.sh /root/lib /root/extrovert-preseed.conf >/dev/null 2>&1 || true
@@ -610,7 +610,10 @@ main() {
     printf '\n' >&2
     warn "the installation did not finish — container ${CTID} is intact"
     printf '    Re-run inside: pct enter %s\n' "$CTID" >&2
-    printf '    then: bash /root/extrovert-install.sh --preseed /root/extrovert-preseed.conf\n' >&2
+    case $mode in
+      preseed|wizard) printf '    then: bash /root/extrovert-install.sh --preseed /root/extrovert-preseed.conf\n' >&2 ;;
+      *)              printf '    then: bash /root/extrovert-install.sh\n' >&2 ;;
+    esac
     printf '    Service log: journalctl -u extrovert -n 50\n' >&2
     exit 1
   fi
