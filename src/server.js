@@ -57,10 +57,20 @@ app.use(helmet({
       workerSrc: ["'self'"],
       connectSrc: ["'self'", "ws:", "wss:"],
       frameAncestors: ["'none'"],
+      // helmet's default upgrade-insecure-requests rewrites every http://
+      // asset URL to https:// even when the page itself is served over HTTP,
+      // which breaks plain-HTTP deployments (every /static asset fails and
+      // pages render unstyled). Re-attached below only on secure responses.
+      upgradeInsecureRequests: null,
     },
   },
   crossOriginEmbedderPolicy: false,
 }));
+
+app.use((req, res, next) => {
+  if (req.secure) res.append('Content-Security-Policy', 'upgrade-insecure-requests');
+  next();
+});
 
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 app.use(express.json({ limit: '1mb' }));
