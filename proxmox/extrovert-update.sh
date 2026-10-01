@@ -21,6 +21,10 @@
 
 set -Eeuo pipefail
 
+# Node.js lives in /usr/local; pct exec/attach environments may not carry a
+# PATH that includes it.
+export PATH="/usr/local/bin:$PATH"
+
 CONF_FILE=/etc/extrovert/install.conf
 ENV_FILE=/etc/extrovert/extrovert.env
 EXIT_UPDATE_AVAILABLE=10
