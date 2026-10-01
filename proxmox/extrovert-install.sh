@@ -27,6 +27,10 @@
 
 set -Eeuo pipefail
 
+# The Debian LXC templates ship LANG=en_US.UTF-8 without generated locales;
+# the built-in C.UTF-8 keeps UTF-8 and stops apt/perl locale warnings.
+export LC_ALL=C.UTF-8 LANG=C.UTF-8
+
 REPO_DEFAULT=https://github.com/RedForged/extrovert.git
 HELPER_NAME=$(basename "${BASH_SOURCE[0]:-$0}")
 
