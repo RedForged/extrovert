@@ -773,6 +773,9 @@ step_user() {
 step_node() {
   step "Node.js"
   local major=${CFG[EXTV_NODE_MAJOR]} have=''
+  # Node.js is installed into /usr/local; the environment of pct exec and other
+  # attach methods may not carry a PATH that includes it.
+  export PATH="/usr/local/bin:$PATH"
   command -v node >/dev/null 2>&1 && have=$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || true)
   if [ "$major" = system ]; then
     [ -n "$have" ] || die "EXTV_NODE_MAJOR=system but no node binary is installed"
@@ -811,7 +814,8 @@ install_node() { # major
   tar -xJf "$tmp/$tarball" -C /usr/local --strip-components=1
   rm -rf "$tmp"
   hash -r
-  info "installed $(node -v) into /usr/local"
+  [ -x /usr/local/bin/node ] || die "extracting $tarball did not produce /usr/local/bin/node"
+  info "installed $(/usr/local/bin/node -v) into /usr/local"
 }
 
 step_state_dirs() {
