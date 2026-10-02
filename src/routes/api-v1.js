@@ -15,7 +15,7 @@ const { signIdToken, ISSUER } = require('../oidc');
 const { getAccountIds } = require('../accounts');
 const bcrypt = require('bcryptjs');
 const { sanitizeProfileHTML, sanitizeCSS } = require('../sanitize');
-const { getOnlineUsers, getUserPresence, sendDmEvent, cancelPendingCallByToken, broadcastGatewayEvent } = require('../webrtc-signaling');
+const { getOnlineUsers, getUserPresence, sendDmEvent, cancelPendingCallByToken, broadcastGatewayEvent, getGatewayLatestSeq, updateUserRoomSubscriptions } = require('../webrtc-signaling');
 const { onNotification } = require('../notif-broadcaster');
 const dm = require('../dm');
 const { getVapidPublicKey, validatePushEndpoint } = require('../push');
@@ -170,6 +170,223 @@ function serializePost(post, author, currentUserId) {
     is_own: currentUserId ? currentUserId === post.user_id : false,
   };
 }
+
+// ======== Client Ergonomics & Device Pairing ========
+
+function getIceServersConfig() {
+  let iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
+  if (process.env.EXTV_ICE_SERVERS) {
+    try {
+      iceServers = JSON.parse(process.env.EXTV_ICE_SERVERS);
+    } catch {}
+  } else if (process.env.EXTV_STUN_SERVER) {
+    iceServers = [{ urls: process.env.EXTV_STUN_SERVER }];
+  }
+  return iceServers;
+}
+
+const devicePairingCodes = new Map();
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of devicePairingCodes) {
+    if (v.expiresAt <= now) devicePairingCodes.delete(k);
+  }
+}, 60000).unref();
+
+function requireAuthOrSession(scope = 'write') {
+  return (req, res, next) => {
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
+      return requireApiAuth(scope)(req, res, next);
+    }
+    if (req.session && req.session.userId) {
+      const user = db.getUserById(req.session.userId);
+      if (user && !user.banned) {
+        req.apiUser = user;
+        req.apiToken = { user_id: user.id, scopes: 'read write profile' };
+        return next();
+      }
+    }
+    return requireApiAuth(scope)(req, res, next);
+  };
+}
+
+// Generate a short-lived device pairing code (for QR code or manual entry)
+router.post('/auth/pair/init', requireAuthOrSession('write'), express.json(), (req, res) => {
+  const code = 'EXT-' + crypto.randomBytes(4).toString('hex').toUpperCase();
+  const ttlMs = 5 * 60 * 1000; // 5 minutes
+  const expiresAt = Date.now() + ttlMs;
+
+  devicePairingCodes.set(code, {
+    userId: req.apiUser.id,
+    expiresAt,
+  });
+
+  const baseUrl = `${req.protocol}://${req.get('host')}`;
+  res.status(201).json({
+    data: {
+      code,
+      expires_in: 300,
+      expires_at: expiresAt,
+      pairing_url: `${baseUrl}/pair?code=${code}`,
+    },
+  });
+});
+
+// Exchange a pairing code for a permanent Personal Access Token
+router.post('/auth/pair/claim', express.json(), (req, res) => {
+  const { code, client_name } = req.body || {};
+  if (!code || typeof code !== 'string') {
+    return errorResponse(res, 400, 'Bad Request', 'code is required.');
+  }
+
+  const cleanCode = code.trim().toUpperCase();
+  const pairing = devicePairingCodes.get(cleanCode);
+  if (!pairing || pairing.expiresAt < Date.now()) {
+    devicePairingCodes.delete(cleanCode);
+    return errorResponse(res, 404, 'Not Found', 'Pairing code is invalid or has expired.');
+  }
+
+  devicePairingCodes.delete(cleanCode); // single-use token
+
+  const user = db.getUserById(pairing.userId);
+  if (!user || user.banned) {
+    return errorResponse(res, 403, 'Forbidden', 'User account is not accessible.');
+  }
+
+  const appName = String(client_name || 'Paired Device').trim().slice(0, 100);
+  const rawToken = 'ext_pat_' + crypto.randomBytes(32).toString('hex');
+  const validScopes = 'read write profile';
+  db.createPersonalAccessToken(user.id, appName, rawToken, validScopes, null);
+
+  db.auditLog('device_paired', user.id, `Paired new device: ${appName}`);
+
+  res.status(200).json({
+    token: rawToken,
+    token_type: 'Bearer',
+    data: {
+      token: rawToken,
+      token_type: 'Bearer',
+      scopes: ['read', 'write', 'profile'],
+      user: serializeAccount(user, user.id),
+    },
+  });
+});
+
+// Single round-trip state bootstrap for native and third-party clients
+router.get('/client/bootstrap', requireApiAuth('read'), (req, res) => {
+  const userId = req.apiUser.id;
+
+  // 1. Current user
+  const account = serializeAccount(req.apiUser, userId);
+
+  // 2. Unread notifications
+  const unreadCount = db.countUnreadNotifications ? db.countUnreadNotifications(userId) : 0;
+
+  // 3. Gateway sequence
+  const initialSeq = getGatewayLatestSeq();
+
+  // 4. Joined rooms with channels, members count, user role, and latest messages
+  const userRooms = db.getRoomsForUser(userId) || [];
+  const rooms = userRooms.map(r => {
+    const channels = db.getRoomChannels(r.id) || [];
+    const defaultChan = channels.find(c => c.name === 'general') || channels[0];
+    let latestMessages = [];
+    if (defaultChan) {
+      const msgs = db.getRoomMessages(defaultChan.id) || [];
+      latestMessages = msgs.slice(-25).map(m => ({
+        id: String(m.id),
+        room_id: String(r.id),
+        channel_id: String(defaultChan.id),
+        user_id: String(m.user_id),
+        author: {
+          id: String(m.user_id),
+          username: m.username,
+          display_name: m.display_name,
+          avatar: m.avatar || null,
+        },
+        proto: m.proto,
+        body: m.body || '',
+        ciphertext: m.ciphertext || null,
+        group_session_id: m.group_session_id || null,
+        created_at: m.created_at,
+        edited_at: m.edited_at || null,
+      }));
+    }
+    const role = db.getUserRoomRole(r.id, userId);
+    return {
+      id: String(r.id),
+      name: r.name,
+      description: r.description || '',
+      is_public: !!r.is_public,
+      created_at: r.created_at,
+      member_count: db.getRoomMemberCount(r.id),
+      role: role ? { id: role.id, name: role.name, permissions: role.permissions, is_founder: !!role.is_founder } : null,
+      channels: channels.map(c => ({
+        id: String(c.id),
+        room_id: String(c.room_id),
+        name: c.name,
+        type: c.type || 'text',
+        created_at: c.created_at,
+      })),
+      latest_messages: latestMessages,
+    };
+  });
+
+  // 5. Initial home timeline
+  let timeline = [];
+  try {
+    const feedResult = feed.buildFeed(userId);
+    const items = (feedResult.items || []).slice(0, 20);
+    const postIds = items.map(i => i.interactId || i.id).filter(Boolean);
+    const counts = db.batchPostCounts(postIds);
+    timeline = items.map(item => {
+      const post = db.getPostById(item.id);
+      if (!post) return null;
+      const author = db.getUserById(post.user_id);
+      const targetId = item.interactId || post.id;
+      return {
+        id: String(post.id),
+        type: post.type,
+        body: post.body || '',
+        content: post.body || '',
+        content_html: renderMarkdown(post.body || ''),
+        media_path: post.media_path || null,
+        created_at: post.created_at,
+        edited_at: post.edited_at || null,
+        account: author ? serializeAccount(author, userId) : null,
+        likes_count: counts.likeMap[targetId] || 0,
+        shares_count: counts.shareMap[targetId] || 0,
+        comments_count: counts.commentMap[targetId] || 0,
+        liked: !!db.hasLiked(userId, targetId),
+        shared: !!db.hasShared(userId, targetId),
+        repost_of_id: post.repost_of_id ? String(post.repost_of_id) : null,
+        is_own: post.user_id === userId,
+      };
+    }).filter(Boolean);
+  } catch (err) {
+    console.error('Bootstrap timeline error:', err);
+  }
+
+  // 6. ICE servers
+  const iceServers = getIceServersConfig();
+
+  responseEnvelope(res, {
+    user: account,
+    unread_notifications: unreadCount,
+    initial_seq: initialSeq,
+    rooms,
+    timeline,
+    ice_servers: iceServers,
+    server: {
+      name: process.env.INSTANCE_NAME || 'Extrovert',
+      version: '1.0.0',
+      max_post_length: 5000,
+      max_media_size: 60 * 1024 * 1024,
+      e2ee_supported: true,
+      realtime_gateway_url: '/ws',
+    },
+  });
+});
 
 // ======== OAuth & App endpoints ========
 
@@ -1073,6 +1290,8 @@ router.post('/statuses', requireApiAuth('write'), upload.single('media'), (req, 
   const author = db.getUserById(post.user_id);
 
   const response = serializePost(post, author, req.apiUser.id);
+  const clientId = req.body.client_id || req.body.nonce || req.body.client_tx_id;
+  if (clientId) response.client_id = String(clientId);
 
   const envelope = { data: response };
   if (idempotencyKey) {
@@ -1209,7 +1428,7 @@ router.get('/statuses/:id/context', requireApiAuth('read'), (req, res) => {
 });
 
 // Comment on a post (same behavior as the web form).
-router.post('/statuses/:id/comment', requireApiAuth('write'), requireVerifiedApiWrite, (req, res) => {
+router.post(['/statuses/:id/comment', '/statuses/:id/comments'], requireApiAuth('write'), requireVerifiedApiWrite, (req, res) => {
   const post = resolveVisiblePost(parseInt(req.params.id, 10), req.apiUser.id);
   if (!post) return errorResponse(res, 404, 'Not Found', 'Post not found.');
   const body = String(req.body.body || '').trim();
@@ -1222,13 +1441,20 @@ router.post('/statuses/:id/comment', requireApiAuth('write'), requireVerifiedApi
     `SELECT c.*, u.username, u.display_name, u.avatar, u.created_at AS user_created_at
      FROM comments c JOIN users u ON u.id = c.user_id WHERE c.id = ?`
   ).get(commentId);
-  responseEnvelope(res, {
+
+  const clientId = req.body.client_id || req.body.nonce || req.body.client_tx_id;
+  const commentData = {
     id: String(c.id),
+    post_id: String(post.id),
     body: c.body,
     created_at: c.created_at,
     edited_at: c.edited_at || null,
     account: serializeAccount({ id: c.user_id, username: c.username, display_name: c.display_name, avatar: c.avatar, bio: c.user_bio || '', created_at: c.user_created_at }, req.apiUser.id),
-  });
+  };
+  if (clientId) commentData.client_id = String(clientId);
+
+  broadcastGatewayEvent('timeline:home', 'comment_create', commentData);
+  responseEnvelope(res, commentData);
 });
 
 router.patch('/statuses/:id/comments/:cid', requireApiAuth('write'), requireVerifiedApiWrite, express.json(), (req, res) => {
@@ -1653,6 +1879,7 @@ router.post('/rooms/:id/join', requireApiAuth('write'), (req, res) => {
 
   const defaultRole = db.joinDefaultRole(room.id);
   if (defaultRole) db.addRoomMember(room.id, req.apiUser.id, defaultRole.id);
+  updateUserRoomSubscriptions(req.apiUser.id, room.id, 'join');
   broadcastGatewayEvent(`room:${room.id}`, 'member_join', {
     room_id: String(room.id),
     user_id: String(req.apiUser.id),
@@ -1680,6 +1907,7 @@ router.post('/rooms/:id/leave', requireApiAuth('write'), (req, res) => {
   }
 
   db.removeRoomMember(room.id, req.apiUser.id);
+  updateUserRoomSubscriptions(req.apiUser.id, room.id, 'leave');
   broadcastGatewayEvent(`room:${room.id}`, 'member_leave', {
     room_id: String(room.id),
     user_id: String(req.apiUser.id),
@@ -2080,6 +2308,7 @@ router.post('/rooms/:id/channels/:cid/messages', requireApiAuth('write'), requir
 
   const msgId = db.sendRoomMessage(channel.id, req.apiUser.id, isSticker ? body : '', proto, ciphertext, isSticker ? null : groupSessionId);
 
+  const clientId = req.body.client_id || req.body.nonce || req.body.client_tx_id;
   const msgData = {
     id: String(msgId),
     room_id: String(room.id),
@@ -2096,9 +2325,10 @@ router.post('/rooms/:id/channels/:cid/messages', requireApiAuth('write'), requir
     group_session_id: isSticker ? null : groupSessionId,
     created_at: new Date().toISOString(),
   };
+  if (clientId) msgData.client_id = String(clientId);
   broadcastGatewayEvent('room:' + room.id, 'message_create', msgData);
 
-  res.status(201).json({ data: { id: String(msgId) } });
+  res.status(201).json({ data: msgData });
 });
 
 router.delete('/rooms/:id/channels/:cid/messages/:mid', requireApiAuth('write'), (req, res) => {
@@ -2728,15 +2958,7 @@ router.get('/discover', requireApiAuth('read'), (req, res) => {
 
 // ---------- WebRTC ICE Servers ----------
 router.get('/calls/ice_servers', requireApiAuth('read'), (req, res) => {
-  let iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
-  if (process.env.EXTV_ICE_SERVERS) {
-    try {
-      iceServers = JSON.parse(process.env.EXTV_ICE_SERVERS);
-    } catch {}
-  } else if (process.env.EXTV_STUN_SERVER) {
-    iceServers = [{ urls: process.env.EXTV_STUN_SERVER }];
-  }
-  responseEnvelope(res, { ice_servers: iceServers });
+  responseEnvelope(res, { ice_servers: getIceServersConfig() });
 });
 
 module.exports = router;

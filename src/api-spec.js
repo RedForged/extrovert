@@ -198,6 +198,73 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
     { url: 'http://localhost:3000', description: 'Local development' },
   ],
   paths: {
+    '/api/v1/auth/pair/init': {
+      post: {
+        summary: 'Initialize device pairing code for zero-typing login',
+        tags: ['Client Ergonomics'],
+        security: [{ bearerAuth: [] }, { sessionAuth: [] }],
+        responses: {
+          '201': {
+            description: 'Pairing code generated',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    data: {
+                      type: 'object',
+                      properties: {
+                        code: { type: 'string', example: 'EXT-A1B2C3D4' },
+                        expires_in: { type: 'integer', example: 300 },
+                        expires_at: { type: 'integer' },
+                        pairing_url: { type: 'string' },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/api/v1/auth/pair/claim': {
+      post: {
+        summary: 'Claim a device pairing code to receive a Personal Access Token',
+        tags: ['Client Ergonomics'],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['code'],
+                properties: {
+                  code: { type: 'string', example: 'EXT-A1B2C3D4' },
+                  client_name: { type: 'string', example: 'Extrovert Native Desktop' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': { description: 'Device paired, token returned' },
+          '404': { description: 'Invalid or expired pairing code' },
+        },
+      },
+    },
+    '/api/v1/client/bootstrap': {
+      get: {
+        summary: 'Unified client startup bootstrap (user, rooms, timeline, notifications, ICE in 1 call)',
+        tags: ['Client Ergonomics'],
+        security: [{ bearerAuth: [] }],
+        responses: {
+          '200': {
+            description: 'Full client bootstrap payload containing user, initial_seq, rooms, timeline, and ICE servers',
+          },
+        },
+      },
+    },
     '/api/v1/apps': {
       post: {
         summary: 'Dynamic Client Registration for external/native applications (unauthenticated)',

@@ -3,7 +3,7 @@
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 const path = require('node:path');
-const { getUserById, getUserByUsername, areMutualFollowers, getRoomChannel, isRoomMember, getOAuthToken, getPersonalAccessTokenByHash, createNotification } = require('./db');
+const { getUserById, getUserByUsername, areMutualFollowers, getRoomChannel, isRoomMember, getRoomsForUser, getOAuthToken, getPersonalAccessTokenByHash, hashOAuthToken, createNotification } = require('./db');
 const { sendCallPush, sendMissedCallPush } = require('./push');
 
 const SESSION_DB_PATH = process.env.EXTV_SESSION_DB_PATH || path.join(__dirname, '..', 'data', 'sessions.db');
@@ -51,6 +51,52 @@ function cleanupClientSubscriptions(ws) {
       unsubscribeClient(ws, topic);
     }
   }
+}
+
+function performAutoSubscribe(ws, user) {
+  if (!ws || !user) return;
+  ws.autoSubscribe = true;
+  subscribeClient(ws, user.id, 'timeline:home');
+  subscribeClient(ws, user.id, 'notifications');
+  subscribeClient(ws, user.id, 'presence');
+  try {
+    const userRooms = getRoomsForUser(user.id);
+    if (Array.isArray(userRooms)) {
+      for (const r of userRooms) {
+        subscribeClient(ws, user.id, 'room:' + r.id);
+      }
+    }
+  } catch {}
+  try {
+    ws.send(JSON.stringify({
+      type: 'subscribed',
+      auto_subscribed: true,
+      channels: [...(ws.subscribedTopics || [])],
+    }));
+  } catch {}
+}
+
+function updateUserRoomSubscriptions(userId, roomId, action) {
+  const topic = 'room:' + roomId;
+  const uid = Number(userId);
+  const userDmConns = dmClients.get(uid);
+  if (userDmConns) {
+    for (const item of userDmConns) {
+      if (item && item.ws && item.ws.autoSubscribe) {
+        if (action === 'join') subscribeClient(item.ws, uid, topic);
+        else if (action === 'leave') unsubscribeClient(item.ws, topic);
+      }
+    }
+  }
+  const client = clients.get(uid);
+  if (client && client.ws && client.ws.autoSubscribe) {
+    if (action === 'join') subscribeClient(client.ws, uid, topic);
+    else if (action === 'leave') unsubscribeClient(client.ws, topic);
+  }
+}
+
+function getGatewayLatestSeq() {
+  return Math.max(0, globalSeq - 1);
 }
 
 function broadcastGatewayEvent(topic, eventName, data) {
@@ -143,7 +189,7 @@ function lookupTokenUser(token) {
     const user = getUserById(tokenRecord.user_id);
     if (user && !user.banned) return user;
   }
-  const patHash = crypto.createHash('sha256').update(trimmed).digest('hex');
+  const patHash = hashOAuthToken(trimmed);
   const pat = getPersonalAccessTokenByHash(patHash);
   if (pat && (!pat.expires_at || pat.expires_at > Date.now())) {
     const user = getUserById(pat.user_id);
@@ -343,9 +389,22 @@ function initSignaling(wss) {
     let registered = false;
     let clientData = null;
 
+    let autoSubFromUrl = false;
+    try {
+      const url = new URL(req.url, 'http://localhost');
+      const asVal = url.searchParams.get('auto_subscribe');
+      if (asVal === '1' || asVal === 'true') {
+        autoSubFromUrl = true;
+      }
+    } catch {}
+
     function registerSignalingClient() {
       if (registered || !user) return;
       registered = true;
+
+      if (autoSubFromUrl || ws.autoSubscribe) {
+        performAutoSubscribe(ws, user);
+      }
 
       clientData = {
         ws,
@@ -417,6 +476,10 @@ function initSignaling(wss) {
       }
     }
 
+    if (user && autoSubFromUrl) {
+      registerSignalingClient();
+    }
+
     ws.on('message', (raw) => {
       let msg;
       try { msg = JSON.parse(raw.toString()); } catch { return; }
@@ -426,6 +489,7 @@ function initSignaling(wss) {
         const tokenUser = lookupTokenUser(msg.token);
         if (tokenUser) {
           user = tokenUser;
+          if (msg.auto_subscribe) ws.autoSubscribe = true;
           registerSignalingClient();
         }
       }
@@ -448,10 +512,23 @@ function initSignaling(wss) {
           try { ws.send(JSON.stringify({ type: 'pong' })); } catch {}
           break;
 
+        case 'auto_subscribe':
+        case 'subscribe_all': {
+          if (!user) {
+            try { ws.send(JSON.stringify({ type: 'error', message: 'Unauthorized' })); } catch {}
+            break;
+          }
+          performAutoSubscribe(ws, user);
+          break;
+        }
+
         case 'subscribe': {
           if (!user) {
             try { ws.send(JSON.stringify({ type: 'error', message: 'Unauthorized' })); } catch {}
             break;
+          }
+          if (msg.auto_subscribe) {
+            performAutoSubscribe(ws, user);
           }
           const channels = Array.isArray(msg.channels)
             ? msg.channels
@@ -493,6 +570,9 @@ function initSignaling(wss) {
         }
 
         case 'resume': {
+          if (msg.auto_subscribe && user && !ws.autoSubscribe) {
+            performAutoSubscribe(ws, user);
+          }
           const clientSeq = Number(msg.seq) || 0;
           const missed = recentGatewayEvents.filter(e => e.seq > clientSeq && ws.subscribedTopics && ws.subscribedTopics.has(e.topic));
           for (const ev of missed) {
@@ -938,4 +1018,14 @@ function sendWsPush(userId, payload) {
   }
   return delivered;
 }
-module.exports = { initSignaling, getOnlineUsers, getUserPresence, getVoiceChannelMembers, sendDmEvent, cancelPendingCallByToken, broadcastGatewayEvent };
+module.exports = {
+  initSignaling,
+  getOnlineUsers,
+  getUserPresence,
+  getVoiceChannelMembers,
+  sendDmEvent,
+  cancelPendingCallByToken,
+  broadcastGatewayEvent,
+  getGatewayLatestSeq,
+  updateUserRoomSubscriptions,
+};

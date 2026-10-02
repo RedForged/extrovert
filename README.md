@@ -69,6 +69,7 @@ part of CI too.
 - `npm test` — feed algorithm + sanitization unit tests (24 assertions)
 - `npm run test:api` — REST API integration suite (36 tests)
 - `npm run test:client` — Native client REST API & Realtime Gateway parity suite (25 tests)
+- `npm run test:bootstrap` — Client bootstrap, device pairing & optimistic sync suite (10 tests)
 - `npm run test:owasp` — OWASP Top 10 (2021) security suite (47 tests)
 - `npm run test:asvs` — OWASP ASVS v4.0 suite (57 tests; automatable subset, with a MANUAL_REVIEW/N-A scorecard)
 - `npm run seed:client` — Seed deterministic fixtures and PATs for client testing (`alice`, `bob`, `charlie`)

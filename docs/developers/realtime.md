@@ -17,12 +17,23 @@ The WebSocket endpoint `/ws` functions as a full multiplexed event gateway for e
 
 Clients can authenticate through multiple methods:
 1. **HTTP Handshake Header:** `Authorization: Bearer <access_token_or_pat>`
-2. **Query Parameter:** `wss://host/ws?token=<access_token_or_pat>` (supports OAuth tokens and Personal Access Tokens `ext_pat_...`)
-3. **In-Frame Authentication:** Sockets can connect unauthenticated and provide their token in subscription or auth messages:
+2. **Query Parameter:** `wss://host/ws?token=<access_token_or_pat>&auto_subscribe=1` (supports OAuth tokens and Personal Access Tokens `ext_pat_...`). Passing `auto_subscribe=1` automatically attaches the socket to `timeline:home`, `notifications`, `presence`, and all rooms the user is a member of.
+3. **In-Frame Authentication:** Sockets can connect unauthenticated and provide their token in subscription, auth, or resume messages:
    ```json
    { "action": "subscribe", "topic": "timeline:home", "token": "ext_pat_..." }
    ```
 4. **Session Cookie:** Web browsers pass session cookies automatically.
+
+### Auto-Subscription & Room Lifecycle
+
+Clients do not need to manually subscribe to each room individually. By passing `auto_subscribe=1` in the connection URL or sending `{ "action": "auto_subscribe" }` (or `{ "action": "resume", "auto_subscribe": true }`), the server:
+- Automatically subscribes the connection to `timeline:home`, `notifications`, `presence`, and every room the user has joined.
+- Dynamically attaches new room topics whenever the user joins a room via REST (`POST /api/v1/rooms/:id/join`).
+- Dynamically detaches room topics when the user leaves a room (`POST /api/v1/rooms/:id/leave`).
+
+### Optimistic UI (`client_id` Echo)
+
+When sending posts (`POST /statuses`), comments (`POST /statuses/:id/comments`), or room messages (`POST /rooms/:id/channels/:cid/messages`), clients can include an optional `client_id` (or `client_tx_id` / `nonce`). The server echoes this exact string back in both the HTTP response and the WebSocket broadcast event payload (`msg.data.client_id`). This allows clients to instantly transition pending local items into confirmed state with zero duplicate rendering.
 
 ### Gateway Topics
 
@@ -30,8 +41,8 @@ Clients subscribe to specific topics using `{ "action": "subscribe", "topic": "<
 
 | Topic | Events Broadcasted | Description |
 |---|---|---|
-| `timeline:home` | `post_create`, `post_delete` | Realtime home timeline updates |
-| `room:<id>` | `message_create`, `message_delete`, `member_join`, `typing` | Room text and member events (membership enforced) |
+| `timeline:home` | `post_create`, `comment_create`, `post_delete` | Realtime home timeline updates |
+| `room:<id>` | `message_create`, `message_delete`, `member_join`, `member_leave`, `typing` | Room text and member events (membership enforced) |
 | `notifications` | `notification_new` | Push notifications to active client |
 | `presence` | `user_online`, `user_offline` | Presence updates of mutual followers |
 
@@ -39,9 +50,10 @@ Clients subscribe to specific topics using `{ "action": "subscribe", "topic": "<
 
 | Action | Payload | Description |
 |---|---|---|
-| `subscribe` | `{ "topic": "room:1", "token": "..." }` | Subscribe to an event topic (accepts `topic`, `channel`, or `channels` array). |
+| `auto_subscribe` | `{ "action": "auto_subscribe" }` | Automatically subscribe to feed, notifications, presence, and all joined rooms. |
+| `subscribe` | `{ "topic": "room:1", "token": "...", "auto_subscribe": true }` | Subscribe to an event topic (accepts `topic`, `channel`, or `channels` array). |
 | `unsubscribe` | `{ "topic": "room:1" }` | Unsubscribe from an event topic. |
-| `resume` | `{ "seq": 105 }` | Replay missed events since sequence number `seq` after a temporary network drop. |
+| `resume` | `{ "seq": 105, "auto_subscribe": true }` | Replay missed events since sequence number `seq` after a network drop. |
 | `typing` | `{ "channel": "room:1", "typing": true }` | Send a typing indicator to a room channel or direct chat. |
 | `ping` | `{ "action": "ping" }` | Keepalive heartbeat (server replies `{ "type": "pong" }`). |
 
