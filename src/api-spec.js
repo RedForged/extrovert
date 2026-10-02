@@ -255,12 +255,12 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
     },
     '/api/v1/client/bootstrap': {
       get: {
-        summary: 'Unified client startup bootstrap (user, rooms, timeline, notifications, ICE in 1 call)',
+        summary: 'Unified client startup bootstrap (user, rooms, timeline, notifications, ICE, E2EE status in 1 call)',
         tags: ['Client Ergonomics'],
         security: [{ bearerAuth: [] }],
         responses: {
           '200': {
-            description: 'Full client bootstrap payload containing user, initial_seq, rooms, timeline, and ICE servers',
+            description: 'Full client bootstrap payload containing user, initial_seq, rooms, timeline, ice_servers, server, and e2ee health status ({ otk_count, otk_low, has_prekeys })',
           },
         },
       },
@@ -1445,7 +1445,7 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
     },
     '/api/v1/rooms/{id}/session': {
       post: {
-        summary: 'Publish or refresh your Megolm group session for a room, with encrypted keys per member',
+        summary: 'Publish or refresh your Megolm group session for a room, with encrypted keys per member (pushes room_session_key via WebSocket in realtime)',
         tags: ['Rooms'],
         security: [{ oauth2: ['write'] }],
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
@@ -1459,10 +1459,40 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
               }}},
               member_ids: { type: 'array', items: { type: 'integer' }, description: 'Members to mark as key recipients' },
               rotate: { type: 'boolean', description: 'Force session rotation' },
+              sender_device_id: { type: 'string', description: 'Optional device ID' },
             },
           }}},
         },
         responses: { '200': { description: '{ session_id }' } },
+      },
+    },
+    '/api/v1/rooms/{id}/session/sync': {
+      post: {
+        summary: 'Atomic room session sync (publish keys, receive pending keys for caller, ACK delivered, and get missing members in 1 call)',
+        tags: ['Rooms'],
+        security: [{ oauth2: ['write'] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+        requestBody: {
+          content: { 'application/json': { schema: {
+            type: 'object',
+            properties: {
+              rotate: { type: 'boolean', description: 'Force rotate session' },
+              sender_device_id: { type: 'string' },
+              ack_key_ids: { type: 'array', items: { type: 'integer' }, description: 'Key IDs delivered to acknowledge' },
+              keys: { type: 'array', items: { type: 'object', properties: {
+                recipient_id: { type: 'integer' },
+                encrypted_key: { type: 'string' },
+              }}},
+            },
+          }}},
+        },
+        responses: {
+          '200': {
+            description: '{ room_id, active_session_id, pending_keys: [...], missing_members: [...], recipients_count }',
+          },
+          '403': { description: 'Not a member' },
+          '404': { description: 'Room not found' },
+        },
       },
     },
     '/api/v1/rooms/{id}/session/keys': {
@@ -1496,6 +1526,25 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
         security: [{ oauth2: ['read'] }],
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
         responses: { '200': { description: '{ session_id, recipients: [...], empty_keys_for: [...] }' } },
+      },
+    },
+    '/api/v1/rooms/{id}/bundles': {
+      get: {
+        summary: 'Batch fetch Olm prekey bundles of room members (optionally filtered by missing_for_session)',
+        tags: ['Rooms'],
+        security: [{ oauth2: ['read'] }],
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'integer' } },
+          { name: 'missing_for_session', in: 'query', required: false, schema: { type: 'string' }, description: 'Only return bundles for members lacking keys for this session ID' },
+          { name: 'claim', in: 'query', required: false, schema: { type: 'boolean' }, description: 'Claim one-time prekeys when fetching bundles' },
+        ],
+        responses: {
+          '200': {
+            description: '{ room_id, total_members, returned_bundles, bundles: [{ user_id, username, display_name, identity_key, one_time_key, one_time_key_id, devices }] }',
+          },
+          '403': { description: 'Not a member' },
+          '404': { description: 'Room not found' },
+        },
       },
     },
     '/api/v1/rooms/{id}/bundle/{username}': {

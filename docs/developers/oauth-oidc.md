@@ -42,17 +42,17 @@ Scopes are **exact-match** (no hierarchy). The default scope for new apps is `re
 Extrovert supports two registration mechanisms:
 
 #### Option A: Dynamic Client Registration (RFC 7591 / Native Clients)
-Native desktop and mobile apps (such as `extrovert_native`) can register automatically without needing an active web session cookie:
+Native desktop and mobile apps can register automatically without needing an active web session cookie:
 
 ```http
 POST /api/v1/apps
 Content-Type: application/json
 
 {
-  "client_name": "Extrovert Native",
+  "client_name": "Extrovert Desktop",
   "redirect_uris": "extrovert://oauth-callback",
   "scopes": "read write follow notifications",
-  "website": "https://github.com/redforged/extrovert_native"
+  "website": "https://github.com/redforged/extrovert"
 }
 ```
 

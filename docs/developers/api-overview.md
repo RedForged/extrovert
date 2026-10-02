@@ -66,7 +66,7 @@ Auth middleware (`src/api-auth.js`) validates OAuth bearer tokens and PATs, thei
 ### App Registration
 
 Clients can register in two ways:
-- **Dynamic Client Registration** (`POST /api/v1/apps`): Unauthenticated RFC 7591 / Mastodon-compatible registration for native and desktop clients (e.g. `extrovert_native`).
+- **Dynamic Client Registration** (`POST /api/v1/apps`): Unauthenticated RFC 7591 / Mastodon-compatible registration for native and desktop clients.
 - **Web App Registration** (`POST /api/v1/oauth/apps`): Session-authenticated registration for developers managing apps through the web UI at `/settings/developers`.
 
 ### Scopes

@@ -78,7 +78,7 @@ No. Each of your 10 recovery codes works exactly once in place of a TOTP code, b
 ## Developers
 
 ### How do third-party apps authenticate?
-OAuth 2.0 Authorization Code + PKCE, with OpenID Connect on top. Register an app at `/settings/developers` (or `POST /api/v1/oauth/apps`), follow the flow in [OAuth & OIDC](developers/oauth-oidc.md).
+OAuth 2.0 Authorization Code + PKCE, with OpenID Connect on top. Register an app dynamically via RFC 7591 (`POST /api/v1/apps` — Mastodon compatible) or via web session at `/settings/developers` (`POST /api/v1/oauth/apps`). For native devices, zero-typing Device Pairing (`POST /api/v1/auth/pair/init` & `/claim`) and Personal Access Tokens (`POST /api/v1/accounts/tokens`) are also supported. See [OAuth & OIDC](developers/oauth-oidc.md) and [Endpoints](developers/endpoints.md).
 
 ### Is there an OpenAPI spec?
 Yes — live at `/developers/openapi.json` with a Swagger UI at `/developers/docs`.

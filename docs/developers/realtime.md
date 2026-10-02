@@ -11,7 +11,7 @@ Extrovert provides a unified realtime system over WebSocket (`/ws`), Server-Sent
 
 ## Realtime Gateway Multiplexing (`/ws`)
 
-The WebSocket endpoint `/ws` functions as a full multiplexed event gateway for external and native clients (such as `extrovert_native`).
+The WebSocket endpoint `/ws` functions as a full multiplexed event gateway for external and native clients.
 
 ### Connecting & Authentication
 

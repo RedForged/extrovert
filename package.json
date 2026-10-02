@@ -34,6 +34,7 @@
     "test:email": "node scripts/email-e2e-test.js && node scripts/admin-mail-smoke.js && node scripts/mailer-tls-test.js",
     "test:client": "node --test scripts/client-parity-test.js",
     "test:bootstrap": "node --test scripts/client-bootstrap-test.js",
+    "test:client-e2ee": "node --test scripts/client-e2ee-test.js",
     "seed:client": "node scripts/seed-client-test.js"
   },
   "dependencies": {

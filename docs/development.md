@@ -88,6 +88,10 @@ scripts/
 | test:megolm:integration | `npm run test:megolm:integration` | Server Megolm flow |
 | test:live-dm | `npm run test:live-dm` | Live WS DM delivery |
 | test:self-session / test:session-reload | — | DM ratchet reload regressions |
+| test:client | `npm run test:client` | Client API parity test suite (`node --test`) |
+| test:bootstrap | `npm run test:bootstrap` | Client bootstrap route test suite (`node --test`) |
+| test:client-e2ee | `npm run test:client-e2ee` | Client E2EE room batching & realtime push suite (`node --test`) |
+| seed:client | `npm run seed:client` | Populate database with deterministic fixtures for client development |
 
 ## Manual smoke tests
 

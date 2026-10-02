@@ -106,16 +106,16 @@ describe('Extrovert Client Developer Experience & Parity Suite', () => {
       const res = await fetchJson('/api/v1/apps', {
         method: 'POST',
         body: {
-          client_name: 'Extrovert Native Rust Client',
+          client_name: 'Extrovert Desktop Client',
           redirect_uris: 'extrovert://oauth-callback',
           scopes: 'read write follow notifications',
-          website: 'https://github.com/redforged/extrovert_native',
+          website: 'https://github.com/redforged/extrovert',
         },
       });
 
       assert.strictEqual(res.status, 201);
       const json = await res.json();
-      assert.strictEqual(json.name, 'Extrovert Native Rust Client');
+      assert.strictEqual(json.name, 'Extrovert Desktop Client');
       assert.ok(json.client_id, 'client_id should be returned');
       assert.ok(json.client_secret, 'client_secret should be returned');
       assert.strictEqual(json.redirect_uri, 'extrovert://oauth-callback');

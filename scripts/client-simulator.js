@@ -5,7 +5,7 @@
  * client-simulator.js
  *
  * Headless mock native client / bot that connects to Extrovert's Realtime WebSocket Gateway.
- * Useful for interactive development of extrovert_native or other third-party clients.
+ * Useful for interactive development of native or third-party clients.
  *
  * Usage:
  *   node scripts/client-simulator.js [--token=ext_pat_...] [--url=ws://localhost:3000/ws] [--room=1]

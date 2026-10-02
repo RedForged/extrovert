@@ -5,7 +5,7 @@
  * seed-client-test.js
  *
  * Populates the database with deterministic test fixtures for native and third-party
- * client development (e.g. extrovert_native in Rust + Tauri).
+ * client development (e.g. native clients in Rust + Tauri).
  *
  * Run with: npm run seed:client
  */

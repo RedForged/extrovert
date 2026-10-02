@@ -6,7 +6,7 @@ Base path: `/api/v1` unless noted. Auth notation: **session** = logged-in web se
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| GET | `/client/bootstrap` | Bearer (`read`) | **Unified startup state** in 1 round-trip: returns `{ user, initial_seq, unread_notifications, rooms, timeline, ice_servers, server }`. |
+| GET | `/client/bootstrap` | Bearer (`read`) | **Unified startup state** in 1 round-trip: returns `{ user, initial_seq, unread_notifications, rooms, timeline, ice_servers, e2ee, server }`. |
 | POST | `/auth/pair/init` | Bearer or session (`write`) | Generate a short-lived 5-minute device pairing code (e.g. `EXT-A1B2C3D4`) + QR pairing URL for zero-typing native login. |
 | POST | `/auth/pair/claim` | none | Exchange pairing code (`code`, `client_name`) for a permanent Personal Access Token (`ext_pat_...`) and user profile. Single-use. |
 
