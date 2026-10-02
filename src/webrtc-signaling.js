@@ -3,7 +3,7 @@
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 const path = require('node:path');
-const { getUserById, getUserByUsername, areMutualFollowers, getRoomChannel, isRoomMember, getRoomsForUser, getOAuthToken, getPersonalAccessTokenByHash, hashOAuthToken, createNotification } = require('./db');
+const { getUserById, getUserByUsername, areMutualFollowers, getRoomChannel, isRoomMember, getRoomsForUser, getOAuthToken, getPersonalAccessTokenByHash, hashOAuthToken, createNotification, getPendingRoomSessionKeyForUserAndSession, countAvailablePrekeys } = require('./db');
 const { sendCallPush, sendMissedCallPush } = require('./push');
 
 const SESSION_DB_PATH = process.env.EXTV_SESSION_DB_PATH || path.join(__dirname, '..', 'data', 'sessions.db');
@@ -74,6 +74,22 @@ function performAutoSubscribe(ws, user) {
       channels: [...(ws.subscribedTopics || [])],
     }));
   } catch {}
+  try {
+    const prekeyCount = countAvailablePrekeys(user.id);
+    if (prekeyCount < 10) {
+      ws.send(JSON.stringify({
+        seq: globalSeq++,
+        type: 'gateway_event',
+        topic: 'presence',
+        event: 'otk_low',
+        data: {
+          count: prekeyCount,
+          threshold: 10,
+          message: 'Remaining one-time prekeys are low. Upload fresh prekeys to prevent incoming message failures.',
+        },
+      }));
+    }
+  } catch {}
 }
 
 function updateUserRoomSubscriptions(userId, roomId, action) {
@@ -114,10 +130,28 @@ function broadcastGatewayEvent(topic, eventName, data) {
   const subscribers = topicSubscriptions.get(topic);
   if (!subscribers) return;
 
+  const isRoomMsg = topic.startsWith('room:') && eventName === 'message_create' && data && data.group_session_id;
+
   const json = JSON.stringify(frame);
   for (const item of subscribers) {
     if (item.ws && item.ws.readyState === 1) {
-      try { item.ws.send(json); } catch {}
+      try {
+        if (isRoomMsg && item.userId && Number(item.userId) !== Number(data.user_id)) {
+          const pendingKey = getPendingRoomSessionKeyForUserAndSession(item.userId, data.group_session_id);
+          if (pendingKey) {
+            const customizedData = Object.assign({}, data, {
+              session_key: {
+                key_id: pendingKey.key_id,
+                encrypted_key: pendingKey.encrypted_key,
+                sender_id: String(pendingKey.sender_id),
+              },
+            });
+            item.ws.send(JSON.stringify(Object.assign({}, frame, { data: customizedData })));
+            continue;
+          }
+        }
+        item.ws.send(json);
+      } catch {}
     }
   }
 }
@@ -1018,12 +1052,57 @@ function sendWsPush(userId, payload) {
   }
   return delivered;
 }
+
+// Deliver an arbitrary message to all open WebSockets for a given userId
+function sendToUserSockets(userId, messageObj) {
+  const uid = Number(userId);
+  if (!uid) return false;
+  let delivered = false;
+  const sentWs = new Set();
+  const conns = dmClients.get(uid);
+  const json = typeof messageObj === 'string' ? messageObj : JSON.stringify(messageObj);
+
+  if (conns) {
+    for (const c of conns) {
+      if (c && c.ws && c.ws.readyState === 1 && !sentWs.has(c.ws)) {
+        try { c.ws.send(json); delivered = true; sentWs.add(c.ws); } catch {}
+      }
+    }
+  }
+
+  const client = clients.get(uid);
+  if (client && client.ws && client.ws.readyState === 1 && !sentWs.has(client.ws)) {
+    try { client.ws.send(json); delivered = true; sentWs.add(client.ws); } catch {}
+  }
+
+  return delivered;
+}
+
+// Push a newly shared Megolm room session key directly to a recipient in realtime
+function pushRoomSessionKeyToRecipient(recipientId, keyPayload) {
+  const uid = Number(recipientId);
+  if (!uid) return false;
+  const frame = {
+    seq: globalSeq++,
+    type: 'gateway_event',
+    topic: 'room:' + keyPayload.room_id,
+    event: 'room_session_key',
+    data: keyPayload,
+  };
+  recentGatewayEvents.push(frame);
+  if (recentGatewayEvents.length > 500) recentGatewayEvents.shift();
+
+  return sendToUserSockets(uid, frame);
+}
+
 module.exports = {
   initSignaling,
   getOnlineUsers,
   getUserPresence,
   getVoiceChannelMembers,
   sendDmEvent,
+  sendToUserSockets,
+  pushRoomSessionKeyToRecipient,
   cancelPendingCallByToken,
   broadcastGatewayEvent,
   getGatewayLatestSeq,

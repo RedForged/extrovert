@@ -1983,8 +1983,10 @@ function saveRoomSessionKeys(sessionId, recipientId, encryptedKey) {
   const existing = db.prepare(`SELECT id FROM room_group_session_keys WHERE session_id = ? AND recipient_id = ?`).get(sessionId, recipientId);
   if (existing) {
     db.prepare(`UPDATE room_group_session_keys SET encrypted_key = ?, delivered = 0, created_at = ? WHERE id = ?`).run(encryptedKey, Date.now(), existing.id);
+    return existing.id;
   } else {
-    db.prepare(`INSERT INTO room_group_session_keys (session_id, recipient_id, encrypted_key, created_at) VALUES (?,?,?,?)`).run(sessionId, recipientId, encryptedKey, Date.now());
+    const res = db.prepare(`INSERT INTO room_group_session_keys (session_id, recipient_id, encrypted_key, created_at) VALUES (?,?,?,?)`).run(sessionId, recipientId, encryptedKey, Date.now());
+    return res.lastInsertRowid;
   }
 }
 // Cover a member even when no real key could be produced (no E2EE setup yet),
@@ -2002,6 +2004,15 @@ function getPendingRoomSessionKeys(userId) {
     JOIN room_group_sessions gs ON gs.id = k.session_id
     WHERE k.recipient_id = ? AND k.delivered = 0 AND k.encrypted_key <> ''
   `).all(userId);
+}
+function getPendingRoomSessionKeyForUserAndSession(userId, sessionId) {
+  return db.prepare(`
+    SELECT k.id AS key_id, k.encrypted_key, gs.id AS session_id, gs.room_id, gs.sender_id
+    FROM room_group_session_keys k
+    JOIN room_group_sessions gs ON gs.id = k.session_id
+    WHERE k.recipient_id = ? AND gs.id = ? AND k.delivered = 0 AND k.encrypted_key <> ''
+    LIMIT 1
+  `).get(userId, sessionId) || null;
 }
 function getRoomSessionKeyById(id) {
   return db.prepare(`SELECT k.*, gs.room_id FROM room_group_session_keys k JOIN room_group_sessions gs ON gs.id = k.session_id WHERE k.id = ?`).get(id) || null;
@@ -2667,7 +2678,7 @@ module.exports = {
   createRoomRole, getRoomRole, getRoomRoles, updateRoomRole, deleteRoomRole, transferFounder,
   createRoomChannel, getRoomChannel, getRoomChannels, updateRoomChannel, deleteRoomChannel,
   getRoomMessages, sendRoomMessage, deleteRoomMessage, joinDefaultRole, hasRoomPermission,
-  publishRoomGroupSession, getRoomGroupSession, isRoomGroupSessionUsable, pruneSupersededRoomGroupSessions, saveRoomSessionKeys, ensureRoomSessionRecipient, getPendingRoomSessionKeys, getRoomSessionKeyById, markRoomSessionKeyDelivered, getRoomSessionRecipients, getRoomSessionEmptyKeyRecipients,
+  publishRoomGroupSession, getRoomGroupSession, isRoomGroupSessionUsable, pruneSupersededRoomGroupSessions, saveRoomSessionKeys, ensureRoomSessionRecipient, getPendingRoomSessionKeys, getPendingRoomSessionKeyForUserAndSession, getRoomSessionKeyById, markRoomSessionKeyDelivered, getRoomSessionRecipients, getRoomSessionEmptyKeyRecipients,
   // reports
   createReport, getPendingReports, getReport, resolveReport, dismissReport,
   // security reports (private responsible-disclosure inbox)

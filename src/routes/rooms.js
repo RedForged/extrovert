@@ -25,7 +25,7 @@ const router = express.Router();
 const { bearerOrSession } = require('../bearer-auth');
 router.use(bearerOrSession);
 
-const { getVoiceChannelMembers } = require('../webrtc-signaling');
+const { getVoiceChannelMembers, pushRoomSessionKeyToRecipient } = require('../webrtc-signaling');
 
 const PERM = { VIEW: 1, WRITE: 2, MANAGE_CHANNELS: 4, MANAGE_ROLES: 8, MANAGE_MESSAGES: 16, MANAGE_MEMBERS: 32, MANAGE_ROOM: 64 };
 
@@ -430,7 +430,15 @@ router.post('/:id/session', (req, res) => {
     const ek = String(k.encrypted_key || '').trim();
     if (!rid || !ek || ek.length > 200000) continue;
     if (!roomMembers.has(rid)) continue;
-    saveRoomSessionKeys(sessionId, rid, ek);
+    const keyId = saveRoomSessionKeys(sessionId, rid, ek);
+    pushRoomSessionKeyToRecipient(rid, {
+      key_id: keyId,
+      session_id: sessionId,
+      room_id: String(room.id),
+      sender_id: String(res.locals.currentUser.id),
+      sender_username: res.locals.currentUser.username,
+      encrypted_key: ek,
+    });
   }
   for (const mid of memberIds) {
     if (roomMembers.has(mid)) ensureRoomSessionRecipient(sessionId, mid);

@@ -167,11 +167,13 @@ Engagement counts always target the **original** content (reposts don't split en
 | GET | `/rooms/:id/channels/:cid/messages` | Bearer (`read`) | Channel history, newest last, `cursor` (message id) → next 50. |
 | POST | `/rooms/:id/channels/:cid/messages` | Bearer (`write`) | Send. Must be `proto:"megolm"` + `ciphertext` + `group_session_id` (current session) unless the body is a sticker path. Broadcasts `message_create`. |
 | DELETE | `/rooms/:id/channels/:cid/messages/:mid` | Bearer (`write`) | Delete message (author or `MANAGE_MESSAGES`). Broadcasts `message_delete`. |
-| POST | `/rooms/:id/session` | Bearer (`write`) | Publish/rotate your Megolm session. Body: `keys:[{recipient_id, encrypted_key}]`, `member_ids:[]`, `rotate`. |
+| POST | `/rooms/:id/session` | Bearer (`write`) | Publish/rotate your Megolm session. Body: `keys:[{recipient_id, encrypted_key}]`, `member_ids:[]`, `rotate`. Pushes `room_session_key` to recipients via WebSocket in realtime. |
+| POST | `/rooms/:id/session/sync` | Bearer (`write`) | **Unified Room Key Sync:** Atomically publish new keys, receive pending keys for yourself, ACK delivered keys (`ack_key_ids`), and inspect `missing_members` who still need keys in 1 round-trip. |
 | GET | `/rooms/:id/session/keys` | Bearer (`read`) | Pending encrypted session keys for you. |
 | POST | `/rooms/:id/session/keys/delivered` | Bearer (`write`) | Ack delivered keys: `{key_ids: []}`. |
 | GET | `/rooms/:id/session/status` | Bearer (`read`) | `{session_id, recipients, empty_keys_for}`. |
-| GET | `/rooms/:id/bundle/:username` | Bearer (`read`) | Member's Olm bundle (identity + claimed one-time key) for room key-sharing. |
+| GET | `/rooms/:id/bundles` | Bearer (`read`) | **Batch Member Bundles:** Returns prekey bundles for all room members in 1 call. Supports `?missing_for_session=<sessionId>` to return only members lacking keys. |
+| GET | `/rooms/:id/bundle/:username` | Bearer (`read`) | Single member's Olm bundle for room key-sharing. |
 
 Rooms support 100% REST API parity alongside the web UI under `/rooms/*`.
 

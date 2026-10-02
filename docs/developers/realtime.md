@@ -42,9 +42,9 @@ Clients subscribe to specific topics using `{ "action": "subscribe", "topic": "<
 | Topic | Events Broadcasted | Description |
 |---|---|---|
 | `timeline:home` | `post_create`, `comment_create`, `post_delete` | Realtime home timeline updates |
-| `room:<id>` | `message_create`, `message_delete`, `member_join`, `member_leave`, `typing` | Room text and member events (membership enforced) |
+| `room:<id>` | `message_create`, `message_delete`, `member_join`, `member_leave`, `room_session_key`, `typing` | Room text and member events (membership enforced). `room_session_key` is pushed in realtime when a peer shares a Megolm session. |
 | `notifications` | `notification_new` | Push notifications to active client |
-| `presence` | `user_online`, `user_offline` | Presence updates of mutual followers |
+| `presence` | `user_online`, `user_offline`, `otk_low` | Presence updates of mutual followers, plus proactive `otk_low` warnings when one-time prekeys fall below 10. |
 
 ### Gateway Opcodes (Client → Server)
 
@@ -59,7 +59,9 @@ Clients subscribe to specific topics using `{ "action": "subscribe", "topic": "<
 
 ### Gateway Events (Server → Client)
 
-All broadcast events carry a strictly monotonic sequence number (`seq`) backed by a 500-event ring buffer on the server:
+All broadcast events carry a strictly monotonic sequence number (`seq`) backed by a 500-event ring buffer on the server.
+
+For Megolm-encrypted room messages, if the receiving client has a pending session key for the message's `group_session_id`, the server automatically inlines `session_key` directly in `data` so the client decrypts instantly with **zero round-trips**:
 
 ```json
 {
@@ -74,7 +76,13 @@ All broadcast events carry a strictly monotonic sequence number (`seq`) backed b
     "author": { "id": "7", "username": "alice", "display_name": "Alice" },
     "proto": "megolm",
     "ciphertext": "...",
-    "created_at": "2026-10-03T00:00:00.000Z"
+    "group_session_id": "1",
+    "created_at": "2026-10-03T00:00:00.000Z",
+    "session_key": {
+      "key_id": 2,
+      "encrypted_key": "...",
+      "sender_id": "7"
+    }
   }
 }
 ```

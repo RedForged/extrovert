@@ -25,6 +25,6 @@ I like extensive design, but I hate bloat.
 # My Projects
 These projects are developed by me, or in coolition of me, agents and possibly contributors. 
 - https://github.com/redforged/extrovert
-- https://github.com/redforged/extrovert_native
 - https://github.com/redforged/llmdash
 - https://github.com/redforged/llmdash-mobile
+

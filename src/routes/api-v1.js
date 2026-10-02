@@ -15,7 +15,7 @@ const { signIdToken, ISSUER } = require('../oidc');
 const { getAccountIds } = require('../accounts');
 const bcrypt = require('bcryptjs');
 const { sanitizeProfileHTML, sanitizeCSS } = require('../sanitize');
-const { getOnlineUsers, getUserPresence, sendDmEvent, cancelPendingCallByToken, broadcastGatewayEvent, getGatewayLatestSeq, updateUserRoomSubscriptions } = require('../webrtc-signaling');
+const { getOnlineUsers, getUserPresence, sendDmEvent, cancelPendingCallByToken, broadcastGatewayEvent, getGatewayLatestSeq, updateUserRoomSubscriptions, pushRoomSessionKeyToRecipient } = require('../webrtc-signaling');
 const { onNotification } = require('../notif-broadcaster');
 const dm = require('../dm');
 const { getVapidPublicKey, validatePushEndpoint } = require('../push');
@@ -370,6 +370,9 @@ router.get('/client/bootstrap', requireApiAuth('read'), (req, res) => {
   // 6. ICE servers
   const iceServers = getIceServersConfig();
 
+  // 7. E2EE status & prekey count
+  const otkCount = db.countAvailablePrekeys ? db.countAvailablePrekeys(userId) : 0;
+
   responseEnvelope(res, {
     user: account,
     unread_notifications: unreadCount,
@@ -377,6 +380,11 @@ router.get('/client/bootstrap', requireApiAuth('read'), (req, res) => {
     rooms,
     timeline,
     ice_servers: iceServers,
+    e2ee: {
+      otk_count: otkCount,
+      otk_low: otkCount < 10,
+      has_prekeys: otkCount > 0,
+    },
     server: {
       name: process.env.INSTANCE_NAME || 'Extrovert',
       version: '1.0.0',
@@ -2378,12 +2386,107 @@ router.post('/rooms/:id/session', requireApiAuth('write'), (req, res) => {
     const ek = String(k.encrypted_key || '').trim();
     if (!rid || !ek || ek.length > 200000) continue;
     if (!roomMembers.has(rid)) continue;
-    db.saveRoomSessionKeys(sessionId, rid, ek);
+    const keyId = db.saveRoomSessionKeys(sessionId, rid, ek);
+    pushRoomSessionKeyToRecipient(rid, {
+      key_id: keyId,
+      session_id: sessionId,
+      room_id: String(room.id),
+      sender_id: String(req.apiUser.id),
+      sender_username: req.apiUser.username,
+      encrypted_key: ek,
+    });
   }
   for (const mid of memberIds) {
     if (roomMembers.has(mid)) db.ensureRoomSessionRecipient(sessionId, mid);
   }
   responseEnvelope(res, { session_id: sessionId });
+});
+
+// Unified Room Session Sync: atomically distribute new keys, fetch incoming pending keys,
+// acknowledge delivered keys, and identify unkeyed room members in one round-trip.
+router.post('/rooms/:id/session/sync', requireApiAuth('write'), express.json(), (req, res) => {
+  const room = db.getRoom(parseInt(req.params.id, 10));
+  if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
+  if (!db.isRoomMember(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'Not a member.');
+
+  const rotate = req.body.rotate === true || req.body.rotate === 'true';
+  const senderDeviceId = String(req.body.sender_device_id || '').trim().slice(0, 100);
+
+  // 1. Process incoming ACKs
+  const ackKeyIds = Array.isArray(req.body.ack_key_ids) ? req.body.ack_key_ids.map(Number) : [];
+  for (const id of ackKeyIds) {
+    const key = db.getRoomSessionKeyById(id);
+    if (key && key.recipient_id === req.apiUser.id && key.room_id === room.id) {
+      db.markRoomSessionKeyDelivered(id);
+    }
+  }
+
+  // 2. Resolve caller's active outbound session
+  let sessionId = null;
+  if (rotate) {
+    sessionId = db.publishRoomGroupSession(room.id, req.apiUser.id, senderDeviceId, true);
+  } else {
+    const existing = db.getRoomGroupSession(room.id, req.apiUser.id, senderDeviceId);
+    if (existing) {
+      sessionId = existing.id;
+    } else {
+      sessionId = db.publishRoomGroupSession(room.id, req.apiUser.id, senderDeviceId, false);
+    }
+  }
+
+  // 3. Save new encrypted keys published by caller and push in realtime
+  const keys = Array.isArray(req.body.keys) ? req.body.keys : [];
+  const roomMembers = new Set(db.getRoomMembers(room.id).map(m => m.user_id));
+  for (const k of keys) {
+    const rid = Number(k.recipient_id);
+    const ek = String(k.encrypted_key || '').trim();
+    if (!rid || !ek || ek.length > 200000) continue;
+    if (!roomMembers.has(rid)) continue;
+    const keyId = db.saveRoomSessionKeys(sessionId, rid, ek);
+    pushRoomSessionKeyToRecipient(rid, {
+      key_id: keyId,
+      session_id: sessionId,
+      room_id: String(room.id),
+      sender_id: String(req.apiUser.id),
+      sender_username: req.apiUser.username,
+      encrypted_key: ek,
+    });
+  }
+
+  // 4. Fetch caller's pending keys for this room
+  const pendingKeys = db.getPendingRoomSessionKeys(req.apiUser.id)
+    .filter(k => k.room_id === room.id)
+    .map(k => ({
+      key_id: k.key_id,
+      session_id: k.session_id,
+      room_id: String(k.room_id),
+      sender_id: String(k.sender_id),
+      encrypted_key: k.encrypted_key,
+    }));
+
+  // 5. Compute missing members who need the caller's active session key
+  const recipients = new Set(db.getRoomSessionRecipients(sessionId));
+  const emptyRecipients = new Set(db.getRoomSessionEmptyKeyRecipients(sessionId));
+  const allMembers = db.getRoomMembers(room.id);
+  const missingMembers = [];
+  for (const m of allMembers) {
+    if (m.user_id === req.apiUser.id) continue;
+    if (!recipients.has(m.user_id) || emptyRecipients.has(m.user_id)) {
+      missingMembers.push({
+        id: String(m.user_id),
+        username: m.username,
+        display_name: m.display_name,
+      });
+    }
+  }
+
+  responseEnvelope(res, {
+    room_id: String(room.id),
+    active_session_id: sessionId,
+    pending_keys: pendingKeys,
+    missing_members: missingMembers,
+    recipients_count: Math.max(0, recipients.size - emptyRecipients.size),
+  });
 });
 
 // Pending Megolm session keys for the caller.
@@ -2423,6 +2526,57 @@ router.get('/rooms/:id/session/status', requireApiAuth('read'), (req, res) => {
   const gs = db.getRoomGroupSession(room.id, req.apiUser.id, deviceId);
   if (!gs) return responseEnvelope(res, { session_id: null, recipients: [], empty_keys_for: [] });
   responseEnvelope(res, { session_id: gs.id, recipients: db.getRoomSessionRecipients(gs.id), empty_keys_for: db.getRoomSessionEmptyKeyRecipients(gs.id) });
+});
+
+// Batch prekey bundles for room members (optionally filtered by members missing active session key)
+router.get('/rooms/:id/bundles', requireApiAuth('read'), (req, res) => {
+  const room = db.getRoom(parseInt(req.params.id, 10));
+  if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
+  if (!db.isRoomMember(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'Not a member.');
+
+  const missingForSession = String(req.query.missing_for_session || '').trim();
+  let existingRecipients = new Set();
+  if (missingForSession) {
+    existingRecipients = new Set(db.getRoomSessionRecipients(missingForSession));
+    const emptyKeys = new Set(db.getRoomSessionEmptyKeyRecipients(missingForSession));
+    for (const emptyId of emptyKeys) {
+      existingRecipients.delete(emptyId);
+    }
+  }
+
+  const claim = req.query.claim === '1' || req.query.claim === 'true';
+  const bundlesFor = claim ? db.claimAllDevicePrekeysForUser : db.getAllDeviceBundlesForUser;
+  const members = db.getRoomMembers(room.id);
+  const bundles = [];
+
+  for (const m of members) {
+    if (m.user_id === req.apiUser.id) continue;
+    if (missingForSession && existingRecipients.has(m.user_id)) continue;
+
+    const recipientDevices = bundlesFor(m.user_id);
+    if (!recipientDevices || !recipientDevices.length) continue;
+    const primary = recipientDevices[0];
+    const otk = typeof primary.one_time_key === 'object' && primary.one_time_key ? primary.one_time_key.public_key : primary.one_time_key;
+    const otkid = typeof primary.one_time_key === 'object' && primary.one_time_key ? primary.one_time_key.id : primary.one_time_key_id;
+    bundles.push({
+      user_id: String(m.user_id),
+      username: m.username,
+      display_name: m.display_name,
+      identity_key: primary.identity_key,
+      one_time_key: otk,
+      one_time_key_id: otkid,
+      identity_keys: primary.identity_keys,
+      device_id: primary.device_id,
+      devices: recipientDevices,
+    });
+  }
+
+  responseEnvelope(res, {
+    room_id: String(room.id),
+    total_members: members.length,
+    returned_bundles: bundles.length,
+    bundles,
+  });
 });
 
 // Room-scoped prekey bundle (no mutual-follower requirement). READ-ONLY: the
