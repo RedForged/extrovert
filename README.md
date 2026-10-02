@@ -46,7 +46,7 @@ The signature motif is three concentric rings: **you** (inner), your **friends**
 | **Notifications** | Inbox, unread badges, realtime SSE stream, web push |
 | **Stickers** | Personal sticker packs usable in posts, comments, and messages |
 | **Admin** | Bans, user deletion, promotions, room moderation, reports queue, server-wide announcement |
-| **API** | Full REST API (OAuth 2.0 + OpenID Connect, PKCE) with an OpenAPI spec and Swagger UI |
+| **API** | Full REST API (OAuth 2.0 + OpenID Connect, Dynamic Client Registration, Personal Access Tokens) with OpenAPI 3.1 spec, Swagger UI, and Realtime WebSocket Gateway |
 | **Security** | Responsible disclosure: public `/security` page with a private report form for admins, plus RFC 9116 `/.well-known/security.txt` |
 
 Security posture is documented in [docs/security.md](docs/security.md); the audit history lives in [SECURITY.md](SECURITY.md). Security researchers can test the software under the conditions on the in-app `/security` page and report findings privately.
@@ -68,8 +68,10 @@ part of CI too.
 
 - `npm test` — feed algorithm + sanitization unit tests (24 assertions)
 - `npm run test:api` — REST API integration suite (36 tests)
+- `npm run test:client` — Native client REST API & Realtime Gateway parity suite (25 tests)
 - `npm run test:owasp` — OWASP Top 10 (2021) security suite (47 tests)
 - `npm run test:asvs` — OWASP ASVS v4.0 suite (57 tests; automatable subset, with a MANUAL_REVIEW/N-A scorecard)
+- `npm run seed:client` — Seed deterministic fixtures and PATs for client testing (`alice`, `bob`, `charlie`)
 - plus crypto, Megolm, live-DM, secure-DM, and session suites — see [Development & testing](docs/development.md)
 
 ## Documentation index

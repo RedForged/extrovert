@@ -1,46 +1,88 @@
-# Realtime: WebSocket, SSE, push
+# Realtime: WebSocket Gateway, WebRTC, SSE, push
 
-Three realtime channels, one server (`src/server.js` upgrades `/ws` to a `ws` WebSocketServer; signaling logic in `src/webrtc-signaling.js`):
+Extrovert provides a unified realtime system over WebSocket (`/ws`), Server-Sent Events (`/api/v1/notifications/stream`), and Web Push:
 
 | Channel | For | Auth |
 |---|---|---|
-| `/ws` — signaling | presence, 1:1 calls, voice channels, live DM delivery | session cookie or `?token=<access_token>` |
+| `/ws` — Gateway & Signaling | Realtime events (feed, rooms, notifications), presence, 1:1 calls, voice channels, live DMs | Session cookie, `Authorization: Bearer`, `?token=`, or message `token` |
 | `/ws` — push channel | native/mobile call wake-ups | same |
-| `GET /api/v1/notifications/stream` | notification SSE | Bearer (`notifications`) |
+| `GET /api/v1/notifications/stream` | notification SSE stream | Bearer (`notifications`) |
 | Web Push (VAPID) | browser call notifications | subscription-based |
 
-## WebSocket (`/ws`)
+## Realtime Gateway Multiplexing (`/ws`)
 
-### Connecting & auth
+The WebSocket endpoint `/ws` functions as a full multiplexed event gateway for external and native clients (such as `extrovert_native`).
 
-- Browsers send their session cookie automatically.
-- Native clients connect as `wss://host/ws?token=<oauth_access_token>`.
-- Unauthenticated connections are closed with code `4001`.
+### Connecting & Authentication
 
-### Roles: signaling vs push channel
+Clients can authenticate through multiple methods:
+1. **HTTP Handshake Header:** `Authorization: Bearer <access_token_or_pat>`
+2. **Query Parameter:** `wss://host/ws?token=<access_token_or_pat>` (supports OAuth tokens and Personal Access Tokens `ext_pat_...`)
+3. **In-Frame Authentication:** Sockets can connect unauthenticated and provide their token in subscription or auth messages:
+   ```json
+   { "action": "subscribe", "topic": "timeline:home", "token": "ext_pat_..." }
+   ```
+4. **Session Cookie:** Web browsers pass session cookies automatically.
 
-The **first message** decides the connection's role:
+### Gateway Topics
 
-- `{"type":"push_register"}` → *push channel*: the native app's foreground service. The user stays **offline** for calls (so the pending-call flow still runs), but receives `call`, `missed_call`, and `push_registered` payloads. Multiple push connections per user are allowed.
-- anything else (typically `{"type":"ping"}`) → *signaling client*. One per user (last connection wins; older connections close with `4002`). Receives presence, call signaling, and live DMs.
+Clients subscribe to specific topics using `{ "action": "subscribe", "topic": "<topic>" }`:
 
-### Client → server messages
-
-| Type | Payload | Purpose |
+| Topic | Events Broadcasted | Description |
 |---|---|---|
-| `ping` | — | Keepalive; server replies `pong`. |
-| `push_register` | — | Register as a native push channel. |
-| `call_request` | `{to}` | Ask about calling `to`. Replies: `callee_available` / `user_busy` / `calling_offline` / `user_offline` (not mutual). |
-| `call_offer` | `{to, sdp}` or `{to, channel_id, sdp}` | Offer to a user (1:1) or a member of a voice channel. |
-| `call_answer` | `{to, sdp}` / `{to, channel_id, sdp}` | Answer. |
-| `ice_candidate` | `{to, candidate}` / `{to, channel_id, candidate}` | Trickle ICE. |
-| `call_end` | `{to}` / `{channel_id}` | Hang up. |
-| `call_decline` | `{to}` / `{channel_id}` | Decline. |
-| `call_cancel` | — | Cancel an offline-call wait. |
-| `join_channel` | `{channel_id}` | Enter a room voice channel. |
-| `leave_channel` | `{channel_id}` | Leave a room voice channel. |
+| `timeline:home` | `post_create`, `post_delete` | Realtime home timeline updates |
+| `room:<id>` | `message_create`, `message_delete`, `member_join`, `typing` | Room text and member events (membership enforced) |
+| `notifications` | `notification_new` | Push notifications to active client |
+| `presence` | `user_online`, `user_offline` | Presence updates of mutual followers |
 
-### Server → client messages
+### Gateway Opcodes (Client → Server)
+
+| Action | Payload | Description |
+|---|---|---|
+| `subscribe` | `{ "topic": "room:1", "token": "..." }` | Subscribe to an event topic (accepts `topic`, `channel`, or `channels` array). |
+| `unsubscribe` | `{ "topic": "room:1" }` | Unsubscribe from an event topic. |
+| `resume` | `{ "seq": 105 }` | Replay missed events since sequence number `seq` after a temporary network drop. |
+| `typing` | `{ "channel": "room:1", "typing": true }` | Send a typing indicator to a room channel or direct chat. |
+| `ping` | `{ "action": "ping" }` | Keepalive heartbeat (server replies `{ "type": "pong" }`). |
+
+### Gateway Events (Server → Client)
+
+All broadcast events carry a strictly monotonic sequence number (`seq`) backed by a 500-event ring buffer on the server:
+
+```json
+{
+  "seq": 106,
+  "type": "gateway_event",
+  "topic": "room:1",
+  "event": "message_create",
+  "data": {
+    "id": "42",
+    "room_id": "1",
+    "channel_id": "1",
+    "author": { "id": "7", "username": "alice", "display_name": "Alice" },
+    "proto": "megolm",
+    "ciphertext": "...",
+    "created_at": "2026-10-03T00:00:00.000Z"
+  }
+}
+```
+
+When reconnecting after a disconnection, send `{ "action": "resume", "seq": 106 }`. The server replies:
+
+```json
+{
+  "type": "resumed",
+  "replayed": 2,
+  "last_seq": 108
+}
+```
+followed by each missed event frame in order.
+
+---
+
+## WebRTC Signaling (`/ws`)
+
+In addition to the event gateway, `/ws` handles WebRTC 1:1 call signaling and room voice channels:
 
 | Type | Payload | Meaning |
 |---|---|---|

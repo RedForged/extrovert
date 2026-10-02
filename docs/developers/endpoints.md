@@ -6,7 +6,8 @@ Base path: `/api/v1` unless noted. Auth notation: **session** = logged-in web se
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| POST | `/oauth/apps` | session | Register an app. Body: `name`*, `redirect_uris`* (string or array), `description`, `website`, `scopes` (space-separated, default `read`). Returns `client_id` + `client_secret`. |
+| POST | `/apps` | none | Dynamic Client Registration (RFC 7591 / Mastodon-compatible). Body: `client_name`*, `redirect_uris`, `scopes`, `website`. Returns `client_id` + `client_secret` + `vapid_key`. |
+| POST | `/oauth/apps` | session | Register an app via web session. Body: `name`*, `redirect_uris`* (string or array), `description`, `website`, `scopes` (space-separated, default `read`). Returns `client_id` + `client_secret`. |
 | GET | `/oauth/apps` | session | Your registered apps. |
 | GET | `/oauth/authorize` | session | Consent page. Params: `client_id`, `redirect_uri`, `response_type=code`, `scope`, `state`, `nonce`, `code_challenge`, `code_challenge_method` (S256/plain). Browser-only. |
 | POST | `/oauth/authorize` | session | Approve/deny (`approve=yes` → redirect with `code`; else `error=access_denied`). Browser-only. |
@@ -27,6 +28,12 @@ Full flow documentation: [OAuth 2.0 & OpenID Connect](oauth-oidc.md).
 | GET | `/accounts/verify_credentials` | Bearer (`read`) | Your own account. |
 | PATCH | `/accounts/update_credentials` | Bearer (`profile`) | Update `display_name` (≤100), `bio` (≤500), `theme` (`light`/`dark`/`default`). |
 | POST | `/accounts/avatar` | Bearer (`profile`) | Multipart `avatar` (image, ≤10 MB) → resized 200×200 JPEG. |
+| DELETE | `/accounts/me` | Bearer (`write`) | Permanently delete your account. Body: `password`*. |
+| GET | `/accounts/tokens` | Bearer (`read` or `profile`) | List your personal access tokens (`id, name, token_prefix, scopes, created_at, expires_at`). |
+| POST | `/accounts/tokens` | Bearer (`write` or `profile`) | Create a Personal Access Token (`name`*, `scopes`, `expires_in_days`). Returns full `token` (shown once). |
+| DELETE | `/accounts/tokens/:id` | Bearer (`write` or `profile`) | Revoke a personal access token. |
+| GET | `/accounts/sessions` | Bearer (`read` or `profile`) | List your active login sessions. |
+| DELETE | `/accounts/sessions/:id` | Bearer (`write` or `profile`) | Revoke an active login session. |
 | GET | `/accounts/relationships?id=1,2,3` | Bearer (`read`) | Batch: `[{id, following, followed_by}]`. |
 | GET | `/accounts/:id` | Bearer (`read`) | Account (404 if outside your network). |
 | GET | `/accounts/:id/statuses` | Bearer (`read`) | Posts, newest first, `limit`+`cursor`. Network-gated. |
@@ -51,14 +58,19 @@ Full flow documentation: [OAuth 2.0 & OpenID Connect](oauth-oidc.md).
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| POST | `/statuses` | Bearer (`write`) | Create. Multipart (optional `media`) or JSON. `type`: `text`/`photo`/`video`/`repost`; `body` ≤ 5000; `repost_of_id` for reposts (must be visible, not your own, not already reposted). Supports `Idempotency-Key`. |
-| GET | `/statuses/:id` | Bearer (`read`) | One post (404 outside network). |
-| DELETE | `/statuses/:id` | Bearer (`write`) | Delete (owner only, cascades). |
+| POST | `/statuses` | Bearer (`write`) | Create. Multipart (optional `media`) or JSON. `type`: `text`/`photo`/`video`/`repost`; `body` or `status` ≤ 5000; `repost_of_id` for reposts (must be visible, not your own, not already reposted). Supports `Idempotency-Key`. Broadcasts `post_create` over gateway. |
+| GET | `/statuses/:id` | Bearer (`read`) | One post (404 outside network). Includes `content` (Markdown) and `content_html`. |
+| PATCH | `/statuses/:id` | Bearer (`write`) | Edit a post (author only). Body: `body` or `status` ≤ 5000. Re-renders Markdown and logs revision. |
+| DELETE | `/statuses/:id` | Bearer (`write`) | Delete (owner only, cascades). Broadcasts `post_delete` over gateway. |
+| GET | `/statuses/:id/history` | Bearer (`read`) | Revision edit history of a post: `[{id, entity_id, body, edited_at}]`. |
+| POST | `/statuses/:id/follow_from` | Bearer (`follow`) | Attribution referral: record that you followed author because of this post. |
 | POST | `/statuses/:id/favourite` | Bearer (`write`) | Toggle like. |
 | POST | `/statuses/:id/unfavourite` | Bearer (`write`) | Remove like. |
 | POST | `/statuses/:id/reblog` | Bearer (`write`) | Repost (not your own; no-op if already reposted). |
 | GET | `/statuses/:id/context` | Bearer (`read`) | `{ancestors: [], descendants: [comments…]}`. |
 | POST | `/statuses/:id/comment` | Bearer (`write`) | Comment (`body` ≤ 1000). |
+| PATCH | `/statuses/:id/comments/:cid` | Bearer (`write`) | Edit a comment (author only, `body` ≤ 1000). |
+| DELETE | `/statuses/:id/comments/:cid` | Bearer (`write`) | Delete a comment (author only). |
 | GET | `/statuses/:id/favourited_by` | Bearer (`read`) | Who liked it. |
 | GET | `/statuses/:id/reblogged_by` | Bearer (`read`) | Who reposted it. |
 
@@ -125,16 +137,35 @@ Engagement counts always target the **original** content (reposts don't split en
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | GET | `/rooms` | Bearer (`read`) | Your rooms (with member counts). |
+| POST | `/rooms` | Bearer (`write`) | Create room. Body: `name`*, `description`, `is_public`. |
 | GET | `/rooms/:id` | Bearer (`read`) | Room detail: channels (id/name/type), members, `html`/`css`, `is_public`, `is_member`. |
+| PATCH | `/rooms/:id` | Bearer (`write`) | Update room settings / custom styling (`name`, `description`, `custom_css`/`css`, `custom_html`/`html`, `is_public`). |
+| DELETE | `/rooms/:id` | Bearer (`write`) | Delete room (founder only). |
+| POST | `/rooms/:id/join` | Bearer (`write`) | Join public room or submit join request for private room. |
+| POST | `/rooms/:id/leave` | Bearer (`write`) | Leave room (founders must transfer first or be last member). |
+| POST | `/rooms/:id/channels` | Bearer (`write`) | Create channel (`name`*, `type`: `text`/`voice`). |
+| PATCH | `/rooms/:id/channels/:cid` | Bearer (`write`) | Rename channel (`name`*). |
+| DELETE | `/rooms/:id/channels/:cid` | Bearer (`write`) | Delete channel. |
+| GET | `/rooms/:id/roles` | Bearer (`read`) | List roles in room. |
+| POST | `/rooms/:id/roles` | Bearer (`write`) | Create role (`name`*, `color`, `permissions`). |
+| PATCH | `/rooms/:id/roles/:role_id` | Bearer (`write`) | Update role (`name`, `color`, `permissions`). |
+| DELETE | `/rooms/:id/roles/:role_id` | Bearer (`write`) | Delete role. |
+| POST | `/rooms/:id/members/:uid/roles` | Bearer (`write`) | Assign role to member (`role_id`*). |
+| POST | `/rooms/:id/members/:uid/kick` | Bearer (`write`) | Kick member from room (`MANAGE_MEMBERS`). |
+| POST | `/rooms/:id/transfer` | Bearer (`write`) | Transfer founder ownership (`target_user_id`*). |
+| GET | `/rooms/:id/requests` | Bearer (`read`) | List pending join requests for private room. |
+| POST | `/rooms/:id/requests` | Bearer (`write`) | Approve or reject join request (`request_id`*, `action`: `approve`/`reject`). |
+| POST | `/rooms/:id/invite` | Bearer (`write`) | Invite user to room (`username`*). |
 | GET | `/rooms/:id/channels/:cid/messages` | Bearer (`read`) | Channel history, newest last, `cursor` (message id) → next 50. |
-| POST | `/rooms/:id/channels/:cid/messages` | Bearer (`write`) | Send. Must be `proto:"megolm"` + `ciphertext` + `group_session_id` (current session) unless the body is a sticker path. |
+| POST | `/rooms/:id/channels/:cid/messages` | Bearer (`write`) | Send. Must be `proto:"megolm"` + `ciphertext` + `group_session_id` (current session) unless the body is a sticker path. Broadcasts `message_create`. |
+| DELETE | `/rooms/:id/channels/:cid/messages/:mid` | Bearer (`write`) | Delete message (author or `MANAGE_MESSAGES`). Broadcasts `message_delete`. |
 | POST | `/rooms/:id/session` | Bearer (`write`) | Publish/rotate your Megolm session. Body: `keys:[{recipient_id, encrypted_key}]`, `member_ids:[]`, `rotate`. |
 | GET | `/rooms/:id/session/keys` | Bearer (`read`) | Pending encrypted session keys for you. |
 | POST | `/rooms/:id/session/keys/delivered` | Bearer (`write`) | Ack delivered keys: `{key_ids: []}`. |
 | GET | `/rooms/:id/session/status` | Bearer (`read`) | `{session_id, recipients, empty_keys_for}`. |
 | GET | `/rooms/:id/bundle/:username` | Bearer (`read`) | Member's Olm bundle (identity + claimed one-time key) for room key-sharing. |
 
-Web (session) twins for all of the above live under `/rooms/*` with the same semantics, plus the full room admin surface (roles, members, settings) which has no API twin.
+Rooms support 100% REST API parity alongside the web UI under `/rooms/*`.
 
 ## Direct messages
 
@@ -161,6 +192,21 @@ All require mutual followers with the peer.
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | GET | `/announcement` | Bearer (`read`) | `{body, author_display_name, author_username, updated_at}` or `data: null`. |
+
+## Stickers
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/stickers` | Bearer (`read`) | List your personal stickers (`[{id, file_path, url, created_at}]`). |
+| POST | `/stickers` | Bearer (`write`) | Upload sticker (multipart `file`, ≤500 KB, auto-compressed) or save existing (`path`). |
+| DELETE | `/stickers/:id` | Bearer (`write`) | Delete one of your personal stickers. |
+
+## Network Discovery & Calls
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/discover` | Bearer (`read`) | Friend-of-a-Friend (FoF) suggested users within your 2-hop graph (`limit` ≤50). |
+| GET | `/calls/ice_servers` | Bearer (`read`) | WebRTC STUN/TURN ICE servers configuration: `{ice_servers: [{urls: "..."}]}`. |
 
 ## Web session routes (not part of the REST API)
 

@@ -48,16 +48,26 @@ Body fields are **milliseconds since epoch** (e.g. `created_at` on posts/account
 
 ## Authentication
 
-Two credential types:
+Three credential types:
 
-1. **Session cookie** (browser web app). Several API routes (`/api/v1/oauth/apps`, `/authorized_apps`, `/oauth/authorize`) are session-based; most are Bearer.
-2. **OAuth 2.0 Bearer token** for everything else:
+1. **Session cookie** (browser web app). Several web-facing routes (`/api/v1/oauth/apps`, `/authorized_apps`, `/oauth/authorize`) use session cookies; most REST endpoints use Bearer tokens.
+2. **Personal Access Tokens (PATs)** (for native clients, scripts, and CLI bots):
+   Tokens prefixed with `ext_pat_...` created via `POST /api/v1/accounts/tokens`. They authenticate directly as Bearer tokens without requiring interactive OAuth webview popups:
+   ```
+   Authorization: Bearer ext_pat_...
+   ```
+3. **OAuth 2.0 Bearer token** (for third-party web apps and standard OAuth flows):
+   ```
+   Authorization: Bearer <access_token>
+   ```
 
-```
-Authorization: Bearer <access_token>
-```
+Auth middleware (`src/api-auth.js`) validates OAuth bearer tokens and PATs, their expiry/revocation, required **scopes**, and the user's ban status.
 
-Auth middleware (`src/api-auth.js`) validates the token, its expiry (24 h), the required **scopes**, and the user's ban status.
+### App Registration
+
+Clients can register in two ways:
+- **Dynamic Client Registration** (`POST /api/v1/apps`): Unauthenticated RFC 7591 / Mastodon-compatible registration for native and desktop clients (e.g. `extrovert_native`).
+- **Web App Registration** (`POST /api/v1/oauth/apps`): Session-authenticated registration for developers managing apps through the web UI at `/settings/developers`.
 
 ### Scopes
 

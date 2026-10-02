@@ -39,22 +39,85 @@ Scopes are **exact-match** (no hierarchy). The default scope for new apps is `re
 
 ### 1. Register your app
 
+Extrovert supports two registration mechanisms:
+
+#### Option A: Dynamic Client Registration (RFC 7591 / Native Clients)
+Native desktop and mobile apps (such as `extrovert_native`) can register automatically without needing an active web session cookie:
+
+```http
+POST /api/v1/apps
+Content-Type: application/json
+
+{
+  "client_name": "Extrovert Native",
+  "redirect_uris": "extrovert://oauth-callback",
+  "scopes": "read write follow notifications",
+  "website": "https://github.com/redforged/extrovert_native"
+}
 ```
+
+Response (`201 Created`):
+```json
+{
+  "id": "1",
+  "name": "Extrovert Native",
+  "client_id": "ext_client_...",
+  "client_secret": "...",
+  "redirect_uri": "extrovert://oauth-callback",
+  "vapid_key": "..."
+}
+```
+
+#### Option B: Web UI / Session Registration
+Third-party web services can register via `/settings/developers` or the session endpoint:
+
+```http
 POST /api/v1/oauth/apps
 Cookie: <your session>
 
-{ "name": "My Client", "redirect_uris": "https://app.example.com/cb",
+{ "name": "My Web Service", "redirect_uris": "https://app.example.com/cb",
   "website": "https://app.example.com", "scopes": "openid profile read write" }
 ```
 
-or use the form at `/settings/developers`. Response:
-
+Response:
 ```json
 { "data": { "id": "1", "client_id": "…48 hex…", "client_secret": "…64 hex…",
             "redirect_uris": ["https://app.example.com/cb"], "scopes": "openid profile read write" } }
 ```
 
 Keep the secret server-side. Public/native clients can omit the secret (see `clientAppAuth`: the secret is only validated **if sent**).
+
+---
+
+### Alternative: Personal Access Tokens (PATs)
+
+For developers, CLI tools, scripts, and local test runners who do not need full OAuth redirection flows, Extrovert supports **Personal Access Tokens**:
+
+```http
+POST /api/v1/accounts/tokens
+Authorization: Bearer <existing_token_or_session>
+Content-Type: application/json
+
+{
+  "name": "CLI Script",
+  "scopes": "read write follow",
+  "expires_in_days": 90
+}
+```
+
+Response:
+```json
+{
+  "data": {
+    "id": "1",
+    "name": "CLI Script",
+    "token": "ext_pat_abcdef0123456789...",
+    "scopes": "read write follow"
+  }
+}
+```
+
+Tokens prefixed with `ext_pat_` can be passed directly as `Authorization: Bearer ext_pat_...` to any API endpoint or WebSocket connection.
 
 ### 2. Redirect the user to authorize
 
