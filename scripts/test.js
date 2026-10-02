@@ -177,6 +177,31 @@ function run() {
   assert(!/javascript:/i.test(cleanCss), 'javascript: stripped from CSS');
   assert(!/expression\s*\(/i.test(cleanCss), 'expression() stripped from CSS');
 
+  console.log('\nTEST 10: post markdown rendering & security');
+  const { renderMarkdown } = require('../src/markdown');
+  const mdSample = '# Post Title\n\nThis is **bold** and *italic*.\n\nHere is a list:\n- item 1\n- item 2\n\nCheck [this link](https://example.com) and code: `const a = 1;`';
+  const mdHtml = renderMarkdown(mdSample);
+  assert(/<h1>Post Title<\/h1>/.test(mdHtml), 'renders markdown h1 header');
+  assert(/<strong>bold<\/strong>/.test(mdHtml), 'renders bold');
+  assert(/<em>italic<\/em>/.test(mdHtml), 'renders italic');
+  assert(/<ul>\s*<li>item 1<\/li>\s*<li>item 2<\/li>\s*<\/ul>/.test(mdHtml), 'renders list items');
+  assert(/<code>const a = 1;<\/code>/.test(mdHtml), 'renders inline code');
+  assert(/<a href="https:\/\/example\.com"[^>]*target="_blank"[^>]*rel="noopener noreferrer nofollow"/.test(mdHtml), 'link has safe attributes');
+
+  // Autolink check
+  const autoLink = renderMarkdown('Visit https://extrovert.social for details');
+  assert(/<a href="https:\/\/extrovert\.social"[^>]*>https:\/\/extrovert\.social<\/a>/.test(autoLink), 'auto-links plain URLs');
+
+  // Security & XSS sanitization checks
+  const xssAttempt = renderMarkdown('# Danger\n<script>alert(1)</script>\n<img src=x onerror=alert(2)>\n[click](javascript:alert(3))');
+  assert(!/<script/i.test(xssAttempt), 'escapes/strips raw script tags');
+  assert(!/<img[^>]*onerror/i.test(xssAttempt), 'no executable onerror handler attribute');
+  assert(!/<a[^>]*href=["']?javascript:/i.test(xssAttempt), 'no javascript: link attribute created');
+
+  // Graceful empty input
+  assert(renderMarkdown('') === '', 'empty string returns empty');
+  assert(renderMarkdown(null) === '', 'null returns empty');
+
   console.log(process.exitCode ? '\nSOME TESTS FAILED' : '\nALL TESTS PASSED');
 }
 

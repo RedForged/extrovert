@@ -156,8 +156,8 @@ document.addEventListener('DOMContentLoaded', function(){
   }
 
   // Inline editing helpers
-  function replaceWithInput(el, className, multiline, saveFn, cancelFn, noButtons) {
-    var origText = el.textContent.trim();
+  function replaceWithInput(el, className, multiline, saveFn, cancelFn, noButtons, initialValue) {
+    var origText = typeof initialValue === 'string' ? initialValue : el.textContent.trim();
     var input;
     if (multiline) {
       input = document.createElement('textarea');
@@ -205,10 +205,14 @@ document.addEventListener('DOMContentLoaded', function(){
         var val = input.value.trim();
         if (val && val !== origText) {
           if (!noButtons) { saveBtn.disabled = true; saveBtn.textContent = 'Saving…'; }
-          saveFn(val, function() {
+          saveFn(val, function(renderedHtml) {
             var span = document.createElement(el.tagName);
             span.className = el.className;
-            span.textContent = val;
+            if (typeof renderedHtml === 'string') {
+              span.innerHTML = renderedHtml;
+            } else {
+              span.textContent = val;
+            }
             restore(span);
           }, function() {
             if (!noButtons) { saveBtn.disabled = false; saveBtn.textContent = 'Save'; }
@@ -222,10 +226,7 @@ document.addEventListener('DOMContentLoaded', function(){
     }
 
     function cancel() {
-      var span = document.createElement(el.tagName);
-      span.className = el.className;
-      span.textContent = origText;
-      restore(span);
+      restore(el);
       if (cancelFn) cancelFn();
     }
 
@@ -304,11 +305,16 @@ document.addEventListener('DOMContentLoaded', function(){
             headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf },
             body: 'body=' + encodeURIComponent(val) + '&_csrf=' + encodeURIComponent(csrf),
           }).then(function(r){ return r.json(); }).then(function(d){
-            if (d.ok) { onSuccess(); showEditBtn(); } else { location.reload(); }
+            if (d.ok) {
+              dataEl.value = val;
+              onSuccess(d.rendered);
+              showEditBtn();
+            } else { location.reload(); }
           });
         },
         showEditBtn,
-        true
+        true,
+        dataEl.value
       );
       saveBtn.addEventListener('click', function() { editState.finish(true); });
       cancelBtn.addEventListener('click', function() { editState.finish(false); });

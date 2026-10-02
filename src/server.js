@@ -14,6 +14,7 @@ const { optionalAuth, requireAuth } = require('./auth');
 const db = require('./db');
 const { bearerUser } = require('./bearer-auth');
 const { initSignaling } = require('./webrtc-signaling');
+const { renderMarkdown } = require('./markdown');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -302,6 +303,8 @@ app.locals.relTime = function relTime(ts) {
   if (s < 604800) return Math.floor(s / 86400) + 'd';
   return new Date(ts).toLocaleDateString();
 };
+
+app.locals.renderMarkdown = renderMarkdown;
 
 // Never let browsers cache dynamic pages: they are session/user-specific and
 // must reflect the deployed version on every load. Without this, heuristic

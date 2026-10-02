@@ -1,6 +1,7 @@
 <%
   const u = locals.currentUser;
   const time = locals.relTime || ((t) => new Date(t).toLocaleString());
+  const mdRender = locals.renderMarkdown || ((s) => s);
 %>
 <article class="post">
   <% if (item.isRepost) { %>
@@ -25,7 +26,7 @@
     </div>
   </header>
 
-  <% if (item.body) { %><div class="post-body"><%= item.body %></div><% } %>
+  <% if (item.body) { %><div class="post-body"><%- mdRender(item.body) %></div><% } %>
   <% if (item.editedAt) { %><div class="post-edited"><a href="/posts/<%= item.interactId %>/history?type=post" class="edited-link" title="<%= new Date(item.editedAt).toLocaleString() %>">(edited)</a></div><% } %>
   <% if (item.mediaPath && item.type === 'photo') { %>
     <img class="post-media" src="<%= item.mediaPath %>" alt="photo">

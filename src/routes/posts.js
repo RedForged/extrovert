@@ -24,6 +24,7 @@ const {
   deleteComment,
 } = require('../db');
 const { canView } = require('../network');
+const { renderMarkdown } = require('../markdown');
 
 const router = express.Router();
 
@@ -154,7 +155,7 @@ router.post('/:id/edit', (req, res) => {
   if (!body) return req.xhr ? res.json({ error: 'body required' }) : res.redirect(back(req, '/'));
   const ok = editPost(Number(req.params.id), user.id, body);
   if (!ok) return req.xhr ? res.json({ error: 'not found or not yours' }) : res.status(404).send('Post not found or not yours.');
-  if (req.xhr) return res.json({ ok: true });
+  if (req.xhr) return res.json({ ok: true, rendered: renderMarkdown(body) });
   res.redirect(back(req, '/posts/' + req.params.id));
 });
 

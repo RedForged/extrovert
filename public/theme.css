@@ -554,8 +554,28 @@ label { display: block; font-size: var(--fs-sm); color: var(--text-secondary); m
 .post-name { font-weight: 700; color: var(--text); font-size: var(--fs-md); }
 .post-name:hover { color: var(--primary); }
 .post-handle { color: var(--text-secondary); font-size: var(--fs-sm); }
-.post-time { color: var(--text-muted); font-size: var(--fs-sm); }
-.post-body { white-space: pre-wrap; word-wrap: break-word; margin-bottom: 14px; font-size: var(--fs-base); line-height: 1.6; }
+.post-body { word-wrap: break-word; word-break: break-word; margin-bottom: 14px; font-size: var(--fs-base); line-height: 1.6; }
+.post-body p { margin: 0 0 0.6em; }
+.post-body p:last-child { margin-bottom: 0; }
+.post-body h1, .post-body h2, .post-body h3, .post-body h4, .post-body h5, .post-body h6 { margin: 0.75em 0 0.35em; font-weight: 700; line-height: 1.3; color: var(--text); }
+.post-body h1 { font-size: 1.35rem; }
+.post-body h2 { font-size: 1.2rem; }
+.post-body h3 { font-size: 1.05rem; }
+.post-body h4, .post-body h5, .post-body h6 { font-size: 0.95rem; }
+.post-body ul, .post-body ol { margin: 0.4em 0 0.6em; padding-left: 1.5em; }
+.post-body li { margin-bottom: 0.25em; }
+.post-body blockquote { border-left: 3px solid var(--accent); margin: 0.6em 0; padding: 0.4em 0.9em; color: var(--text-secondary); background: var(--surface-2); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+.post-body blockquote p:last-child { margin-bottom: 0; }
+.post-body code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 0.88em; padding: 0.15em 0.35em; background: var(--surface-2); border-radius: 4px; border: 1px solid var(--border-soft); }
+.post-body pre { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 0.85em; padding: 0.75em 1em; background: var(--surface-2); border-radius: var(--radius); border: 1px solid var(--border-soft); overflow-x: auto; margin: 0.6em 0; white-space: pre; }
+.post-body pre code { padding: 0; background: transparent; border: none; font-size: inherit; }
+.post-body hr { border: none; border-top: 1px solid var(--border-soft); margin: 1em 0; }
+.post-body table { width: 100%; border-collapse: collapse; margin: 0.6em 0; font-size: 0.9em; }
+.post-body th, .post-body td { border: 1px solid var(--border-soft); padding: 0.4em 0.6em; text-align: left; }
+.post-body th { background: var(--surface-2); font-weight: 600; color: var(--text); }
+.post-body img { max-width: 100%; height: auto; border-radius: var(--radius); margin: 0.4em 0; }
+.post-body a { color: var(--primary); text-decoration: underline; text-underline-offset: 2px; }
+.post-body a:hover { color: var(--primary-strong); }
 .post-media { width: 100%; border-radius: var(--radius); display: block; margin-bottom: 14px; max-height: 600px; object-fit: contain; background: var(--surface-2); border: 1px solid var(--border-soft); }
 
 .post-stats {

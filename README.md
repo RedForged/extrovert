@@ -1,5 +1,9 @@
 # Extrovert
 
+> [!NOTE]
+> **Canonical repository:** Extrovert is actively maintained at [git.new-eve.org/redforged/extrovert](https://git.new-eve.org/redforged/extrovert).
+> The GitHub repository is an automated mirror.
+
 A social network where you can **only discover content from friends and friends-of-friends**. You cannot see anything from people you aren't connected to — there is no public timeline, no firehose, no algorithm mining the whole internet. Just your network.
 
 <p align="center">
@@ -31,7 +35,7 @@ The signature motif is three concentric rings: **you** (inner), your **friends**
 
 | Area | What you get |
 |---|---|
-| **Posts** | Text, photo, or video posts; reposts; comment threads; edit history; full deletion |
+| **Posts** | Text, photo, or video posts; Markdown support; reposts; comment threads; edit history; full deletion |
 | **Feed** | A deterministic, explained ranking algorithm over your network only (see [Feed](docs/using/feed.md)) |
 | **Profiles** | Fully customizable profile pages — every user can write their own **HTML and CSS** (no JavaScript) |
 | **Social** | Follow, like, comment, share, repost, "follow because of a post" |
