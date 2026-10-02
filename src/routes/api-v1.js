@@ -13,11 +13,13 @@ const feed = require('../feed');
 const { requireApiAuth, clientAppAuth, generateToken, VALID_SCOPES } = require('../api-auth');
 const { signIdToken, ISSUER } = require('../oidc');
 const { getAccountIds } = require('../accounts');
-const auth = require('./auth');
-const { getOnlineUsers, getUserPresence, sendDmEvent, cancelPendingCallByToken } = require('../webrtc-signaling');
+const bcrypt = require('bcryptjs');
+const { sanitizeProfileHTML, sanitizeCSS } = require('../sanitize');
+const { getOnlineUsers, getUserPresence, sendDmEvent, cancelPendingCallByToken, broadcastGatewayEvent } = require('../webrtc-signaling');
 const { onNotification } = require('../notif-broadcaster');
 const dm = require('../dm');
 const { getVapidPublicKey, validatePushEndpoint } = require('../push');
+const { renderMarkdown } = require('../markdown');
 
 const router = express.Router();
 
@@ -42,6 +44,25 @@ const upload = multer({
     if (!ALLOWED_EXT.has(ext)) return cb(null, false);
     if (!file.mimetype.startsWith('image/') && !file.mimetype.startsWith('video/')) return cb(null, false);
     cb(null, true);
+  },
+});
+
+const STICKER_DIR = path.join(__dirname, '..', '..', 'uploads', 'stickers');
+fs.mkdirSync(STICKER_DIR, { recursive: true });
+
+const ALLOWED_STICKER_EXT = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']);
+const stickerUpload = multer({
+  storage: multer.diskStorage({
+    destination: STICKER_DIR,
+    filename: (req, file, cb) => {
+      const ext = path.extname(file.originalname).toLowerCase();
+      cb(null, crypto.randomBytes(12).toString('hex') + (ALLOWED_STICKER_EXT.has(ext) ? ext : '.png'));
+    },
+  }),
+  limits: { fileSize: 500 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    cb(null, ALLOWED_STICKER_EXT.has(ext));
   },
 });
 
@@ -129,12 +150,16 @@ function serializePost(post, author, currentUserId) {
     ? db.getPostById(post.repost_of_id)
     : post;
   const targetId = interactId ? interactId.id : post.id;
+  const bodyText = post.body || '';
   return {
     id: String(post.id),
     type: post.type,
-    body: post.body || '',
+    body: bodyText,
+    content: bodyText,
+    content_html: renderMarkdown(bodyText),
     media_path: post.media_path || null,
     created_at: post.created_at,
+    edited_at: post.edited_at || null,
     account: author ? serializeAccount(author, currentUserId) : null,
     likes_count: db.db.prepare(`SELECT COUNT(*) FROM likes WHERE post_id = ?`).get(targetId)['COUNT(*)'],
     shares_count: db.db.prepare(`SELECT COUNT(*) FROM shares WHERE post_id = ?`).get(targetId)['COUNT(*)'],
@@ -146,7 +171,76 @@ function serializePost(post, author, currentUserId) {
   };
 }
 
-// ======== OAuth endpoints ========
+// ======== OAuth & App endpoints ========
+
+// Dynamic Client Registration (RFC 7591 / Mastodon compatible)
+router.post('/apps', express.json(), express.urlencoded({ extended: true }), (req, res) => {
+  const clientName = String(req.body.client_name || req.body.name || '').trim();
+  if (!clientName || clientName.length > 100) {
+    return errorResponse(res, 400, 'Bad Request', 'client_name is required (max 100 chars).');
+  }
+
+  let redirectUris = req.body.redirect_uris;
+  if (!redirectUris) redirectUris = 'urn:ietf:wg:oauth:2.0:oob';
+  const uris = Array.isArray(redirectUris) ? redirectUris.map(String) : String(redirectUris).split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  if (!uris.length) {
+    return errorResponse(res, 400, 'Bad Request', 'redirect_uris is required.');
+  }
+
+  const cleanUris = [];
+  for (const u of uris) {
+    if (u === 'urn:ietf:wg:oauth:2.0:oob') {
+      cleanUris.push(u);
+      continue;
+    }
+    let parsed;
+    try { parsed = new URL(u); } catch { return errorResponse(res, 400, 'Bad Request', `Invalid redirect URI: ${u}`); }
+    const proto = parsed.protocol.toLowerCase();
+    if (['javascript:', 'data:', 'vbscript:', 'file:'].includes(proto)) {
+      return errorResponse(res, 400, 'Bad Request', 'Disallowed redirect URI scheme.');
+    }
+    if (parsed.username || parsed.password) {
+      return errorResponse(res, 400, 'Bad Request', 'Embedded credentials in redirect URI not allowed.');
+    }
+    cleanUris.push(u);
+  }
+
+  const website = String(req.body.website || '').trim().slice(0, 200);
+  const requestedScopes = String(req.body.scopes || 'read write follow notifications media.write read:direct write:direct profile').trim();
+  const validScopes = requestedScopes.split(/\s+/).filter(s => VALID_SCOPES.has(s)).join(' ') || 'read';
+
+  const clientId = 'ext_client_' + crypto.randomBytes(16).toString('hex');
+  const clientSecret = crypto.randomBytes(32).toString('hex');
+  const ownerId = (req.session && req.session.userId) ? req.session.userId : null;
+
+  const appId = db.createOAuthApp({
+    name: clientName,
+    description: String(req.body.description || 'Dynamically registered application').trim().slice(0, 500),
+    website,
+    redirectUris: cleanUris.join('\n'),
+    clientId,
+    clientSecret,
+    scopes: validScopes,
+    ownerId,
+  });
+
+  const appData = {
+    id: String(appId),
+    name: clientName,
+    website: website || null,
+    redirect_uri: cleanUris[0],
+    redirect_uris: cleanUris,
+    client_id: clientId,
+    client_secret: clientSecret,
+    scopes: validScopes,
+    vapid_key: getVapidPublicKey() || null,
+  };
+
+  res.status(201).json({
+    ...appData,
+    data: appData,
+  });
+});
 
 // Register a new OAuth app
 router.post('/oauth/apps', (req, res) => {
@@ -774,6 +868,85 @@ router.post('/accounts/avatar', requireApiAuth('profile'), avatarUpload.single('
   responseEnvelope(res, serializeAccount(db.getUserById(req.apiUser.id), req.apiUser.id));
 });
 
+// List personal access tokens
+router.get('/accounts/tokens', requireApiAuth('profile'), (req, res) => {
+  const tokens = db.listPersonalAccessTokens(req.apiUser.id);
+  responseEnvelope(res, tokens.map(t => ({
+    id: String(t.id),
+    name: t.name,
+    token_prefix: t.token_prefix,
+    scopes: t.scopes,
+    last_used_at: t.last_used_at,
+    expires_at: t.expires_at,
+    created_at: t.created_at,
+  })));
+});
+
+// Create personal access token
+router.post('/accounts/tokens', requireApiAuth('profile'), express.json(), (req, res) => {
+  const name = String(req.body.name || '').trim();
+  if (!name || name.length > 100) {
+    return errorResponse(res, 400, 'Bad Request', 'name is required (max 100 chars).');
+  }
+  const scopes = String(req.body.scopes || 'read write follow notifications media.write read:direct write:direct profile').trim();
+  const validScopes = scopes.split(/\s+/).filter(s => VALID_SCOPES.has(s)).join(' ') || 'read';
+  const rawToken = 'ext_pat_' + crypto.randomBytes(32).toString('hex');
+  const days = req.body.expires_in_days ? Number(req.body.expires_in_days) : null;
+  const expiresAt = days && days > 0 ? Date.now() + days * 86400000 : null;
+
+  const id = db.createPersonalAccessToken(req.apiUser.id, name, rawToken, validScopes, expiresAt);
+  res.status(201).json({
+    data: {
+      id: String(id),
+      name,
+      token: rawToken,
+      scopes: validScopes,
+      expires_at: expiresAt,
+      created_at: Date.now(),
+    }
+  });
+});
+
+// Delete personal access token
+router.delete('/accounts/tokens/:id', requireApiAuth('profile'), (req, res) => {
+  const ok = db.deletePersonalAccessToken(Number(req.params.id), req.apiUser.id);
+  if (!ok) return errorResponse(res, 404, 'Not Found', 'Token not found.');
+  responseEnvelope(res, { ok: true });
+});
+
+// List authorized sessions
+router.get('/accounts/sessions', requireApiAuth('profile'), (req, res) => {
+  const sessions = db.listActiveSessionsForUser(req.apiUser.id);
+  responseEnvelope(res, sessions.map(s => ({
+    id: String(s.id),
+    client_name: s.client_name || 'Personal Access Token / Unknown',
+    client_id: s.client_id,
+    website: s.website || null,
+    scopes: s.scopes,
+    created_at: s.created_at,
+    expires_at: s.expires_at,
+  })));
+});
+
+// Revoke a session token
+router.delete('/accounts/sessions/:id', requireApiAuth('profile'), (req, res) => {
+  const ok = db.revokeSessionToken(Number(req.params.id), req.apiUser.id);
+  if (!ok) return errorResponse(res, 404, 'Not Found', 'Session not found.');
+  responseEnvelope(res, { ok: true });
+});
+
+// Delete own account
+router.delete('/accounts/me', requireApiAuth('profile'), express.json(), (req, res) => {
+  const password = String(req.body.password || '');
+  if (!password) return errorResponse(res, 400, 'Bad Request', 'password confirmation is required.');
+  if (!bcrypt.compareSync(password, req.apiUser.password_hash)) {
+    return errorResponse(res, 403, 'Forbidden', 'Incorrect password.');
+  }
+  db.deleteUser(req.apiUser.id);
+  responseEnvelope(res, { ok: true });
+});
+
+
 router.get('/accounts/relationships', requireApiAuth('read'), (req, res) => {
   const ids = String(req.query.id || '').split(',').map(Number).filter(Boolean);
   const results = ids.map(id => ({
@@ -870,15 +1043,16 @@ router.post('/statuses', requireApiAuth('write'), upload.single('media'), (req, 
     }
   }
 
-  const { type, body, repost_of_id } = req.body;
-  const postType = type || 'text';
+  const postType = req.body.type || 'text';
+  const postBody = req.body.body !== undefined ? req.body.body : req.body.status;
+  const repost_of_id = req.body.repost_of_id;
   let mediaPath = null;
 
   if ((postType === 'photo' || postType === 'video') && req.file) {
     mediaPath = '/api-uploads/' + req.file.filename;
   }
 
-  if (postType === 'text' && !body) return errorResponse(res, 400, 'Bad Request', 'body is required for text posts.');
+  if (postType === 'text' && !postBody) return errorResponse(res, 400, 'Bad Request', 'body is required for text posts.');
   if (postType === 'repost') {
     if (!repost_of_id) return errorResponse(res, 400, 'Bad Request', 'repost_of_id is required for repost type.');
     const original = db.getPostById(parseInt(repost_of_id, 10));
@@ -890,7 +1064,7 @@ router.post('/statuses', requireApiAuth('write'), upload.single('media'), (req, 
   const postId = db.createPost({
     userId: req.apiUser.id,
     type: postType,
-    body: String(body || '').trim().slice(0, 5000),
+    body: String(postBody || '').trim().slice(0, 5000),
     mediaPath,
     repostOfId: repost_of_id ? parseInt(repost_of_id, 10) : null,
   });
@@ -906,6 +1080,7 @@ router.post('/statuses', requireApiAuth('write'), upload.single('media'), (req, 
   }
 
   db.auditLog('post_created', req.apiUser.id, `Post ${postId} type: ${postType}`);
+  broadcastGatewayEvent('timeline:home', 'post_create', response);
   res.status(201).json(envelope);
 });
 
@@ -920,6 +1095,41 @@ router.get('/statuses/:id', requireApiAuth('read'), (req, res) => {
   responseEnvelope(res, serializePost(post, author, req.apiUser.id));
 });
 
+router.patch('/statuses/:id', requireApiAuth('write'), requireVerifiedApiWrite, express.json(), (req, res) => {
+  const post = db.getPostById(parseInt(req.params.id, 10));
+  if (!post) return errorResponse(res, 404, 'Not Found', 'Post not found.');
+  if (post.user_id !== req.apiUser.id) return errorResponse(res, 403, 'Forbidden', 'You can only edit your own posts.');
+  const inputBody = req.body.body !== undefined ? req.body.body : req.body.status;
+  const body = String(inputBody || '').trim();
+  if (!body) return errorResponse(res, 400, 'Bad Request', 'body is required.');
+  if (body.length > 5000) return errorResponse(res, 400, 'Bad Request', 'body must be 5000 characters or fewer.');
+
+  const ok = db.editPost(post.id, req.apiUser.id, body);
+  if (!ok) return errorResponse(res, 404, 'Not Found', 'Post not found or not yours.');
+
+  const updated = db.getPostById(post.id);
+  const author = db.getUserById(updated.user_id);
+  const serialized = serializePost(updated, author, req.apiUser.id);
+  broadcastGatewayEvent('timeline:home', 'post_update', serialized);
+  responseEnvelope(res, serialized);
+});
+
+router.get('/statuses/:id/history', requireApiAuth('read'), (req, res) => {
+  const post = db.getPostById(parseInt(req.params.id, 10));
+  if (!post) return errorResponse(res, 404, 'Not Found', 'Post not found.');
+  const author = db.getUserById(post.user_id);
+  if (!author || !canView(req.apiUser.id, author.id)) return errorResponse(res, 404, 'Not Found', 'Post not found.');
+
+  const history = db.getEditHistory('post', post.id);
+  responseEnvelope(res, history.map(h => ({
+    id: String(h.id),
+    entity_id: String(h.entity_id),
+    body: h.old_body,
+    old_body: h.old_body,
+    edited_at: h.edited_at,
+  })));
+});
+
 router.delete('/statuses/:id', requireApiAuth('write'), (req, res) => {
   const post = db.getPostById(parseInt(req.params.id, 10));
   const deleted = db.deletePost(parseInt(req.params.id, 10), req.apiUser.id);
@@ -928,7 +1138,17 @@ router.delete('/statuses/:id', requireApiAuth('write'), (req, res) => {
     fs.unlink(path.join(__dirname, '..', '..', post.media_path), () => {});
   }
   db.auditLog('post_deleted', req.apiUser.id, `Post ${req.params.id}`);
+  broadcastGatewayEvent('timeline:home', 'post_delete', { id: String(req.params.id) });
   res.json({ data: { ok: true } });
+});
+
+router.post('/statuses/:id/follow_from', requireApiAuth('follow'), (req, res) => {
+  const post = resolveVisiblePost(parseInt(req.params.id, 10), req.apiUser.id);
+  if (!post) return errorResponse(res, 404, 'Not Found', 'Post not found.');
+  if (post.user_id === req.apiUser.id) return errorResponse(res, 400, 'Bad Request', 'Cannot follow from your own post.');
+
+  db.recordFollowFromPost(req.apiUser.id, post.user_id, post.id);
+  responseEnvelope(res, { ok: true });
 });
 
 router.post('/statuses/:id/favourite', requireApiAuth('write'), requireVerifiedApiWrite, (req, res) => {
@@ -1009,6 +1229,34 @@ router.post('/statuses/:id/comment', requireApiAuth('write'), requireVerifiedApi
     edited_at: c.edited_at || null,
     account: serializeAccount({ id: c.user_id, username: c.username, display_name: c.display_name, avatar: c.avatar, bio: c.user_bio || '', created_at: c.user_created_at }, req.apiUser.id),
   });
+});
+
+router.patch('/statuses/:id/comments/:cid', requireApiAuth('write'), requireVerifiedApiWrite, express.json(), (req, res) => {
+  const post = resolveVisiblePost(parseInt(req.params.id, 10), req.apiUser.id);
+  if (!post) return errorResponse(res, 404, 'Not Found', 'Post not found.');
+  const body = String(req.body.body || '').trim().slice(0, 1000);
+  if (!body) return errorResponse(res, 400, 'Bad Request', 'body is required.');
+  const ok = db.editComment(parseInt(req.params.cid, 10), req.apiUser.id, body);
+  if (!ok) return errorResponse(res, 404, 'Not Found', 'Comment not found or not yours.');
+  const c = db.db.prepare(
+    `SELECT c.*, u.username, u.display_name, u.avatar, u.created_at AS user_created_at
+     FROM comments c JOIN users u ON u.id = c.user_id WHERE c.id = ?`
+  ).get(parseInt(req.params.cid, 10));
+  responseEnvelope(res, {
+    id: String(c.id),
+    body: c.body,
+    created_at: c.created_at,
+    edited_at: c.edited_at || null,
+    account: serializeAccount({ id: c.user_id, username: c.username, display_name: c.display_name, avatar: c.avatar, bio: c.user_bio || '', created_at: c.user_created_at }, req.apiUser.id),
+  });
+});
+
+router.delete('/statuses/:id/comments/:cid', requireApiAuth('write'), (req, res) => {
+  const post = resolveVisiblePost(parseInt(req.params.id, 10), req.apiUser.id);
+  if (!post) return errorResponse(res, 404, 'Not Found', 'Post not found.');
+  const ok = db.deleteComment(parseInt(req.params.cid, 10), req.apiUser.id);
+  if (!ok) return errorResponse(res, 404, 'Not Found', 'Comment not found or not yours.');
+  responseEnvelope(res, { ok: true });
 });
 
 router.get('/statuses/:id/favourited_by', requireApiAuth('read'), (req, res) => {
@@ -1309,6 +1557,8 @@ router.post('/push/unsubscribe', requireApiAuth(), (req, res) => {
 
 // ======== Rooms ========
 
+const ROOM_PERM = { VIEW: 1, WRITE: 2, MANAGE_CHANNELS: 4, MANAGE_ROLES: 8, MANAGE_MESSAGES: 16, MANAGE_MEMBERS: 32, MANAGE_ROOM: 64 };
+
 router.get('/rooms', requireApiAuth('read'), (req, res) => {
   const myRooms = db.getRoomsForUser(req.apiUser.id);
   const result = myRooms.map(r => ({
@@ -1320,6 +1570,396 @@ router.get('/rooms', requireApiAuth('read'), (req, res) => {
     is_member: true,
   }));
   responseEnvelope(res, result);
+});
+
+// Create room
+router.post('/rooms', requireApiAuth('write'), requireVerifiedApiWrite, express.json(), (req, res) => {
+  const name = String(req.body.name || '').trim();
+  if (!name || name.length > 100) return errorResponse(res, 400, 'Bad Request', 'name is required (max 100 chars).');
+  const description = String(req.body.description || '').trim().slice(0, 500);
+  const isPublic = req.body.is_public !== false && req.body.is_public !== 'false' && req.body.is_public !== 0;
+
+  const roomId = db.createRoom(name, description, req.apiUser.id, isPublic);
+  if (req.body.html || req.body.css) {
+    db.updateRoom(roomId, name, description, sanitizeProfileHTML(req.body.html || ''), sanitizeCSS(req.body.css || ''), isPublic);
+  }
+  const room = db.getRoom(roomId);
+  res.status(201).json({
+    data: {
+      id: String(room.id),
+      name: room.name,
+      description: room.description || '',
+      is_public: !!room.is_public,
+      html: room.html || '',
+      css: room.css || '',
+      is_member: true,
+      member_count: 1,
+    }
+  });
+});
+
+// Update room
+router.patch('/rooms/:id', requireApiAuth('write'), express.json(), (req, res) => {
+  const room = db.getRoom(parseInt(req.params.id, 10));
+  if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
+  if (!db.hasRoomPermission(room.id, req.apiUser.id, ROOM_PERM.MANAGE_ROOM)) {
+    return errorResponse(res, 403, 'Forbidden', 'No permission to manage this room.');
+  }
+
+  const name = req.body.name !== undefined ? String(req.body.name).trim().slice(0, 100) : room.name;
+  if (!name) return errorResponse(res, 400, 'Bad Request', 'name cannot be empty.');
+  const description = req.body.description !== undefined ? String(req.body.description).trim().slice(0, 500) : room.description;
+  const inputHtml = req.body.html !== undefined ? req.body.html : req.body.custom_html;
+  const inputCss = req.body.css !== undefined ? req.body.css : req.body.custom_css;
+  const html = inputHtml !== undefined ? sanitizeProfileHTML(inputHtml) : (room.html || '');
+  const css = inputCss !== undefined ? sanitizeCSS(inputCss) : (room.css || '');
+  const isPublic = req.body.is_public !== undefined ? (req.body.is_public !== false && req.body.is_public !== 'false' && req.body.is_public !== 0) : !!room.is_public;
+
+  db.updateRoom(room.id, name, description, html, css, isPublic);
+  const updated = db.getRoom(room.id);
+  responseEnvelope(res, {
+    id: String(updated.id),
+    name: updated.name,
+    description: updated.description || '',
+    html: updated.html || '',
+    css: updated.css || '',
+    is_public: !!updated.is_public,
+  });
+});
+
+// Delete room
+router.delete('/rooms/:id', requireApiAuth('write'), (req, res) => {
+  const room = db.getRoom(parseInt(req.params.id, 10));
+  if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
+  const role = db.getUserRoomRole(room.id, req.apiUser.id);
+  if (!req.apiUser.is_admin && (!role || !role.is_founder)) {
+    return errorResponse(res, 403, 'Forbidden', 'Only the founder can delete this room.');
+  }
+
+  db.deleteRoom(room.id);
+  responseEnvelope(res, { ok: true });
+});
+
+// Join room
+router.post('/rooms/:id/join', requireApiAuth('write'), (req, res) => {
+  const room = db.getRoom(parseInt(req.params.id, 10));
+  if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
+  if (db.isRoomMember(room.id, req.apiUser.id)) {
+    return responseEnvelope(res, { ok: true, already_member: true });
+  }
+  if (!room.is_public && !req.apiUser.is_admin) {
+    return errorResponse(res, 403, 'Forbidden', 'This room is private.');
+  }
+
+  const defaultRole = db.joinDefaultRole(room.id);
+  if (defaultRole) db.addRoomMember(room.id, req.apiUser.id, defaultRole.id);
+  broadcastGatewayEvent(`room:${room.id}`, 'member_join', {
+    room_id: String(room.id),
+    user_id: String(req.apiUser.id),
+    username: req.apiUser.username,
+    display_name: req.apiUser.display_name,
+  });
+  responseEnvelope(res, { ok: true, status: 'joined' });
+});
+
+// Leave room
+router.post('/rooms/:id/leave', requireApiAuth('write'), (req, res) => {
+  const room = db.getRoom(parseInt(req.params.id, 10));
+  if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
+  const role = db.getUserRoomRole(room.id, req.apiUser.id);
+  if (!role) return errorResponse(res, 400, 'Bad Request', 'Not a member of this room.');
+
+  if (role.is_founder) {
+    const members = db.getRoomMembers(room.id);
+    const others = members.filter(m => m.user_id !== req.apiUser.id);
+    if (others.length === 0) {
+      db.deleteRoom(room.id);
+      return responseEnvelope(res, { ok: true, room_deleted: true });
+    }
+    return errorResponse(res, 400, 'Bad Request', 'Founder must transfer ownership before leaving.');
+  }
+
+  db.removeRoomMember(room.id, req.apiUser.id);
+  broadcastGatewayEvent(`room:${room.id}`, 'member_leave', {
+    room_id: String(room.id),
+    user_id: String(req.apiUser.id),
+    username: req.apiUser.username,
+  });
+  responseEnvelope(res, { ok: true });
+});
+
+// Create channel
+router.post('/rooms/:id/channels', requireApiAuth('write'), express.json(), (req, res) => {
+  const room = db.getRoom(parseInt(req.params.id, 10));
+  if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
+  if (!db.hasRoomPermission(room.id, req.apiUser.id, ROOM_PERM.MANAGE_CHANNELS)) {
+    return errorResponse(res, 403, 'Forbidden', 'No permission to manage channels.');
+  }
+  const name = String(req.body.name || '').trim();
+  if (!name || name.length > 50) return errorResponse(res, 400, 'Bad Request', 'name is required (max 50 chars).');
+  const type = String(req.body.type || 'text').trim() === 'voice' ? 'voice' : 'text';
+  const viewRoles = Array.isArray(req.body.view_roles) ? JSON.stringify(req.body.view_roles.map(Number)) : null;
+  const writeRoles = Array.isArray(req.body.write_roles) ? JSON.stringify(req.body.write_roles.map(Number)) : null;
+
+  const cid = db.createRoomChannel(room.id, name, viewRoles, writeRoles, type);
+  res.status(201).json({
+    data: {
+      id: String(cid),
+      room_id: String(room.id),
+      name,
+      type,
+    }
+  });
+});
+
+// Update channel
+router.patch('/rooms/:id/channels/:cid', requireApiAuth('write'), express.json(), (req, res) => {
+  const room = db.getRoom(parseInt(req.params.id, 10));
+  if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
+  if (!db.hasRoomPermission(room.id, req.apiUser.id, ROOM_PERM.MANAGE_CHANNELS)) {
+    return errorResponse(res, 403, 'Forbidden', 'No permission to manage channels.');
+  }
+  const channel = db.getRoomChannel(parseInt(req.params.cid, 10));
+  if (!channel || channel.room_id !== room.id) return errorResponse(res, 404, 'Not Found', 'Channel not found.');
+
+  const name = req.body.name !== undefined ? String(req.body.name).trim().slice(0, 50) : channel.name;
+  if (!name) return errorResponse(res, 400, 'Bad Request', 'name cannot be empty.');
+  const viewRoles = req.body.view_roles !== undefined ? (Array.isArray(req.body.view_roles) ? JSON.stringify(req.body.view_roles.map(Number)) : null) : channel.view_role_ids;
+  const writeRoles = req.body.write_roles !== undefined ? (Array.isArray(req.body.write_roles) ? JSON.stringify(req.body.write_roles.map(Number)) : null) : channel.write_role_ids;
+  const type = req.body.type !== undefined ? (String(req.body.type).trim() === 'voice' ? 'voice' : 'text') : channel.type;
+
+  db.updateRoomChannel(channel.id, name, viewRoles, writeRoles, type);
+  responseEnvelope(res, {
+    id: String(channel.id),
+    room_id: String(room.id),
+    name,
+    type,
+  });
+});
+
+// Delete channel
+router.delete('/rooms/:id/channels/:cid', requireApiAuth('write'), (req, res) => {
+  const room = db.getRoom(parseInt(req.params.id, 10));
+  if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
+  if (!db.hasRoomPermission(room.id, req.apiUser.id, ROOM_PERM.MANAGE_CHANNELS)) {
+    return errorResponse(res, 403, 'Forbidden', 'No permission to manage channels.');
+  }
+  const channel = db.getRoomChannel(parseInt(req.params.cid, 10));
+  if (!channel || channel.room_id !== room.id) return errorResponse(res, 404, 'Not Found', 'Channel not found.');
+
+  db.deleteRoomChannel(channel.id);
+  responseEnvelope(res, { ok: true });
+});
+
+// List room roles
+router.get('/rooms/:id/roles', requireApiAuth('read'), (req, res) => {
+  const room = db.getRoom(parseInt(req.params.id, 10));
+  if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
+  const roles = db.getRoomRoles(room.id);
+  responseEnvelope(res, roles.map(r => ({
+    id: String(r.id),
+    name: r.name,
+    color: r.color,
+    permissions: r.permissions,
+    is_founder: !!r.is_founder,
+    position: r.position,
+  })));
+});
+
+// Create role
+router.post('/rooms/:id/roles', requireApiAuth('write'), express.json(), (req, res) => {
+  const room = db.getRoom(parseInt(req.params.id, 10));
+  if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
+  if (!db.hasRoomPermission(room.id, req.apiUser.id, ROOM_PERM.MANAGE_ROLES)) {
+    return errorResponse(res, 403, 'Forbidden', 'No permission to manage roles.');
+  }
+  const name = String(req.body.name || '').trim();
+  if (!name || name.length > 50) return errorResponse(res, 400, 'Bad Request', 'name is required (max 50 chars).');
+  const color = /^#[0-9a-fA-F]{6}$/.test(String(req.body.color || '').trim()) ? String(req.body.color).trim() : '#cccccc';
+  const permissions = Number(req.body.permissions) || 0;
+
+  const rid = db.createRoomRole(room.id, name, color, permissions, 0);
+  res.status(201).json({
+    data: {
+      id: String(rid),
+      name,
+      color,
+      permissions,
+      is_founder: false,
+    }
+  });
+});
+
+// Update role
+router.patch('/rooms/:id/roles/:rid', requireApiAuth('write'), express.json(), (req, res) => {
+  const room = db.getRoom(parseInt(req.params.id, 10));
+  if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
+  if (!db.hasRoomPermission(room.id, req.apiUser.id, ROOM_PERM.MANAGE_ROLES)) {
+    return errorResponse(res, 403, 'Forbidden', 'No permission to manage roles.');
+  }
+  const role = db.getRoomRole(parseInt(req.params.rid, 10));
+  if (!role || role.room_id !== room.id) return errorResponse(res, 404, 'Not Found', 'Role not found.');
+  if (role.is_founder) return errorResponse(res, 400, 'Bad Request', 'Cannot edit founder role.');
+
+  const name = req.body.name !== undefined ? String(req.body.name).trim().slice(0, 50) : role.name;
+  if (!name) return errorResponse(res, 400, 'Bad Request', 'name cannot be empty.');
+  const color = req.body.color !== undefined && /^#[0-9a-fA-F]{6}$/.test(String(req.body.color).trim()) ? String(req.body.color).trim() : role.color;
+  const permissions = req.body.permissions !== undefined ? Number(req.body.permissions) : role.permissions;
+
+  db.updateRoomRole(role.id, name, color, permissions);
+  responseEnvelope(res, {
+    id: String(role.id),
+    name,
+    color,
+    permissions,
+    is_founder: false,
+  });
+});
+
+// Delete role
+router.delete('/rooms/:id/roles/:rid', requireApiAuth('write'), (req, res) => {
+  const room = db.getRoom(parseInt(req.params.id, 10));
+  if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
+  if (!db.hasRoomPermission(room.id, req.apiUser.id, ROOM_PERM.MANAGE_ROLES)) {
+    return errorResponse(res, 403, 'Forbidden', 'No permission to manage roles.');
+  }
+  const role = db.getRoomRole(parseInt(req.params.rid, 10));
+  if (!role || role.room_id !== room.id) return errorResponse(res, 404, 'Not Found', 'Role not found.');
+  if (!db.deleteRoomRole(role.id)) return errorResponse(res, 400, 'Bad Request', 'Cannot delete founder role.');
+  responseEnvelope(res, { ok: true });
+});
+
+// Assign role to member
+router.post('/rooms/:id/members/:uid/roles', requireApiAuth('write'), express.json(), (req, res) => {
+  const room = db.getRoom(parseInt(req.params.id, 10));
+  if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
+  if (!db.hasRoomPermission(room.id, req.apiUser.id, ROOM_PERM.MANAGE_MEMBERS)) {
+    return errorResponse(res, 403, 'Forbidden', 'No permission to manage members.');
+  }
+  const roleId = Number(req.body.role_id);
+  const targetUser = db.getUserById(parseInt(req.params.uid, 10));
+  if (!targetUser) return errorResponse(res, 404, 'Not Found', 'User not found.');
+  const targetRole = db.getRoomRole(roleId);
+  if (!targetRole || targetRole.room_id !== room.id) return errorResponse(res, 404, 'Not Found', 'Role not found.');
+  if (targetRole.is_founder) return errorResponse(res, 400, 'Bad Request', 'Cannot assign founder role.');
+  const currentMemberRole = db.getUserRoomRole(room.id, targetUser.id);
+  if (currentMemberRole && currentMemberRole.is_founder) return errorResponse(res, 400, 'Bad Request', 'Cannot change founder role.');
+
+  db.db.prepare(`UPDATE room_members SET role_id = ? WHERE room_id = ? AND user_id = ?`).run(roleId, room.id, targetUser.id);
+  responseEnvelope(res, { ok: true });
+});
+
+// Kick member
+router.post('/rooms/:id/members/:uid/kick', requireApiAuth('write'), (req, res) => {
+  const room = db.getRoom(parseInt(req.params.id, 10));
+  if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
+  if (!db.hasRoomPermission(room.id, req.apiUser.id, ROOM_PERM.MANAGE_MEMBERS)) {
+    return errorResponse(res, 403, 'Forbidden', 'No permission to manage members.');
+  }
+  const targetUser = db.getUserById(parseInt(req.params.uid, 10));
+  if (!targetUser) return errorResponse(res, 404, 'Not Found', 'User not found.');
+  const currentMemberRole = db.getUserRoomRole(room.id, targetUser.id);
+  if (currentMemberRole && currentMemberRole.is_founder) return errorResponse(res, 400, 'Bad Request', 'Cannot kick founder.');
+
+  db.removeRoomMember(room.id, targetUser.id);
+  broadcastGatewayEvent(`room:${room.id}`, 'member_leave', {
+    room_id: String(room.id),
+    user_id: String(targetUser.id),
+    username: targetUser.username,
+  });
+  responseEnvelope(res, { ok: true });
+});
+
+// Transfer founder
+router.post('/rooms/:id/transfer', requireApiAuth('write'), express.json(), (req, res) => {
+  const room = db.getRoom(parseInt(req.params.id, 10));
+  if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
+  const myRole = db.getUserRoomRole(room.id, req.apiUser.id);
+  if (!myRole || !myRole.is_founder) return errorResponse(res, 403, 'Forbidden', 'Only founder can transfer ownership.');
+  const newOwnerId = Number(req.body.user_id);
+  if (!newOwnerId) return errorResponse(res, 400, 'Bad Request', 'user_id is required.');
+  if (!db.isRoomMember(room.id, newOwnerId)) return errorResponse(res, 400, 'Bad Request', 'Target user is not a member.');
+
+  db.transferFounder(room.id, newOwnerId);
+  const defaultRole = db.joinDefaultRole(room.id);
+  if (defaultRole) {
+    db.db.prepare(`UPDATE room_members SET role_id = ? WHERE room_id = ? AND user_id = ?`).run(defaultRole.id, room.id, req.apiUser.id);
+  }
+  responseEnvelope(res, { ok: true });
+});
+
+// List join requests
+router.get('/rooms/:id/requests', requireApiAuth('read'), (req, res) => {
+  const room = db.getRoom(parseInt(req.params.id, 10));
+  if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
+  if (!db.hasRoomPermission(room.id, req.apiUser.id, ROOM_PERM.MANAGE_MEMBERS)) {
+    return errorResponse(res, 403, 'Forbidden', 'No permission.');
+  }
+  const requests = db.getJoinRequests(room.id);
+  responseEnvelope(res, requests.map(r => ({
+    id: String(r.id),
+    user_id: String(r.user_id),
+    username: r.username,
+    display_name: r.display_name,
+    avatar: r.avatar,
+    created_at: r.created_at,
+  })));
+});
+
+// Approve join request
+router.post('/rooms/:id/requests/:reqId/approve', requireApiAuth('write'), (req, res) => {
+  const room = db.getRoom(parseInt(req.params.id, 10));
+  if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
+  if (!db.hasRoomPermission(room.id, req.apiUser.id, ROOM_PERM.MANAGE_MEMBERS)) {
+    return errorResponse(res, 403, 'Forbidden', 'No permission.');
+  }
+  const jreq = db.getJoinRequestById(parseInt(req.params.reqId, 10));
+  if (!jreq || jreq.room_id !== room.id) return errorResponse(res, 404, 'Not Found', 'Request not found.');
+
+  db.approveJoinRequest(jreq.id);
+  broadcastGatewayEvent(`room:${room.id}`, 'member_join', {
+    room_id: String(room.id),
+    user_id: String(jreq.user_id),
+    username: jreq.username,
+  });
+  responseEnvelope(res, { ok: true });
+});
+
+// Reject join request
+router.post('/rooms/:id/requests/:reqId/reject', requireApiAuth('write'), (req, res) => {
+  const room = db.getRoom(parseInt(req.params.id, 10));
+  if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
+  if (!db.hasRoomPermission(room.id, req.apiUser.id, ROOM_PERM.MANAGE_MEMBERS)) {
+    return errorResponse(res, 403, 'Forbidden', 'No permission.');
+  }
+  const jreq = db.getJoinRequestById(parseInt(req.params.reqId, 10));
+  if (!jreq || jreq.room_id !== room.id) return errorResponse(res, 404, 'Not Found', 'Request not found.');
+
+  db.rejectJoinRequest(jreq.id);
+  responseEnvelope(res, { ok: true });
+});
+
+// Invite user
+router.post('/rooms/:id/invite', requireApiAuth('write'), express.json(), (req, res) => {
+  const room = db.getRoom(parseInt(req.params.id, 10));
+  if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
+  if (!db.hasRoomPermission(room.id, req.apiUser.id, ROOM_PERM.MANAGE_MEMBERS)) {
+    return errorResponse(res, 403, 'Forbidden', 'No permission.');
+  }
+  const username = String(req.body.username || '').trim().toLowerCase();
+  if (!username) return errorResponse(res, 400, 'Bad Request', 'username is required.');
+  const target = db.getUserByUsername(username);
+  if (!target) return errorResponse(res, 404, 'Not Found', 'User not found.');
+  if (db.isRoomMember(room.id, target.id)) return errorResponse(res, 409, 'Conflict', 'Already a member.');
+
+  const defaultRole = db.joinDefaultRole(room.id);
+  if (defaultRole) db.addRoomMember(room.id, target.id, defaultRole.id);
+  broadcastGatewayEvent(`room:${room.id}`, 'member_join', {
+    room_id: String(room.id),
+    user_id: String(target.id),
+    username: target.username,
+  });
+  responseEnvelope(res, { ok: true });
 });
 
 router.get('/rooms/:id', requireApiAuth('read'), (req, res) => {
@@ -1439,6 +2079,25 @@ router.post('/rooms/:id/channels/:cid/messages', requireApiAuth('write'), requir
   const ciphertext = ciphertextRaw || null;
 
   const msgId = db.sendRoomMessage(channel.id, req.apiUser.id, isSticker ? body : '', proto, ciphertext, isSticker ? null : groupSessionId);
+
+  const msgData = {
+    id: String(msgId),
+    room_id: String(room.id),
+    channel_id: String(channel.id),
+    user_id: String(req.apiUser.id),
+    author: {
+      id: String(req.apiUser.id),
+      username: req.apiUser.username,
+      display_name: req.apiUser.display_name,
+    },
+    proto: isSticker ? 'plain' : proto,
+    body: isSticker ? body : '',
+    ciphertext: isSticker ? null : ciphertext,
+    group_session_id: isSticker ? null : groupSessionId,
+    created_at: new Date().toISOString(),
+  };
+  broadcastGatewayEvent('room:' + room.id, 'message_create', msgData);
+
   res.status(201).json({ data: { id: String(msgId) } });
 });
 
@@ -1465,6 +2124,11 @@ router.delete('/rooms/:id/channels/:cid/messages/:mid', requireApiAuth('write'),
   if (!canDeleteOwn && !canModerate && !req.apiUser.is_admin) return errorResponse(res, 403, 'Forbidden', 'No permission.');
   db.deleteRoomMessage(msgId);
   db.auditLog('room_message_deleted', req.apiUser.id, `Room ${room.id} Message ${msgId}`);
+  broadcastGatewayEvent('room:' + room.id, 'message_delete', {
+    id: String(msgId),
+    room_id: String(room.id),
+    channel_id: String(channel.id),
+  });
   res.json({ data: { ok: true } });
 });
 
@@ -1967,6 +2631,112 @@ router.delete('/messages/:id', requireApiAuth('write:direct'), (req, res) => {
   }
   db.auditLog('dm_deleted', req.apiUser.id, `Message ${req.params.id}`);
   res.json({ data: { ok: true } });
+});
+
+// ---------- Stickers ----------
+router.get('/stickers', requireApiAuth('read'), (req, res) => {
+  const stickers = db.getMyStickers(req.apiUser.id);
+  const data = (stickers || []).map(s => ({
+    id: String(s.id),
+    file_path: s.file_path,
+    url: s.file_path,
+    created_at: s.created_at ? new Date(s.created_at).toISOString() : null,
+  }));
+  responseEnvelope(res, data);
+});
+
+router.post('/stickers', requireApiAuth('write'), requireVerifiedApiWrite, (req, res, next) => {
+  if (req.is('multipart/form-data')) {
+    stickerUpload.single('file')(req, res, async (err) => {
+      if (err) {
+        if (err.code === 'LIMIT_FILE_SIZE') return errorResponse(res, 400, 'Bad Request', 'Sticker must be under 500 KB.');
+        return errorResponse(res, 400, 'Bad Request', 'Invalid sticker file.');
+      }
+      if (!req.file) return errorResponse(res, 400, 'Bad Request', 'No file uploaded. Use field "file".');
+      const fullPath = req.file.path;
+      const ext = path.extname(req.file.originalname).toLowerCase();
+      try {
+        const stat = fs.statSync(fullPath);
+        if (stat.size > 250 * 1024 && ext !== '.gif') {
+          const img = sharp(fullPath);
+          const meta = await img.metadata();
+          let compressed;
+          if (meta.format === 'jpeg') compressed = await img.jpeg({ quality: 70 }).toBuffer();
+          else if (meta.format === 'png') compressed = await img.png({ quality: 70 }).toBuffer();
+          else if (meta.format === 'webp') compressed = await img.webp({ quality: 70 }).toBuffer();
+          if (compressed && compressed.length < stat.size) {
+            fs.writeFileSync(fullPath, compressed);
+          }
+        }
+      } catch (e) {
+        try { fs.unlink(fullPath, () => {}); } catch {}
+        return errorResponse(res, 400, 'Bad Request', 'Invalid image file.');
+      }
+      const filePath = '/uploads/stickers/' + req.file.filename;
+      const stickerId = db.addSticker(req.apiUser.id, filePath);
+      res.status(201).json({
+        data: {
+          id: String(stickerId || ''),
+          file_path: filePath,
+          url: filePath,
+        },
+      });
+    });
+  } else {
+    express.json()(req, res, () => {
+      const filePath = String(req.body.path || '').trim();
+      if (!filePath.startsWith('/uploads/stickers/')) {
+        return errorResponse(res, 400, 'Bad Request', 'Invalid sticker path.');
+      }
+      const existing = (db.getMyStickers(req.apiUser.id) || []).find(s => s.file_path === filePath);
+      if (existing) {
+        return res.json({ data: { id: String(existing.id), file_path: existing.file_path, url: existing.file_path } });
+      }
+      const stickerId = db.addSticker(req.apiUser.id, filePath);
+      res.status(201).json({ data: { id: String(stickerId || ''), file_path: filePath, url: filePath } });
+    });
+  }
+});
+
+router.delete('/stickers/:id', requireApiAuth('write'), (req, res) => {
+  const stickerId = parseInt(req.params.id, 10);
+  const sticker = db.getStickerById(stickerId);
+  if (!sticker || sticker.user_id !== req.apiUser.id) {
+    return errorResponse(res, 404, 'Not Found', 'Sticker not found or not owned by you.');
+  }
+  const deleted = db.deleteSticker(stickerId, req.apiUser.id);
+  if (!deleted) {
+    return errorResponse(res, 404, 'Not Found', 'Sticker not found.');
+  }
+  res.json({ data: { ok: true } });
+});
+
+// ---------- FoF Discovery ----------
+router.get('/discover', requireApiAuth('read'), (req, res) => {
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 50);
+  const users = db.getSuggestedFoafUsers(req.apiUser.id, limit);
+  const data = (users || []).map(u => ({
+    id: String(u.id),
+    username: u.username,
+    display_name: u.display_name,
+    avatar: u.avatar,
+    bio: u.bio,
+    created_at: u.created_at ? new Date(u.created_at).toISOString() : null,
+  }));
+  responseEnvelope(res, data);
+});
+
+// ---------- WebRTC ICE Servers ----------
+router.get('/calls/ice_servers', requireApiAuth('read'), (req, res) => {
+  let iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
+  if (process.env.EXTV_ICE_SERVERS) {
+    try {
+      iceServers = JSON.parse(process.env.EXTV_ICE_SERVERS);
+    } catch {}
+  } else if (process.env.EXTV_STUN_SERVER) {
+    iceServers = [{ urls: process.env.EXTV_STUN_SERVER }];
+  }
+  responseEnvelope(res, { ice_servers: iceServers });
 });
 
 module.exports = router;

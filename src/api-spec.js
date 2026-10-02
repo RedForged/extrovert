@@ -198,6 +198,33 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
     { url: 'http://localhost:3000', description: 'Local development' },
   ],
   paths: {
+    '/api/v1/apps': {
+      post: {
+        summary: 'Dynamic Client Registration for external/native applications (unauthenticated)',
+        tags: ['Apps'],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['client_name'],
+                properties: {
+                  client_name: { type: 'string', description: 'Application name' },
+                  redirect_uris: { type: 'string', description: 'Redirect URIs (default: urn:ietf:wg:oauth:2.0:oob)' },
+                  scopes: { type: 'string', description: 'Requested scopes (default: "read write follow notifications")' },
+                  website: { type: 'string', format: 'uri' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '201': { description: 'Application successfully registered' },
+          '400': { description: 'Missing client_name' },
+        },
+      },
+    },
     '/api/v1/oauth/apps': {
       post: {
         summary: 'Register a new OAuth application',
@@ -428,6 +455,86 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
         },
       },
     },
+    '/api/v1/accounts/me': {
+      delete: {
+        summary: 'Permanently delete your account',
+        tags: ['Accounts'],
+        security: [{ oauth2: ['write'] }, { bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['password'],
+                properties: { password: { type: 'string' } },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': { description: 'Account deleted' },
+          '400': { description: 'Missing password' },
+          '401': { description: 'Invalid password' },
+        },
+      },
+    },
+    '/api/v1/accounts/tokens': {
+      get: {
+        summary: 'List personal access tokens for the authenticated user',
+        tags: ['Accounts'],
+        security: [{ oauth2: ['read'] }, { bearerAuth: [] }],
+        responses: { '200': { description: 'List of tokens' } },
+      },
+      post: {
+        summary: 'Create a personal access token',
+        tags: ['Accounts'],
+        security: [{ oauth2: ['write'] }, { bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['name'],
+                properties: {
+                  name: { type: 'string' },
+                  scopes: { type: 'string', description: 'Space-delimited scopes' },
+                  expires_in_days: { type: 'integer' },
+                },
+              },
+            },
+          },
+        },
+        responses: { '201': { description: 'Token created' } },
+      },
+    },
+    '/api/v1/accounts/tokens/{id}': {
+      delete: {
+        summary: 'Revoke a personal access token',
+        tags: ['Accounts'],
+        security: [{ oauth2: ['write'] }, { bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+        responses: { '200': { description: 'Token revoked' }, '404': { description: 'Token not found' } },
+      },
+    },
+    '/api/v1/accounts/sessions': {
+      get: {
+        summary: 'List active sessions for the user',
+        tags: ['Accounts'],
+        security: [{ oauth2: ['read'] }, { bearerAuth: [] }],
+        responses: { '200': { description: 'List of active sessions' } },
+      },
+    },
+    '/api/v1/accounts/sessions/{id}': {
+      delete: {
+        summary: 'Revoke an active session',
+        tags: ['Accounts'],
+        security: [{ oauth2: ['write'] }, { bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { '200': { description: 'Session revoked' }, '404': { description: 'Session not found' } },
+      },
+    },
     '/api/v1/accounts/{id}': {
       get: {
         summary: 'View an account',
@@ -539,12 +646,49 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
         responses: { '200': { description: 'Post object' } },
       },
+      patch: {
+        summary: 'Edit a post',
+        tags: ['Statuses'],
+        security: [{ oauth2: ['write'] }, { bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['status'],
+                properties: { status: { type: 'string' } },
+              },
+            },
+          },
+        },
+        responses: { '200': { description: 'Updated post object' }, '403': { description: 'Forbidden' } },
+      },
       delete: {
         summary: 'Delete your own post',
         tags: ['Statuses'],
         security: [{ oauth2: ['write'] }],
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
         responses: { '200': { description: 'Deleted' } },
+      },
+    },
+    '/api/v1/statuses/{id}/history': {
+      get: {
+        summary: 'Get edit history of a post',
+        tags: ['Statuses'],
+        security: [{ oauth2: ['read'] }, { bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+        responses: { '200': { description: 'List of post revisions' } },
+      },
+    },
+    '/api/v1/statuses/{id}/follow_from': {
+      post: {
+        summary: 'Follow author attribution from a post',
+        tags: ['Statuses'],
+        security: [{ oauth2: ['follow'] }, { bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+        responses: { '200': { description: 'Attributed follow registered' } },
       },
     },
     '/api/v1/statuses/{id}/favourite': {
@@ -800,6 +944,40 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
         responses: { '200': { description: 'Created comment' } },
       },
     },
+    '/api/v1/statuses/{id}/comments/{cid}': {
+      patch: {
+        summary: 'Edit a comment',
+        tags: ['Statuses'],
+        security: [{ oauth2: ['write'] }, { bearerAuth: [] }],
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'integer' } },
+          { name: 'cid', in: 'path', required: true, schema: { type: 'integer' } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['body'],
+                properties: { body: { type: 'string', maxLength: 1000 } },
+              },
+            },
+          },
+        },
+        responses: { '200': { description: 'Comment updated' } },
+      },
+      delete: {
+        summary: 'Delete a comment',
+        tags: ['Statuses'],
+        security: [{ oauth2: ['write'] }, { bearerAuth: [] }],
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'integer' } },
+          { name: 'cid', in: 'path', required: true, schema: { type: 'integer' } },
+        ],
+        responses: { '200': { description: 'Comment deleted' } },
+      },
+    },
     '/api/v1/notifications/unread_count': {
       get: {
         summary: 'Get the number of unread notifications',
@@ -831,6 +1009,28 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
         security: [{ oauth2: ['read'] }],
         responses: { '200': { description: 'List of rooms' } },
       },
+      post: {
+        summary: 'Create a new room',
+        tags: ['Rooms'],
+        security: [{ oauth2: ['write'] }, { bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['name'],
+                properties: {
+                  name: { type: 'string' },
+                  description: { type: 'string' },
+                  is_public: { type: 'boolean' },
+                },
+              },
+            },
+          },
+        },
+        responses: { '201': { description: 'Room created' } },
+      },
     },
     '/api/v1/rooms/{id}': {
       get: {
@@ -839,6 +1039,287 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
         security: [{ oauth2: ['read'] }],
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
         responses: { '200': { description: 'Room object' } },
+      },
+      patch: {
+        summary: 'Update room settings / custom styling',
+        tags: ['Rooms'],
+        security: [{ oauth2: ['write'] }, { bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+        requestBody: {
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  name: { type: 'string' },
+                  description: { type: 'string' },
+                  custom_css: { type: 'string' },
+                  custom_html: { type: 'string' },
+                  is_public: { type: 'boolean' },
+                },
+              },
+            },
+          },
+        },
+        responses: { '200': { description: 'Room updated' } },
+      },
+      delete: {
+        summary: 'Delete a room (founder only)',
+        tags: ['Rooms'],
+        security: [{ oauth2: ['write'] }, { bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+        responses: { '200': { description: 'Room deleted' } },
+      },
+    },
+    '/api/v1/rooms/{id}/join': {
+      post: {
+        summary: 'Join a public room or request to join a private room',
+        tags: ['Rooms'],
+        security: [{ oauth2: ['write'] }, { bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+        responses: { '200': { description: 'Joined or join request submitted' } },
+      },
+    },
+    '/api/v1/rooms/{id}/leave': {
+      post: {
+        summary: 'Leave a room',
+        tags: ['Rooms'],
+        security: [{ oauth2: ['write'] }, { bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+        responses: { '200': { description: 'Left room' } },
+      },
+    },
+    '/api/v1/rooms/{id}/channels': {
+      post: {
+        summary: 'Create a channel in a room',
+        tags: ['Rooms'],
+        security: [{ oauth2: ['write'] }, { bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['name'],
+                properties: {
+                  name: { type: 'string' },
+                  type: { type: 'string', enum: ['text', 'voice'] },
+                },
+              },
+            },
+          },
+        },
+        responses: { '201': { description: 'Channel created' } },
+      },
+    },
+    '/api/v1/rooms/{id}/channels/{cid}': {
+      patch: {
+        summary: 'Update a channel',
+        tags: ['Rooms'],
+        security: [{ oauth2: ['write'] }, { bearerAuth: [] }],
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'integer' } },
+          { name: 'cid', in: 'path', required: true, schema: { type: 'integer' } },
+        ],
+        requestBody: {
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: { name: { type: 'string' } },
+              },
+            },
+          },
+        },
+        responses: { '200': { description: 'Channel updated' } },
+      },
+      delete: {
+        summary: 'Delete a channel',
+        tags: ['Rooms'],
+        security: [{ oauth2: ['write'] }, { bearerAuth: [] }],
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'integer' } },
+          { name: 'cid', in: 'path', required: true, schema: { type: 'integer' } },
+        ],
+        responses: { '200': { description: 'Channel deleted' } },
+      },
+    },
+    '/api/v1/rooms/{id}/roles': {
+      get: {
+        summary: 'List roles in a room',
+        tags: ['Rooms'],
+        security: [{ oauth2: ['read'] }, { bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+        responses: { '200': { description: 'List of roles' } },
+      },
+      post: {
+        summary: 'Create a role in a room',
+        tags: ['Rooms'],
+        security: [{ oauth2: ['write'] }, { bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['name'],
+                properties: {
+                  name: { type: 'string' },
+                  color: { type: 'string' },
+                  permissions: { type: 'integer' },
+                },
+              },
+            },
+          },
+        },
+        responses: { '201': { description: 'Role created' } },
+      },
+    },
+    '/api/v1/rooms/{id}/roles/{role_id}': {
+      patch: {
+        summary: 'Update a role',
+        tags: ['Rooms'],
+        security: [{ oauth2: ['write'] }, { bearerAuth: [] }],
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'integer' } },
+          { name: 'role_id', in: 'path', required: true, schema: { type: 'integer' } },
+        ],
+        requestBody: {
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  name: { type: 'string' },
+                  color: { type: 'string' },
+                  permissions: { type: 'integer' },
+                },
+              },
+            },
+          },
+        },
+        responses: { '200': { description: 'Role updated' } },
+      },
+      delete: {
+        summary: 'Delete a role',
+        tags: ['Rooms'],
+        security: [{ oauth2: ['write'] }, { bearerAuth: [] }],
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'integer' } },
+          { name: 'role_id', in: 'path', required: true, schema: { type: 'integer' } },
+        ],
+        responses: { '200': { description: 'Role deleted' } },
+      },
+    },
+    '/api/v1/rooms/{id}/members/{user_id}/roles': {
+      post: {
+        summary: 'Assign a role to a room member',
+        tags: ['Rooms'],
+        security: [{ oauth2: ['write'] }, { bearerAuth: [] }],
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'integer' } },
+          { name: 'user_id', in: 'path', required: true, schema: { type: 'integer' } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['role_id'],
+                properties: { role_id: { type: 'integer' } },
+              },
+            },
+          },
+        },
+        responses: { '200': { description: 'Role assigned' } },
+      },
+    },
+    '/api/v1/rooms/{id}/members/{user_id}/kick': {
+      post: {
+        summary: 'Kick a member from a room',
+        tags: ['Rooms'],
+        security: [{ oauth2: ['write'] }, { bearerAuth: [] }],
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'integer' } },
+          { name: 'user_id', in: 'path', required: true, schema: { type: 'integer' } },
+        ],
+        responses: { '200': { description: 'Member kicked' } },
+      },
+    },
+    '/api/v1/rooms/{id}/transfer': {
+      post: {
+        summary: 'Transfer room ownership',
+        tags: ['Rooms'],
+        security: [{ oauth2: ['write'] }, { bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['target_user_id'],
+                properties: { target_user_id: { type: 'integer' } },
+              },
+            },
+          },
+        },
+        responses: { '200': { description: 'Ownership transferred' } },
+      },
+    },
+    '/api/v1/rooms/{id}/requests': {
+      get: {
+        summary: 'List pending join requests for a room',
+        tags: ['Rooms'],
+        security: [{ oauth2: ['read'] }, { bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+        responses: { '200': { description: 'List of join requests' } },
+      },
+      post: {
+        summary: 'Approve or reject a join request',
+        tags: ['Rooms'],
+        security: [{ oauth2: ['write'] }, { bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['request_id', 'action'],
+                properties: {
+                  request_id: { type: 'integer' },
+                  action: { type: 'string', enum: ['approve', 'reject'] },
+                },
+              },
+            },
+          },
+        },
+        responses: { '200': { description: 'Join request handled' } },
+      },
+    },
+    '/api/v1/rooms/{id}/invite': {
+      post: {
+        summary: 'Invite a user to a room',
+        tags: ['Rooms'],
+        security: [{ oauth2: ['write'] }, { bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['username'],
+                properties: { username: { type: 'string' } },
+              },
+            },
+          },
+        },
+        responses: { '200': { description: 'Invite sent' } },
       },
     },
     '/api/v1/rooms/{id}/channels/{cid}/messages': {
@@ -1167,9 +1648,54 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
         responses: { '200': { description: '{ ok: true }' } },
       },
     },
+    '/api/v1/stickers': {
+      get: {
+        summary: 'List personal stickers',
+        tags: ['Stickers'],
+        security: [{ oauth2: ['read'] }, { bearerAuth: [] }],
+        responses: { '200': { description: 'List of stickers' } },
+      },
+      post: {
+        summary: 'Upload or add a sticker',
+        tags: ['Stickers'],
+        security: [{ oauth2: ['write'] }, { bearerAuth: [] }],
+        responses: { '201': { description: 'Sticker created' } },
+      },
+    },
+    '/api/v1/stickers/{id}': {
+      delete: {
+        summary: 'Delete a sticker',
+        tags: ['Stickers'],
+        security: [{ oauth2: ['write'] }, { bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+        responses: { '200': { description: 'Sticker deleted' } },
+      },
+    },
+    '/api/v1/discover': {
+      get: {
+        summary: 'Get Friend-of-a-Friend (FoF) discovery suggestions',
+        tags: ['Network'],
+        security: [{ oauth2: ['read'] }, { bearerAuth: [] }],
+        parameters: [{ name: 'limit', in: 'query', schema: { type: 'integer', default: 20 } }],
+        responses: { '200': { description: 'List of suggested users' } },
+      },
+    },
+    '/api/v1/calls/ice_servers': {
+      get: {
+        summary: 'Get WebRTC STUN/TURN ICE servers configuration',
+        tags: ['Calls'],
+        security: [{ oauth2: ['read'] }, { bearerAuth: [] }],
+        responses: { '200': { description: 'ICE servers configuration' } },
+      },
+    },
   },
   components: {
     securitySchemes: {
+      bearerAuth: {
+        type: 'http',
+        scheme: 'bearer',
+        description: 'Personal Access Token (ext_pat_...) or OAuth Bearer token',
+      },
       oauth2: {
         type: 'oauth2',
         flows: {

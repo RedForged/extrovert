@@ -201,7 +201,7 @@ function init() {
       client_id     TEXT UNIQUE NOT NULL,
       client_secret TEXT,
       scopes        TEXT NOT NULL DEFAULT 'read',
-      owner_id      INTEGER NOT NULL REFERENCES users(id),
+      owner_id      INTEGER REFERENCES users(id),
       created_at    INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_oauth_apps_client ON oauth_apps(client_id);
@@ -658,6 +658,71 @@ function migrateOAuthTokenHashes() {
   } catch {}
 }
 migrateOAuthTokenHashes();
+
+// 1. Allow nullable owner_id on oauth_apps for dynamic client registration
+try {
+  const info = db.prepare(`PRAGMA table_info(oauth_apps)`).all();
+  const ownerCol = info.find(c => c.name === 'owner_id');
+  if (ownerCol && ownerCol.notnull === 1) {
+    db.exec(`PRAGMA foreign_keys = OFF;`);
+    db.exec(`
+      CREATE TABLE oauth_apps_mig (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        name          TEXT NOT NULL,
+        description   TEXT NOT NULL DEFAULT '',
+        website       TEXT NOT NULL DEFAULT '',
+        redirect_uris TEXT NOT NULL,
+        client_id     TEXT UNIQUE NOT NULL,
+        client_secret TEXT,
+        scopes        TEXT NOT NULL DEFAULT 'read',
+        owner_id      INTEGER REFERENCES users(id),
+        created_at    INTEGER NOT NULL
+      );
+      INSERT INTO oauth_apps_mig SELECT id, name, description, website, redirect_uris, client_id, client_secret, scopes, owner_id, created_at FROM oauth_apps;
+      DROP TABLE oauth_apps;
+      ALTER TABLE oauth_apps_mig RENAME TO oauth_apps;
+      CREATE INDEX IF NOT EXISTS idx_oauth_apps_client ON oauth_apps(client_id);
+      CREATE INDEX IF NOT EXISTS idx_oauth_apps_owner ON oauth_apps(owner_id);
+    `);
+    db.exec(`PRAGMA foreign_keys = ON;`);
+  }
+} catch (e) {
+  try { db.exec(`PRAGMA foreign_keys = ON;`); } catch {}
+}
+
+// 2. Personal Access Tokens table
+try {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS personal_access_tokens (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id      INTEGER NOT NULL REFERENCES users(id),
+      name         TEXT NOT NULL,
+      token_hash   TEXT UNIQUE NOT NULL,
+      scopes       TEXT NOT NULL,
+      last_used_at INTEGER,
+      expires_at   INTEGER,
+      created_at   INTEGER NOT NULL
+    );
+  `);
+} catch (e) {}
+try { db.exec(`ALTER TABLE personal_access_tokens ADD COLUMN token_prefix TEXT`); } catch (e) {}
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_pat_token ON personal_access_tokens(token_hash)`); } catch {}
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_pat_user ON personal_access_tokens(user_id)`); } catch {}
+
+// 3. Post follow-from tracking
+try {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS post_referrals (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      follower_id  INTEGER NOT NULL REFERENCES users(id),
+      followed_id  INTEGER NOT NULL REFERENCES users(id),
+      post_id      INTEGER NOT NULL REFERENCES posts(id),
+      created_at   INTEGER NOT NULL,
+      UNIQUE(follower_id, followed_id, post_id)
+    );
+  `);
+} catch (e) {}
+
 
 // ---------- users ----------
 function adminExists() {
@@ -1756,12 +1821,21 @@ function getReferrerIp(userId) {
 
 // ---------- stickers ----------
 function addSticker(userId, filePath) {
-  db.prepare(`INSERT INTO stickers (user_id, file_path, created_at) VALUES (?,?,?)`).run(userId, filePath, Date.now());
-  return filePath;
+  const res = db.prepare(`INSERT INTO stickers (user_id, file_path, created_at) VALUES (?,?,?)`).run(userId, filePath, Date.now());
+  return res.lastInsertRowid;
 }
 
 function getMyStickers(userId) {
   return db.prepare(`SELECT id, file_path FROM stickers WHERE user_id = ? ORDER BY created_at DESC`).all(userId);
+}
+
+function deleteSticker(id, userId) {
+  const res = db.prepare(`DELETE FROM stickers WHERE id = ? AND user_id = ?`).run(id, userId);
+  return res.changes > 0;
+}
+
+function getStickerById(id) {
+  return db.prepare(`SELECT * FROM stickers WHERE id = ?`).get(id);
 }
 
 // ---------- rooms ----------
@@ -1798,6 +1872,10 @@ function deleteRoom(id) {
 }
 function isRoomMember(roomId, userId) { return !!db.prepare(`SELECT 1 FROM room_members WHERE room_id = ? AND user_id = ?`).get(roomId, userId); }
 function addRoomMember(roomId, userId, roleId) {
+  if (!roleId) {
+    const defaultRole = joinDefaultRole(roomId);
+    roleId = defaultRole ? defaultRole.id : null;
+  }
   db.prepare(`INSERT OR IGNORE INTO room_members (room_id, user_id, role_id, joined_at) VALUES (?,?,?,?)`).run(roomId, userId, roleId, Date.now());
 }
 function removeRoomMember(roomId, userId) {
@@ -2055,7 +2133,7 @@ function createOAuthApp({ name, description, website, redirectUris, clientId, cl
   const res = db.prepare(`
     INSERT INTO oauth_apps (name, description, website, redirect_uris, client_id, client_secret, scopes, owner_id, created_at)
     VALUES (?,?,?,?,?,?,?,?,?)
-  `).run(name, description, website, redirectUris, clientId, clientSecret ? hashOAuthToken(clientSecret) : null, scopes, ownerId, now);
+  `).run(name, description, website, redirectUris, clientId, clientSecret ? hashOAuthToken(clientSecret) : null, scopes, ownerId || null, now);
   return res.lastInsertRowid;
 }
 
@@ -2157,6 +2235,75 @@ function rotateRefreshToken(oldRefreshToken, newToken, newRefreshToken, expiresA
     VALUES (?,?,?,?,?,?,?,?)
   `).run(hashOAuthToken(newToken), hashOAuthToken(newRefreshToken), existing.app_id, existing.user_id, existing.scopes, expiresAt || null, refreshExpiresAt, now);
   return existing;
+}
+
+// ---------- Personal Access Tokens ----------
+function createPersonalAccessToken(userId, name, token, scopes, expiresAt = null) {
+  const hash = hashOAuthToken(token);
+  const prefix = token ? (token.slice(0, 15) + '...') : null;
+  const now = Date.now();
+  const res = db.prepare(`
+    INSERT INTO personal_access_tokens (user_id, name, token_hash, token_prefix, scopes, expires_at, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(userId, name, hash, prefix, scopes, expiresAt, now);
+  return res.lastInsertRowid;
+}
+
+function getPersonalAccessTokenByHash(tokenHash) {
+  return db.prepare(`
+    SELECT * FROM personal_access_tokens WHERE token_hash = ?
+  `).get(tokenHash);
+}
+
+function touchPersonalAccessToken(id) {
+  db.prepare(`UPDATE personal_access_tokens SET last_used_at = ? WHERE id = ?`).run(Date.now(), id);
+}
+
+function listPersonalAccessTokens(userId) {
+  return db.prepare(`
+    SELECT id, name, token_prefix, scopes, last_used_at, expires_at, created_at
+    FROM personal_access_tokens
+    WHERE user_id = ?
+    ORDER BY created_at DESC
+  `).all(userId);
+}
+
+function deletePersonalAccessToken(id, userId) {
+  const res = db.prepare(`DELETE FROM personal_access_tokens WHERE id = ? AND user_id = ?`).run(id, userId);
+  return res.changes > 0;
+}
+
+// ---------- Active Sessions ----------
+function listActiveSessionsForUser(userId) {
+  return db.prepare(`
+    SELECT t.id, t.created_at, t.expires_at, t.scopes, a.name AS client_name, a.website, a.client_id
+    FROM oauth_tokens t
+    LEFT JOIN oauth_apps a ON a.id = t.app_id
+    WHERE t.user_id = ? AND t.revoked_at IS NULL
+    ORDER BY t.created_at DESC
+  `).all(userId);
+}
+
+function revokeSessionToken(tokenId, userId) {
+  const res = db.prepare(`
+    UPDATE oauth_tokens SET revoked_at = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL
+  `).run(Date.now(), tokenId, userId);
+  return res.changes > 0;
+}
+
+// ---------- FoF Discovery ----------
+function getSuggestedFoafUsers(userId, limit = 20) {
+  const { friendIds, foafIds } = require('./network');
+  const following = friendIds(userId);
+  const foaf = [...foafIds(userId)];
+  const suggestedIds = foaf.filter(id => !following.has(id) && id !== userId).slice(0, limit);
+  if (!suggestedIds.length) return [];
+  const placeholders = suggestedIds.map(() => '?').join(',');
+  return db.prepare(`
+    SELECT id, username, display_name, avatar, bio, created_at
+    FROM users
+    WHERE id IN (${placeholders}) AND banned = 0
+  `).all(...suggestedIds);
 }
 
 // ---------- Media ----------
@@ -2488,7 +2635,13 @@ module.exports = {
   // referrals
   setReferralCode, getUserByReferralCode, getReferralCount, getReferralCode, getReferrerIp,
   // stickers
-  addSticker, getMyStickers,
+  addSticker, getMyStickers, deleteSticker, getStickerById,
+  // personal access tokens
+  createPersonalAccessToken, getPersonalAccessTokenByHash, touchPersonalAccessToken, listPersonalAccessTokens, deletePersonalAccessToken,
+  // active sessions
+  listActiveSessionsForUser, revokeSessionToken,
+  // discovery
+  getSuggestedFoafUsers,
   // avatar
   setAvatar, getAvatar,
   // email verification

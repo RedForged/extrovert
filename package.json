@@ -31,7 +31,9 @@
     "test:lifecycle": "node scripts/e2ee-full-lifecycle-test.js",
     "test:multi-id": "node scripts/multi-device-test.js",
     "test:e2e": "node scripts/full-devserver-e2e-test.js",
-    "test:email": "node scripts/email-e2e-test.js && node scripts/admin-mail-smoke.js && node scripts/mailer-tls-test.js"
+    "test:email": "node scripts/email-e2e-test.js && node scripts/admin-mail-smoke.js && node scripts/mailer-tls-test.js",
+    "test:client": "node --test scripts/client-parity-test.js",
+    "seed:client": "node scripts/seed-client-test.js"
   },
   "dependencies": {
     "@simplewebauthn/server": "^13.3.2",

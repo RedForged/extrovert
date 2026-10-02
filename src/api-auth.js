@@ -37,7 +37,30 @@ function requireApiAuth(...requiredScopes) {
     }
 
     const token = authHeader.slice(7);
-    const tokenRecord = db.getOAuthToken(token);
+    let tokenRecord = db.getOAuthToken(token);
+    if (!tokenRecord) {
+      const pat = db.getPersonalAccessTokenByHash(db.hashOAuthToken(token));
+      if (pat) {
+        if (pat.expires_at && Date.now() > pat.expires_at) {
+          db.auditLog('api_auth_failure', pat.user_id, 'Expired PAT');
+          return res.status(401).json({
+            error: 'unauthorized',
+            error_description: 'The personal access token has expired.',
+          });
+        }
+        db.touchPersonalAccessToken(pat.id);
+        tokenRecord = {
+          id: pat.id,
+          user_id: pat.user_id,
+          scopes: pat.scopes,
+          expires_at: pat.expires_at,
+          app_id: null,
+          is_pat: true,
+          name: pat.name,
+        };
+      }
+    }
+
     if (!tokenRecord) {
       db.auditLog('api_auth_failure', null, 'Invalid token');
       return res.status(401).json({
@@ -72,7 +95,7 @@ function requireApiAuth(...requiredScopes) {
 
     req.apiToken = tokenRecord;
     req.apiUser = user;
-    req.apiApp = db.getOAuthAppById(tokenRecord.app_id);
+    req.apiApp = tokenRecord.app_id ? db.getOAuthAppById(tokenRecord.app_id) : { name: tokenRecord.name || 'Personal Access Token', client_id: 'pat' };
     next();
   };
 }

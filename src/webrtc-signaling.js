@@ -3,7 +3,7 @@
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 const path = require('node:path');
-const { getUserById, getUserByUsername, areMutualFollowers, getRoomChannel, isRoomMember, getOAuthToken, createNotification } = require('./db');
+const { getUserById, getUserByUsername, areMutualFollowers, getRoomChannel, isRoomMember, getOAuthToken, getPersonalAccessTokenByHash, createNotification } = require('./db');
 const { sendCallPush, sendMissedCallPush } = require('./push');
 
 const SESSION_DB_PATH = process.env.EXTV_SESSION_DB_PATH || path.join(__dirname, '..', 'data', 'sessions.db');
@@ -21,6 +21,60 @@ const dmClients = new Map(); // userId -> Set<{ ws, username, displayName }>
 // the ring is delivered here as a push).
 const pushClients = new Map(); // userId -> Set<ws>
 const voiceChannels = new Map();
+const topicSubscriptions = new Map(); // topic -> Set<{ ws, userId }>
+const recentGatewayEvents = [];
+let globalSeq = 1;
+
+const { onNotification } = require('./notif-broadcaster');
+
+function subscribeClient(ws, userId, topic) {
+  if (!topicSubscriptions.has(topic)) topicSubscriptions.set(topic, new Set());
+  topicSubscriptions.get(topic).add({ ws, userId });
+  if (!ws.subscribedTopics) ws.subscribedTopics = new Set();
+  ws.subscribedTopics.add(topic);
+}
+
+function unsubscribeClient(ws, topic) {
+  const set = topicSubscriptions.get(topic);
+  if (set) {
+    for (const item of set) {
+      if (item.ws === ws) { set.delete(item); break; }
+    }
+    if (set.size === 0) topicSubscriptions.delete(topic);
+  }
+  if (ws.subscribedTopics) ws.subscribedTopics.delete(topic);
+}
+
+function cleanupClientSubscriptions(ws) {
+  if (ws.subscribedTopics) {
+    for (const topic of ws.subscribedTopics) {
+      unsubscribeClient(ws, topic);
+    }
+  }
+}
+
+function broadcastGatewayEvent(topic, eventName, data) {
+  const frame = {
+    seq: globalSeq++,
+    type: 'gateway_event',
+    topic,
+    event: eventName,
+    data,
+  };
+
+  recentGatewayEvents.push(frame);
+  if (recentGatewayEvents.length > 500) recentGatewayEvents.shift();
+
+  const subscribers = topicSubscriptions.get(topic);
+  if (!subscribers) return;
+
+  const json = JSON.stringify(frame);
+  for (const item of subscribers) {
+    if (item.ws && item.ws.readyState === 1) {
+      try { item.ws.send(json); } catch {}
+    }
+  }
+}
 
 // Pending calls to offline users: calleeUserId -> pending record.
 // Lets a caller "ring" an offline peer: the callee gets a missed_call
@@ -81,6 +135,23 @@ function getSession(sid) {
   } catch { return null; }
 }
 
+function lookupTokenUser(token) {
+  if (!token || typeof token !== 'string') return null;
+  const trimmed = token.trim();
+  const tokenRecord = getOAuthToken(trimmed);
+  if (tokenRecord && (!tokenRecord.expires_at || tokenRecord.expires_at > Date.now())) {
+    const user = getUserById(tokenRecord.user_id);
+    if (user && !user.banned) return user;
+  }
+  const patHash = crypto.createHash('sha256').update(trimmed).digest('hex');
+  const pat = getPersonalAccessTokenByHash(patHash);
+  if (pat && (!pat.expires_at || pat.expires_at > Date.now())) {
+    const user = getUserById(pat.user_id);
+    if (user && !user.banned) return user;
+  }
+  return null;
+}
+
 function lookupUserFromRequest(req) {
   // 1. Session cookie (browser clients)
   if (SESSION_SECRET && sessionDb) {
@@ -98,16 +169,18 @@ function lookupUserFromRequest(req) {
       }
     }
   }
-  // 2. Bearer token via ?token= query param (native/mobile clients)
+  // 2. Bearer token via Authorization header
+  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
+    const user = lookupTokenUser(req.headers.authorization.slice(7));
+    if (user) return user;
+  }
+  // 3. Bearer token via ?token= query param (native/mobile clients)
   try {
     const url = new URL(req.url, 'http://localhost');
     const token = url.searchParams.get('token');
     if (token) {
-      const tokenRecord = getOAuthToken(token);
-      if (tokenRecord && (!tokenRecord.expires_at || tokenRecord.expires_at > Date.now())) {
-        const user = getUserById(tokenRecord.user_id);
-        if (user && !user.banned) return user;
-      }
+      const user = lookupTokenUser(token);
+      if (user) return user;
     }
   } catch {}
   return null;
@@ -266,23 +339,12 @@ function cancelOutgoingPending(callerId, reason) {
 
 function initSignaling(wss) {
   wss.on('connection', (ws, req) => {
-    const user = lookupUserFromRequest(req);
-    if (!user) {
-      console.log('WS auth failed: no user from request', req.headers.cookie ? 'cookie present' : 'no cookie');
-      ws.close(4001, 'Unauthorized');
-      return;
-    }
-    console.log('WS connected:', user.username, '(id:', user.id + ')');
-
-    // A connection is only a signaling client once it proves it isn't a push
-    // channel: the first message is either {type:'push_register'} (native push
-    // service — never appears online, calls are pushed to it) or anything else
-    // (the web/native UI client, which sends {type:'ping'} on open).
+    let user = lookupUserFromRequest(req);
     let registered = false;
     let clientData = null;
 
     function registerSignalingClient() {
-      if (registered) return;
+      if (registered || !user) return;
       registered = true;
 
       clientData = {
@@ -299,6 +361,22 @@ function initSignaling(wss) {
       dmClients.get(user.id).add({ ws, username: user.username, displayName: user.display_name });
 
       broadcastPresence(user.id, 'user_online');
+
+      // Listen to notification broadcasts and push to this socket
+      const stopNotif = onNotification(user.id, (notif) => {
+        if (ws.readyState === 1) {
+          try {
+            ws.send(JSON.stringify({
+              seq: globalSeq++,
+              type: 'event',
+              topic: 'notifications',
+              event: 'notification_new',
+              data: notif,
+            }));
+          } catch {}
+        }
+      });
+      ws.on('close', stopNotif);
 
       for (const [otherId, client] of clients) {
         if (otherId === user.id) continue;
@@ -343,23 +421,136 @@ function initSignaling(wss) {
       let msg;
       try { msg = JSON.parse(raw.toString()); } catch { return; }
 
-      // First message decides the connection's role.
-      if (!registered) {
+      // Authenticate dynamically if message carries a token
+      if (!user && (msg.token || msg.action === 'auth' || msg.action === 'subscribe' || msg.action === 'resume')) {
+        const tokenUser = lookupTokenUser(msg.token);
+        if (tokenUser) {
+          user = tokenUser;
+          registerSignalingClient();
+        }
+      }
+
+      // First message decides the connection's role if authenticated
+      if (user && !registered) {
         if (msg.type === 'push_register') {
           registered = true;
           if (!pushClients.has(user.id)) pushClients.set(user.id, new Set());
           pushClients.get(user.id).add(ws);
-          console.log('push channel registered:', user.username, '(id:', user.id + ')');
           try { ws.send(JSON.stringify({ type: 'push_registered' })); } catch {}
           return;
         }
         registerSignalingClient();
       }
 
-      switch (msg.type) {
+      const actionType = msg.action || msg.type;
+      switch (actionType) {
         case 'ping':
           try { ws.send(JSON.stringify({ type: 'pong' })); } catch {}
           break;
+
+        case 'subscribe': {
+          if (!user) {
+            try { ws.send(JSON.stringify({ type: 'error', message: 'Unauthorized' })); } catch {}
+            break;
+          }
+          const channels = Array.isArray(msg.channels)
+            ? msg.channels
+            : (msg.channel ? [msg.channel] : (msg.topic ? [msg.topic] : []));
+          for (const ch of channels) {
+            const topic = String(ch || '').trim();
+            if (!topic) continue;
+            if (topic.startsWith('room:')) {
+              const roomId = parseInt(topic.split(':')[1], 10);
+              if (roomId && !isRoomMember(roomId, user.id) && !user.is_admin) continue;
+            }
+            subscribeClient(ws, user.id, topic);
+          }
+          try {
+            ws.send(JSON.stringify({
+              type: 'subscribed',
+              topic: msg.topic || (channels.length === 1 ? channels[0] : undefined),
+              channels: [...(ws.subscribedTopics || [])],
+            }));
+          } catch {}
+          break;
+        }
+
+        case 'unsubscribe': {
+          const channels = Array.isArray(msg.channels)
+            ? msg.channels
+            : (msg.channel ? [msg.channel] : (msg.topic ? [msg.topic] : []));
+          for (const ch of channels) {
+            unsubscribeClient(ws, String(ch || '').trim());
+          }
+          try {
+            ws.send(JSON.stringify({
+              type: 'unsubscribed',
+              topic: msg.topic || (channels.length === 1 ? channels[0] : undefined),
+              channels: [...(ws.subscribedTopics || [])],
+            }));
+          } catch {}
+          break;
+        }
+
+        case 'resume': {
+          const clientSeq = Number(msg.seq) || 0;
+          const missed = recentGatewayEvents.filter(e => e.seq > clientSeq && ws.subscribedTopics && ws.subscribedTopics.has(e.topic));
+          for (const ev of missed) {
+            try { ws.send(JSON.stringify(ev)); } catch {}
+          }
+          try {
+            ws.send(JSON.stringify({
+              type: 'resumed',
+              replayed: missed.length,
+              last_seq: globalSeq - 1,
+            }));
+          } catch {}
+          break;
+        }
+
+        case 'typing': {
+          if (!user) break;
+          const ch = msg.channel || (msg.room_id ? `room:${msg.room_id}` : null);
+          if (ch) {
+            try {
+              ws.send(JSON.stringify({
+                type: 'typing',
+                channel: ch,
+                userId: user.id,
+                username: user.username,
+                typing: !!msg.typing,
+              }));
+            } catch {}
+            broadcastGatewayEvent(ch, 'typing', {
+              channel: ch,
+              user_id: user.id,
+              username: user.username,
+              display_name: user.display_name,
+              typing: !!msg.typing,
+            });
+          } else if (msg.scope === 'room' && msg.room_id) {
+            const roomId = parseInt(msg.room_id, 10);
+            if (isRoomMember(roomId, user.id) || user.is_admin) {
+              broadcastGatewayEvent(`room:${roomId}`, 'typing', {
+                room_id: roomId,
+                channel_id: msg.channel_id,
+                user_id: user.id,
+                username: user.username,
+                display_name: user.display_name,
+              });
+            }
+          } else if (msg.scope === 'dm' && msg.to) {
+            const target = getUserByUsername(msg.to);
+            if (target && areMutualFollowers(user.id, target.id)) {
+              sendDmEvent(target.username, {
+                type: 'dm_typing',
+                from_username: user.username,
+                from_display: user.display_name,
+              });
+            }
+          }
+          break;
+        }
 
         // First step of a 1:1 call: ask the server whether the callee is
         // reachable. Server replies callee_available (proceed with offer),
@@ -637,6 +828,7 @@ function initSignaling(wss) {
     });
 
     ws.on('close', () => {
+      cleanupClientSubscriptions(ws);
       removeFromVoiceChannels(user.id);
       cancelOutgoingPending(user.id, 'declined');
       const dmSet = dmClients.get(user.id);
@@ -746,4 +938,4 @@ function sendWsPush(userId, payload) {
   }
   return delivered;
 }
-module.exports = { initSignaling, getOnlineUsers, getUserPresence, getVoiceChannelMembers, sendDmEvent, cancelPendingCallByToken };
+module.exports = { initSignaling, getOnlineUsers, getUserPresence, getVoiceChannelMembers, sendDmEvent, cancelPendingCallByToken, broadcastGatewayEvent };

@@ -8,9 +8,11 @@ const { canView } = require('../src/network');
 const { db: raw } = db;
 
 function reset() {
-  for (const t of ['follows_from_post','shares','comments','likes','posts','follows','profile_customization','olm_device_prekeys','user_devices','user_history_backup','olm_prekeys','olm_identity','room_group_session_keys','room_group_sessions','messages','users']) {
-    raw.exec(`DELETE FROM ${t}`);
+  raw.exec('PRAGMA foreign_keys = OFF;');
+  for (const t of ['personal_access_tokens','post_referrals','room_messages','room_channels','room_roles','room_members','rooms','stickers','follows_from_post','shares','comments','likes','posts','follows','profile_customization','olm_device_prekeys','user_devices','user_history_backup','olm_prekeys','olm_identity','room_group_session_keys','room_group_sessions','messages','users']) {
+    try { raw.exec(`DELETE FROM ${t}`); } catch {}
   }
+  raw.exec('PRAGMA foreign_keys = ON;');
 }
 function user(name) { return db.getUserByUsername(name); }
 function assert(cond, msg) {
