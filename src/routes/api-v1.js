@@ -2480,7 +2480,7 @@ router.post('/rooms/:id/session/sync', requireApiAuth('write'), express.json(), 
   const missingMembers = [];
   for (const m of allMembers) {
     if (m.user_id === req.apiUser.id) continue;
-    if (!recipients.has(m.user_id)) {
+    if (!recipients.has(m.user_id) || emptyRecipients.has(m.user_id)) {
       missingMembers.push({
         id: String(m.user_id),
         username: m.username,

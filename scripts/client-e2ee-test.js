@@ -181,7 +181,7 @@ describe('E2EE Server Enhancements for Client Developers', () => {
     assert.strictEqual(bundlesJson.data.returned_bundles, 1);
     assert.strictEqual(bundlesJson.data.bundles[0].username, 'charlie_e2ee');
 
-    // 4. Alice marks Charlie covered via member_ids in session/sync
+    // 4. Alice records Charlie via member_ids in session/sync (empty-key placeholder)
     const syncRes3 = await fetch(`${baseUrl}/rooms/${roomId}/session/sync`, {
       method: 'POST',
       headers: {
@@ -195,7 +195,25 @@ describe('E2EE Server Enhancements for Client Developers', () => {
     });
     assert.strictEqual(syncRes3.status, 200);
     const syncJson3 = await syncRes3.json();
-    assert.strictEqual(syncJson3.data.missing_members.length, 0, 'Missing members list shrinks to 0 when covered via member_ids');
+    assert.strictEqual(syncJson3.data.missing_members.length, 1, 'Charlie remains in missing_members until real key is shared');
+    assert.strictEqual(syncJson3.data.missing_members[0].id, String(charlieId));
+
+    // 5. When Alice supplies a real encrypted key for Charlie, missing_members shrinks to 0
+    const syncRes4 = await fetch(`${baseUrl}/rooms/${roomId}/session/sync`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${aliceToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        sender_device_id: 'alice_device_1',
+        keys: [{ recipient_id: charlieId, encrypted_key: 'charlie_secret_megolm_key' }],
+      }),
+    });
+    assert.strictEqual(syncRes4.status, 200);
+    const syncJson4 = await syncRes4.json();
+    assert.strictEqual(syncJson4.data.missing_members.length, 0, 'Missing members list shrinks to 0 once real keys are shared');
+    assert.strictEqual(syncJson4.data.recipients_count, 2, 'Both Bob and Charlie are active recipients');
   });
 
   it('pushes room_session_key over WebSocket in realtime when a key is saved', async () => {
