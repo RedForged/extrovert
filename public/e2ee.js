@@ -189,6 +189,12 @@
     var form = document.querySelector('.chat-form');
     return form ? String(form.getAttribute('data-current-user') || '') : '';
   }
+  function currentUsername() {
+    var meta = document.querySelector('meta[name="current-username"]');
+    if (meta && meta.getAttribute('content')) return String(meta.getAttribute('content'));
+    var form = document.querySelector('.chat-form');
+    return form ? String(form.getAttribute('data-current-username') || '') : '';
+  }
   function acctKey() { return 'account:' + activeUserId(); }
   function selfOutKey() { return 'selfOutbound:' + activeUserId(); }
   function selfInKey() { return 'selfInbound:' + activeUserId(); }
@@ -583,6 +589,7 @@
   }
 
   function saveSelfSessions() {
+    scheduleVaultBackup();
     var ops = [];
     if (selfOutbound) ops.push(encryptWithKd(selfOutbound.pickle(PICKLE_KEY)).then(function (e) { return idbSet(STORE_OLM, selfOutKey(), e); }));
     // Persist the BASELINE inbound pickle, never the advanced in-memory state.
@@ -631,7 +638,9 @@
         msgs.sort(function (a, b) {
           return (a.created_at - b.created_at) || (Number(a.id) - Number(b.id));
         });
-        return secureSaveMessages(otherIdStr, msgs);
+        return secureSaveMessages(otherIdStr, msgs).then(function () {
+          scheduleHistorySync();
+        });
       });
     });
     // Keep the chain alive even if one persist fails (callers still see the
@@ -822,7 +831,7 @@
   // password KEK downstream; the server only ever stores ciphertext.
   function collectSessionBackupPickles() {
     var uid = activeUserId();
-    var out = { sessions: {}, baselines: {} };
+    var out = { sessions: {}, baselines: {}, groupIn: {}, groupOut: {} };
     var addPickle = function (fullKey, pickle, isBaseline) {
       if (!pickle) return;
       if (isBaseline) out.baselines[fullKey] = pickle;
@@ -847,6 +856,25 @@
     // Self-session pair.
     if (selfOutbound) { try { addPickle('selfOutbound:' + uid, selfOutbound.pickle(PICKLE_KEY), false); } catch (_) {} }
     if (selfInboundBaseline) addPickle('selfInbound:' + uid, selfInboundBaseline, true);
+    // In-memory room group sessions
+    Object.keys(groupInbound).forEach(function (gKey) {
+      try {
+        if (groupInbound[gKey] && groupInbound[gKey].pickle) {
+          out.groupIn[gKey] = groupInbound[gKey].pickle(PICKLE_KEY);
+        }
+      } catch (_) {}
+    });
+    Object.keys(groupOutbound).forEach(function (rId) {
+      try {
+        if (groupOutbound[rId] && groupOutbound[rId].pickle) {
+          out.groupOut[rId] = {
+            id: groupOutIds[rId],
+            pickle: groupOutbound[rId].pickle(PICKLE_KEY)
+          };
+        }
+      } catch (_) {}
+    });
+
     // Merge persisted pickles from IDB (covers sessions not yet loaded into
     // memory after a fresh page load). Read via the isolated slots; baselines
     // come from the baseline list + single-slot fallbacks.
@@ -884,6 +912,18 @@
               var baseKey = k.slice('sessionBase:'.length);
               if (!out.baselines[baseKey]) addPickle(baseKey, pickle, true);
             }).catch(function () {});
+          } else if (k.indexOf('groupIn:' + uid + ':') === 0) {
+            decryptWithKd(cursor.value).then(function (pickle) {
+              var gKey = k.slice(('groupIn:' + uid + ':').length);
+              if (!out.groupIn[gKey]) out.groupIn[gKey] = pickle;
+            }).catch(function () {});
+          } else if (k.indexOf('groupOut:' + uid + ':') === 0) {
+            decryptWithKd(cursor.value).then(function (json) {
+              try {
+                var rId = k.slice(('groupOut:' + uid + ':').length);
+                if (!out.groupOut[rId]) out.groupOut[rId] = JSON.parse(json);
+              } catch (_) {}
+            }).catch(function () {});
           }
           cursor.continue();
         };
@@ -898,52 +938,66 @@
     var selfInPickle = selfInboundBaseline || (selfInbound ? selfInbound.pickle(PICKLE_KEY) : null);
     var sessionPicklesP = collectSessionBackupPickles();
     return sessionPicklesP.then(function (sessionPickles) {
-    var encTasks = [
-      encryptWithKek(accountPickle, kek),
-      selfOutPickle ? encryptWithKek(selfOutPickle, kek) : Promise.resolve(null),
-      selfInPickle ? encryptWithKek(selfInPickle, kek) : Promise.resolve(null),
-    ];
-    // Encrypt every DM session + baseline pickle with the KEK.
-    var sessionKeys = Object.keys(sessionPickles.sessions);
-    var baselineKeys = Object.keys(sessionPickles.baselines);
-    sessionKeys.forEach(function (k) {
-      encTasks.push(encryptWithKek(sessionPickles.sessions[k], kek).then(function (c) { return { k: k, c: c }; }));
+      var encTasks = [
+        encryptWithKek(accountPickle, kek),
+        selfOutPickle ? encryptWithKek(selfOutPickle, kek) : Promise.resolve(null),
+        selfInPickle ? encryptWithKek(selfInPickle, kek) : Promise.resolve(null),
+      ];
+      // Encrypt every DM session + baseline pickle with the KEK.
+      var sessionKeys = Object.keys(sessionPickles.sessions || {});
+      var baselineKeys = Object.keys(sessionPickles.baselines || {});
+      var groupInKeys = Object.keys(sessionPickles.groupIn || {});
+      var groupOutKeys = Object.keys(sessionPickles.groupOut || {});
+      sessionKeys.forEach(function (k) {
+        encTasks.push(encryptWithKek(sessionPickles.sessions[k], kek).then(function (c) { return { k: k, c: c, type: 'sess' }; }));
+      });
+      baselineKeys.forEach(function (k) {
+        encTasks.push(encryptWithKek(sessionPickles.baselines[k], kek).then(function (c) { return { k: k, c: c, type: 'base' }; }));
+      });
+      groupInKeys.forEach(function (k) {
+        encTasks.push(encryptWithKek(sessionPickles.groupIn[k], kek).then(function (c) { return { k: k, c: c, type: 'groupIn' }; }));
+      });
+      groupOutKeys.forEach(function (k) {
+        encTasks.push(encryptWithKek(JSON.stringify(sessionPickles.groupOut[k]), kek).then(function (c) { return { k: k, c: c, type: 'groupOut' }; }));
+      });
+      return Promise.all(encTasks).then(function (parts) {
+        var accountEnc = parts[0], selfOutEnc = parts[1], selfInEnc = parts[2];
+        var sessionsEnc = {}, baselinesEnc = {}, groupInEnc = {}, groupOutEnc = {};
+        for (var idx = 3; idx < parts.length; idx++) {
+          var item = parts[idx];
+          if (item.type === 'sess') sessionsEnc[item.k] = item.c;
+          else if (item.type === 'base') baselinesEnc[item.k] = item.c;
+          else if (item.type === 'groupIn') groupInEnc[item.k] = item.c;
+          else if (item.type === 'groupOut') groupOutEnc[item.k] = item.c;
+        }
+        var payload;
+        if (selfOutEnc || selfInEnc || sessionKeys.length || baselineKeys.length || groupInKeys.length || groupOutKeys.length) {
+          payload = JSON.stringify({
+            v: 4,
+            account: accountEnc,
+            selfOutbound: selfOutEnc,
+            selfInbound: selfInEnc,
+            sessions: sessionsEnc,
+            baselines: baselinesEnc,
+            groupIn: groupInEnc,
+            groupOut: groupOutEnc,
+          });
+        } else {
+          payload = accountEnc;
+        }
+        return csrfFetch(PREKEYS_URL, {
+          method: 'POST',
+          body: JSON.stringify({ backup: payload, backup_identity: myIdKeys ? myIdKeys.curve25519 : undefined, kek_salt: kekSalt || undefined })
+        }).then(function (r) { return r.json(); });
+      });
     });
-    baselineKeys.forEach(function (k) {
-      encTasks.push(encryptWithKek(sessionPickles.baselines[k], kek).then(function (c) { return { k: k, c: c }; }));
-    });
-    return Promise.all(encTasks).then(function (parts) {
-      var accountEnc = parts[0], selfOutEnc = parts[1], selfInEnc = parts[2];
-      var sessionsEnc = {}, baselinesEnc = {};
-      var idx = 3;
-      sessionKeys.forEach(function (k) { sessionsEnc[k] = parts[idx++].c; });
-      baselineKeys.forEach(function (k) { baselinesEnc[k] = parts[idx++].c; });
-      var payload;
-      if (selfOutEnc || selfInEnc || sessionKeys.length || baselineKeys.length) {
-        payload = JSON.stringify({
-          v: 3,
-          account: accountEnc,
-          selfOutbound: selfOutEnc,
-          selfInbound: selfInEnc,
-          sessions: sessionsEnc,
-          baselines: baselinesEnc,
-        });
-      } else {
-        payload = accountEnc;
-      }
-      return csrfFetch(PREKEYS_URL, {
-        method: 'POST',
-        body: JSON.stringify({ backup: payload, backup_identity: myIdKeys ? myIdKeys.curve25519 : undefined, kek_salt: kekSalt || undefined })
-      }).then(function (r) { return r.json(); });
-    });
-  });
   }
 
   function unwrapBackup(enc) {
     if (String(enc).indexOf('{') !== 0) return { account: enc };
     try {
       var parsed = JSON.parse(enc);
-      if (parsed && (parsed.v === 2 || parsed.v === 3)) return parsed;
+      if (parsed && (parsed.v === 2 || parsed.v === 3 || parsed.v === 4)) return parsed;
     } catch (e) {}
     return { account: enc };
   }
@@ -953,7 +1007,7 @@
   // decrypt ladder finds the right chains for the full stored history.
   function restoreSessionsFromBackup(data) {
     var parsed = data && data.backup ? unwrapBackup(data.backup) : null;
-    if (!parsed || parsed.v !== 3) return Promise.resolve();
+    if (!parsed || (parsed.v !== 3 && parsed.v !== 4)) return Promise.resolve();
     var uid = activeUserId();
     var restoreTasks = [];
     var sessionsEnc = parsed.sessions || {};
@@ -1029,9 +1083,40 @@
     return Promise.all(restoreTasks);
   }
 
+  // Restore Megolm room session keys from backup vault into local storage
+  function restoreRoomSessionsFromBackup(data) {
+    var parsed = data && data.backup ? unwrapBackup(data.backup) : null;
+    if (!parsed || parsed.v !== 4) return Promise.resolve();
+    var groupInEnc = parsed.groupIn || {};
+    var groupOutEnc = parsed.groupOut || {};
+    var tasks = [];
+    Object.keys(groupInEnc).forEach(function (k) {
+      tasks.push(decryptWithKek(groupInEnc[k], kek).then(function (pickle) {
+        var s = new Olm.InboundGroupSession();
+        s.unpickle(PICKLE_KEY, pickle);
+        var parts = k.split(':');
+        if (parts.length >= 3) {
+          var roomId = parts[0];
+          var senderId = parts[1];
+          var sessionId = parts.slice(2).join(':');
+          return saveGroupInbound(roomId, senderId, sessionId, s);
+        }
+      }).catch(function (e) { console.warn('restore group inbound key failed', e); }));
+    });
+    Object.keys(groupOutEnc).forEach(function (roomId) {
+      tasks.push(decryptWithKek(groupOutEnc[roomId], kek).then(function (json) {
+        var rec = JSON.parse(json);
+        var s = new Olm.OutboundGroupSession();
+        s.unpickle(PICKLE_KEY, rec.pickle);
+        return saveGroupOutbound(roomId, s, rec.id);
+      }).catch(function (e) { console.warn('restore group outbound key failed', e); }));
+    });
+    return Promise.all(tasks);
+  }
+
   function restoreSelfSessionsFromBackup(data) {
     var parsed = data && data.backup ? unwrapBackup(data.backup) : null;
-    if (!parsed || (parsed.v !== 2 && parsed.v !== 3)) return Promise.resolve();
+    if (!parsed || (parsed.v !== 2 && parsed.v !== 3 && parsed.v !== 4)) return Promise.resolve();
     var restoreIn = parsed.selfInbound ? decryptWithKek(parsed.selfInbound, kek).then(function (pickle) {
       var s = new Olm.Session();
       s.unpickle(PICKLE_KEY, pickle);
@@ -1765,13 +1850,85 @@
           return true;
         });
       }
-      if (storedKek) {
-        return importKek(storedKek).then(function (k) {
-          kek = k;
-          return loadLegacyKey(kek);
-        }).then(function () {
-          return restoreHistoryFromBackup();
-        }).then(function () {
+      return fetchBackup().then(function (data) {
+        var hasBackup = data && !!data.backup;
+        if (hasBackup) {
+          return new Promise(function (resolve) {
+            showBackupPromptOverlay({
+              hasStoredKek: !!storedKek,
+              onRestore: function (pass) {
+                var deriveP;
+                if (storedKek) {
+                  deriveP = importKek(storedKek).then(function (k) { kek = k; return k; });
+                } else {
+                  var salt = data.salt;
+                  var uname = currentUsername();
+                  deriveP = (salt ? deriveKekWithSalt(pass, salt) : deriveKek(pass, uname)).then(function (k) {
+                    kek = k;
+                    kekSalt = salt || null;
+                    return k;
+                  });
+                }
+                return deriveP.then(function () {
+                  var unwrapped = unwrapBackup(data.backup);
+                  return decryptWithKek(unwrapped.account, kek);
+                }).then(function (pickle) {
+                  account = new Olm.Account();
+                  account.unpickle(PICKLE_KEY, pickle);
+                  var k2 = JSON.parse(account.identity_keys());
+                  myIdKeys = { curve25519: k2.curve25519, ed25519: k2.ed25519 };
+                  return saveAccount();
+                }).then(function () {
+                  return Promise.all([
+                    loadLegacyKey(kek),
+                    restoreSelfSessionsFromBackup(data),
+                    restoreSessionsFromBackup(data),
+                    restoreRoomSessionsFromBackup(data),
+                    restoreHistoryFromBackup(),
+                  ]);
+                }).then(function () {
+                  return maybeReplenishPrekeys();
+                }).then(function () {
+                  return ensureSelfSessions();
+                }).then(function () {
+                  sessionStorage.removeItem(KEK_SESSION_KEY);
+                  if (opts.onReady) opts.onReady();
+                  resolve(true);
+                });
+              },
+              onFresh: function () {
+                sessionStorage.removeItem(KEK_SESSION_KEY);
+                return createAndPublishAccount().then(function () {
+                  return saveAccount();
+                }).then(function () {
+                  return ensureSelfSessions();
+                }).then(function () {
+                  if (kek) return uploadBackup(account.pickle(PICKLE_KEY));
+                }).then(function () {
+                  if (opts.onReady) opts.onReady();
+                  resolve(true);
+                });
+              }
+            });
+          });
+        }
+        if (storedKek) {
+          return importKek(storedKek).then(function (k) {
+            kek = k;
+            return loadLegacyKey(kek);
+          }).then(function () {
+            return createAndPublishAccount().then(function () { return saveAccount(); });
+          }).then(function () {
+            return ensureSelfSessions();
+          }).then(function () {
+            return uploadBackup(account.pickle(PICKLE_KEY));
+          }).then(function () {
+            sessionStorage.removeItem(KEK_SESSION_KEY);
+            if (opts.onReady) opts.onReady();
+            return true;
+          });
+        }
+        return initOlm().then(function () {
           return createAndPublishAccount().then(function () { return saveAccount(); });
         }).then(function () {
           return ensureSelfSessions();
@@ -1779,17 +1936,6 @@
           if (opts.onReady) opts.onReady();
           return true;
         });
-      }
-      return initOlm().then(function () {
-        return createAndPublishAccount().then(function () { return saveAccount(); });
-      }).then(function () {
-        return ensureSelfSessions();
-      }).then(function () {
-        if (opts.onReady) opts.onReady();
-        return true;
-      }).catch(function (err) {
-        console.error('ensureReady fallback error', err);
-        return false;
       });
     });
   }
@@ -1858,6 +2004,7 @@
   function saveGroupOutbound(roomId, session, sessionId) {
     groupOutbound[roomId] = session;
     groupOutIds[roomId] = sessionId;
+    scheduleVaultBackup();
     return encryptWithKd(JSON.stringify({ id: sessionId, pickle: session.pickle(PICKLE_KEY) })).then(function (enc) {
       return idbSet(STORE_OLM, groupOutKey(roomId), enc);
     });
@@ -1878,6 +2025,7 @@
   function saveGroupInbound(roomId, senderId, sessionId, session) {
     var key = roomId + ':' + senderId + ':' + sessionId;
     groupInbound[key] = session;
+    scheduleVaultBackup();
     return encryptWithKd(session.pickle(PICKLE_KEY)).then(function (enc) {
       return idbSet(STORE_OLM, groupInKey(key), enc);
     });
@@ -2968,6 +3116,10 @@
               // chain so this device can decrypt the full stored history.
               return restoreSelfSessionsFromBackup(data).then(function () {
                 return restoreSessionsFromBackup(data);
+              }).then(function () {
+                return restoreRoomSessionsFromBackup(data);
+              }).then(function () {
+                return restoreHistoryFromBackup();
               });
             }).catch(function () { throw new Error('Wrong password.'); });
           }).then(function () {
@@ -3012,6 +3164,114 @@
       saveSelfSessions().then(function () { scheduleVaultBackup(); });
       return username;
     });
+  }
+
+  // Signal-style prompt to restore backup on login/fresh device
+  function showBackupPromptOverlay(opts) {
+    var overlay = document.getElementById('e2ee-backup-prompt-overlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'e2ee-backup-prompt-overlay';
+      overlay.setAttribute('role', 'dialog');
+      overlay.setAttribute('aria-modal', 'true');
+      overlay.setAttribute('aria-labelledby', 'e2ee-backup-prompt-title');
+      overlay.style.cssText = 'display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:1000;align-items:center;justify-content:center';
+      overlay.innerHTML =
+        '<div class="card" style="max-width:420px;width:90%;text-align:center;padding:1.5rem">' +
+          '<h3 id="e2ee-backup-prompt-title">Encrypted Backup Found</h3>' +
+          '<p class="muted" style="margin:12px 0 20px;font-size:0.95rem;line-height:1.4">' +
+            'A backup of your chat history and encryption keys was found. Would you like to restore your messages and room keys on this device?' +
+          '</p>' +
+          '<div id="e2ee-backup-pass-wrap" style="display:none;margin-bottom:14px">' +
+            '<input type="password" id="e2ee-backup-password" placeholder="Enter password to decrypt" aria-label="Password" autocomplete="current-password" style="width:100%;box-sizing:border-box">' +
+          '</div>' +
+          '<div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">' +
+            '<button class="btn btn-primary" id="e2ee-restore-btn">Restore Backup</button>' +
+            '<button class="btn btn-secondary" id="e2ee-fresh-btn">Start Fresh</button>' +
+          '</div>' +
+          '<div id="e2ee-backup-error" style="color:var(--danger);margin-top:12px;display:none;font-size:0.85rem"></div>' +
+        '</div>';
+      document.body.appendChild(overlay);
+    }
+
+    var passWrap = overlay.querySelector('#e2ee-backup-pass-wrap');
+    var passInput = overlay.querySelector('#e2ee-backup-password');
+    var restoreBtn = overlay.querySelector('#e2ee-restore-btn');
+    var freshBtn = overlay.querySelector('#e2ee-fresh-btn');
+    var errorDiv = overlay.querySelector('#e2ee-backup-error');
+
+    if (errorDiv) { errorDiv.style.display = 'none'; errorDiv.textContent = ''; }
+    if (restoreBtn) { restoreBtn.disabled = false; restoreBtn.textContent = 'Restore Backup'; }
+    if (freshBtn) { freshBtn.disabled = false; freshBtn.textContent = 'Start Fresh'; }
+
+    if (passWrap) {
+      if (opts.hasStoredKek) {
+        passWrap.style.display = 'none';
+      } else {
+        passWrap.style.display = 'block';
+        if (passInput) {
+          passInput.value = '';
+          setTimeout(function () { passInput.focus(); }, 50);
+        }
+      }
+    }
+
+    overlay.style.display = 'flex';
+
+    if (restoreBtn) {
+      restoreBtn.onclick = function () {
+        var pass = passInput ? passInput.value.trim() : '';
+        if (!opts.hasStoredKek && !pass) {
+          if (errorDiv) {
+            errorDiv.textContent = 'Password is required to decrypt your backup.';
+            errorDiv.style.display = 'block';
+          }
+          return;
+        }
+        restoreBtn.disabled = true;
+        restoreBtn.textContent = 'Restoring…';
+        if (freshBtn) freshBtn.disabled = true;
+        opts.onRestore(pass).then(function () {
+          overlay.style.display = 'none';
+        }).catch(function (err) {
+          restoreBtn.disabled = false;
+          restoreBtn.textContent = 'Restore Backup';
+          if (freshBtn) freshBtn.disabled = false;
+          if (errorDiv) {
+            errorDiv.textContent = (err && err.message) || 'Failed to restore backup.';
+            errorDiv.style.display = 'block';
+          }
+        });
+      };
+    }
+
+    if (freshBtn) {
+      freshBtn.onclick = function () {
+        freshBtn.disabled = true;
+        freshBtn.textContent = 'Starting fresh…';
+        if (restoreBtn) restoreBtn.disabled = true;
+        opts.onFresh().then(function () {
+          overlay.style.display = 'none';
+        }).catch(function (err) {
+          freshBtn.disabled = false;
+          freshBtn.textContent = 'Start Fresh';
+          if (restoreBtn) restoreBtn.disabled = false;
+          if (errorDiv) {
+            errorDiv.textContent = (err && err.message) || 'Failed to start fresh.';
+            errorDiv.style.display = 'block';
+          }
+        });
+      };
+    }
+
+    if (passInput) {
+      passInput.onkeydown = function (e) {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          if (restoreBtn) restoreBtn.click();
+        }
+      };
+    }
   }
 
   // mode 'password' (default): a valid backup exists — ask for the password.
@@ -3305,6 +3565,7 @@
     loadUndecryptable: loadUndecryptable,
     markUndecryptableSeen: markUndecryptableSeen,
     showUnlockOverlay: showUnlockOverlay,
+    showBackupPromptOverlay: showBackupPromptOverlay,
     // ---- DM bridge (used by the native client; web pages use the DOM wiring) ----
     unlock: unlockWithPassword,
     encryptDm: encryptOlm,
