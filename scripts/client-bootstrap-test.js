@@ -119,6 +119,11 @@ describe('Client Ergonomics & Unified Bootstrap Test Suite', () => {
       assert.ok(json.token.startsWith('ext_pat_'));
       assert.strictEqual(json.token_type, 'Bearer');
       assert.strictEqual(json.data.user.username, 'alice_boot');
+      assert.ok(json.data.scopes.includes('read:direct'));
+      assert.ok(json.data.scopes.includes('write:direct'));
+      assert.ok(json.data.scopes.includes('notifications'));
+      assert.ok(json.data.scopes.includes('media.write'));
+      assert.ok(json.data.scopes.includes('follow'));
       pairedPat = json.token;
     });
 
@@ -140,6 +145,29 @@ describe('Client Ergonomics & Unified Bootstrap Test Suite', () => {
       assert.strictEqual(res.status, 200);
       const json = await res.json();
       assert.strictEqual(json.data.username, 'alice_boot');
+    });
+
+    it('allows initiator to specify custom scopes on pairing init', async () => {
+      const initRes = await fetch(`${baseUrl}/auth/pair/init`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${aliceToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ scopes: 'read profile read:direct' }),
+      });
+      assert.strictEqual(initRes.status, 201);
+      const initJson = await initRes.json();
+      const customCode = initJson.data.code;
+
+      const claimRes = await fetch(`${baseUrl}/auth/pair/claim`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: customCode, client_name: 'Scoped Device' }),
+      });
+      assert.strictEqual(claimRes.status, 200);
+      const claimJson = await claimRes.json();
+      assert.deepStrictEqual(claimJson.data.scopes, ['read', 'profile', 'read:direct']);
     });
   });
 

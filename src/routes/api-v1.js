@@ -216,9 +216,13 @@ router.post('/auth/pair/init', requireAuthOrSession('write'), express.json(), (r
   const ttlMs = 5 * 60 * 1000; // 5 minutes
   const expiresAt = Date.now() + ttlMs;
 
+  const requested = String((req.body && req.body.scopes) || '').trim();
+  const scopes = requested.split(/\s+/).filter(s => VALID_SCOPES.has(s)).join(' ');
+
   devicePairingCodes.set(code, {
     userId: req.apiUser.id,
     expiresAt,
+    scopes,
   });
 
   const baseUrl = `${req.protocol}://${req.get('host')}`;
@@ -255,7 +259,8 @@ router.post('/auth/pair/claim', express.json(), (req, res) => {
 
   const appName = String(client_name || 'Paired Device').trim().slice(0, 100);
   const rawToken = 'ext_pat_' + crypto.randomBytes(32).toString('hex');
-  const validScopes = 'read write profile';
+  const validScopes = pairing.scopes ||
+    'read write follow notifications media.write read:direct write:direct profile';
   db.createPersonalAccessToken(user.id, appName, rawToken, validScopes, null);
 
   db.auditLog('device_paired', user.id, `Paired new device: ${appName}`);
@@ -266,7 +271,7 @@ router.post('/auth/pair/claim', express.json(), (req, res) => {
     data: {
       token: rawToken,
       token_type: 'Bearer',
-      scopes: ['read', 'write', 'profile'],
+      scopes: validScopes.split(' '),
       user: serializeAccount(user, user.id),
     },
   });
@@ -2494,9 +2499,11 @@ router.get('/rooms/:id/session/keys', requireApiAuth('read'), (req, res) => {
   const room = db.getRoom(parseInt(req.params.id, 10));
   if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
   if (!db.isRoomMember(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'Not a member.');
-  const keys = db.getPendingRoomSessionKeys(req.apiUser.id).map(k => ({
-    key_id: k.key_id, session_id: k.session_id, room_id: k.room_id, sender_id: k.sender_id, encrypted_key: k.encrypted_key,
-  }));
+  const keys = db.getPendingRoomSessionKeys(req.apiUser.id)
+    .filter(k => k.room_id === room.id)
+    .map(k => ({
+      key_id: k.key_id, session_id: k.session_id, room_id: k.room_id, sender_id: k.sender_id, encrypted_key: k.encrypted_key,
+    }));
   responseEnvelope(res, { keys });
 });
 
@@ -2798,6 +2805,7 @@ router.get('/conversations/:username', requireApiAuth('read:direct'), (req, res)
 
 // Send a message
 router.post('/conversations/:username/messages', requireApiAuth('write:direct'), requireVerifiedApiWrite, (req, res) => {
+  const clientId = req.body.client_id || req.body.nonce || req.body.client_tx_id;
   const other = db.getUserByUsername(req.params.username);
   if (!other) return errorResponse(res, 404, 'Not Found', 'User not found.');
   if (!db.areMutualFollowers(req.apiUser.id, other.id)) {
@@ -2829,36 +2837,35 @@ router.post('/conversations/:username/messages', requireApiAuth('write:direct'),
   const msg = db.db.prepare(`SELECT id, from_id, to_id, body, created_at, key_for_sender, key_for_recipient, proto, sender_ciphertext, secure FROM messages WHERE id = ?`).get(msgId);
   const senderId = db.getOlmIdentity(req.apiUser.id);
   const apiUserRow = db.db.prepare(`SELECT username, display_name FROM users WHERE id = ?`).get(req.apiUser.id);
-  sendDmEvent(other.username, {
+  const dmPayload = {
     message: msg,
     sender_curve: senderId ? senderId.identity_key : null,
     from_username: apiUserRow.username,
     from_display: apiUserRow.display_name,
     to_username: other.username,
-  });
+  };
+  if (clientId) dmPayload.client_id = String(clientId);
+  sendDmEvent(other.username, dmPayload);
   if (apiUserRow.username !== other.username) {
-    sendDmEvent(apiUserRow.username, {
-      message: msg,
-      sender_curve: senderId ? senderId.identity_key : null,
-      from_username: apiUserRow.username,
-      from_display: apiUserRow.display_name,
-      to_username: other.username,
-    });
+    sendDmEvent(apiUserRow.username, dmPayload);
   }
 
+  const responseData = {
+    id: String(msg.id),
+    from_id: String(msg.from_id),
+    to_id: String(msg.to_id),
+    body: msg.body,
+    created_at: msg.created_at,
+    key_for_sender: msg.key_for_sender,
+    key_for_recipient: msg.key_for_recipient,
+    proto: msg.proto,
+    sender_ciphertext: msg.sender_ciphertext,
+    secure: msg.secure === 1,
+  };
+  if (clientId) responseData.client_id = String(clientId);
+
   res.status(201).json({
-    data: {
-      id: String(msg.id),
-      from_id: String(msg.from_id),
-      to_id: String(msg.to_id),
-      body: msg.body,
-      created_at: msg.created_at,
-      key_for_sender: msg.key_for_sender,
-      key_for_recipient: msg.key_for_recipient,
-      proto: msg.proto,
-      sender_ciphertext: msg.sender_ciphertext,
-      secure: msg.secure === 1,
-    },
+    data: responseData,
   });
 });
 

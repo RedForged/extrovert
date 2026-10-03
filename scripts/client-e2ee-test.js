@@ -326,4 +326,49 @@ describe('E2EE Server Enhancements for Client Developers', () => {
 
     aliceWs.close();
   });
+
+  it('filters pending session keys by room ID in GET /rooms/:id/session/keys', async () => {
+    // Create room2 and add Bob to it
+    const room2Id = db.createRoom('Room 2 Keys Isolation', 'Testing room key isolation', aliceId, 1);
+    db.addRoomMember(room2Id, bobId);
+
+    // Publish session keys in room 2 for Bob
+    const s2Res = await fetch(`${baseUrl}/rooms/${room2Id}/session`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${aliceToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        rotate: true,
+        sender_device_id: 'alice_device_r2',
+        keys: [
+          { recipient_id: bobId, encrypted_key: 'room_2_key_for_bob' },
+        ],
+      }),
+    });
+    assert.strictEqual(s2Res.status, 200);
+
+    // Fetch keys for room 1: should ONLY contain room 1 keys
+    const r1KeysRes = await fetch(`${baseUrl}/rooms/${roomId}/session/keys`, {
+      headers: { Authorization: `Bearer ${bobToken}` },
+    });
+    assert.strictEqual(r1KeysRes.status, 200);
+    const r1KeysJson = await r1KeysRes.json();
+    assert.ok(r1KeysJson.data.keys.length > 0);
+    for (const k of r1KeysJson.data.keys) {
+      assert.strictEqual(k.room_id, roomId, 'Key in room 1 query must belong to room 1');
+    }
+
+    // Fetch keys for room 2: should ONLY contain room 2 keys
+    const r2KeysRes = await fetch(`${baseUrl}/rooms/${room2Id}/session/keys`, {
+      headers: { Authorization: `Bearer ${bobToken}` },
+    });
+    assert.strictEqual(r2KeysRes.status, 200);
+    const r2KeysJson = await r2KeysRes.json();
+    assert.ok(r2KeysJson.data.keys.length > 0);
+    for (const k of r2KeysJson.data.keys) {
+      assert.strictEqual(k.room_id, room2Id, 'Key in room 2 query must belong to room 2');
+    }
+  });
 });

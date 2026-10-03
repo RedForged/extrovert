@@ -84,13 +84,21 @@ async function main() {
   // Wait for the connection to register.
   await new Promise(r => setTimeout(r, 300));
 
+  const dmClientTxId = 'dm-client-tx-' + Date.now();
   // Alice sends a DM to bob via the API.
   const sendRes = await fetch(base + '/api/v1/conversations/bob/messages', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + atok },
-    body: JSON.stringify({ proto: 'olm', body: '{"t":0,"b":"ciphertext-blob"}', sender_ciphertext: '{"t":0,"b":"self-copy"}' }),
+    body: JSON.stringify({
+      proto: 'olm',
+      body: '{"t":0,"b":"ciphertext-blob"}',
+      sender_ciphertext: '{"t":0,"b":"self-copy"}',
+      client_id: dmClientTxId,
+    }),
   });
   ok(sendRes.status === 201, 'alice sends a DM over the API');
+  const sendJson = await sendRes.json();
+  ok(sendJson.data.client_id === dmClientTxId, 'DM response echoes client_id');
 
   const msg = await Promise.race([
     received,
@@ -98,6 +106,7 @@ async function main() {
   ]).catch(err => err);
 
   ok(msg && msg.type === 'new_dm', 'bob\'s WebSocket receives new_dm live');
+  ok(msg && msg.client_id === dmClientTxId, 'pushed message carries client_id');
   if (msg && msg.message) {
     ok(String(msg.message.from_id) === String(aliceId), 'pushed message carries sender id');
     ok(msg.message.proto === 'olm', 'pushed message carries proto');
