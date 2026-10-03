@@ -1298,23 +1298,28 @@ function setOlmBackup(userId, backup, backupIdentity, kekSalt = null) {
   // getOlmIdentity handles them as "no identity published yet".
   const existing = getOlmIdentity(userId);
   if (existing && existing.identity_key && backupIdentity && backupIdentity !== existing.identity_key) {
-    // A superseded client uploaded a backup of its OLD identity after a
-    // rotation. Storing it would hand the next unlock attempt a stale account
-    // that can never match the server identity — reject it.
-    return false;
+    // Multi-device clients publish per-device identities in user_devices while
+    // olm_identity may still hold a legacy/mismatched key — accept the upload
+    // when the backup identity belongs to one of the user's active devices. A
+    // superseded client uploading a backup of its OLD identity after a rotation
+    // matches neither and is still rejected: storing it would hand the next
+    // unlock attempt a stale account that can never match the server identity.
+    const device = db.prepare(`SELECT 1 FROM user_devices WHERE user_id = ? AND identity_key = ?`).get(userId, backupIdentity);
+    if (!device) return false;
   }
-  if (backup && !kekSalt && existing && existing.kek_salt) {
-    // A legacy (unsalted) upload must never clobber a salted backup: the stored
-    // salt would no longer match the stored ciphertext and recovery would break.
-    return false;
-  }
-  // Backup and salt always move together (both NULL or both set).
-  const salt = backup ? (kekSalt || null) : null;
+  // An upload that omits kek_salt keeps the already-stored salt rather than
+  // being rejected: its ciphertext was sealed with the KEK derived from that
+  // salt (the client lost the salt metadata, not the key), so falling back
+  // preserves recovery. Backup and salt always move together (both NULL or
+  // both set).
+  const salt = backup ? (kekSalt || (existing && existing.kek_salt) || null) : null;
   db.prepare(`
     INSERT INTO olm_identity (user_id, identity_key, ed25519_key, backup, kek_salt, created_at, rotated_at)
-    VALUES (?, '', '', ?, ?, ?, ?)
-    ON CONFLICT(user_id) DO UPDATE SET backup = excluded.backup, kek_salt = excluded.kek_salt
-  `).run(userId, backup || null, salt, Date.now(), Date.now());
+    VALUES (?, ?, '', ?, ?, ?, ?)
+    ON CONFLICT(user_id) DO UPDATE SET
+      identity_key = CASE WHEN ? THEN ? ELSE identity_key END,
+      backup = excluded.backup, kek_salt = excluded.kek_salt
+  `).run(userId, backupIdentity || '', backup || null, salt, Date.now(), Date.now(), backupIdentity ? 1 : 0, backupIdentity || '');
   return true;
 }
 

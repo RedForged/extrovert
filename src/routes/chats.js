@@ -173,7 +173,7 @@ router.get('/prekeys/backup', (req, res) => {
   const user = res.locals.currentUser;
   if (!user) return res.status(401).json({ error: 'not logged in' });
   const id = getOlmIdentity(user.id);
-  res.json({ backup: id ? id.backup : null, has_identity: !!(id && id.identity_key), salt: id ? id.kek_salt || null : null });
+  res.json({ backup: id ? id.backup : null, has_identity: !!(id && id.identity_key), backup_identity: id ? id.identity_key : null, salt: id ? id.kek_salt || null : null });
 });
 
 // PBKDF2 salt for the password-derived backup key. Deliberately readable

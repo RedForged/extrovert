@@ -3215,7 +3215,7 @@ router.get('/conversations/history/backup', requireApiAuth('read:direct'), (req,
 // Download the password-encrypted Olm account backup (for legacy recovery). (before :username)
 router.get('/conversations/prekeys/backup', requireApiAuth('read:direct'), (req, res) => {
   const id = db.getOlmIdentity(req.apiUser.id);
-  responseEnvelope(res, { backup: id ? id.backup : null, has_identity: !!(id && id.identity_key), salt: id ? id.kek_salt || null : null });
+  responseEnvelope(res, { backup: id ? id.backup : null, has_identity: !!(id && id.identity_key), backup_identity: id ? id.identity_key : null, salt: id ? id.kek_salt || null : null });
 });
 
 // Count of unused one-time prekeys the current user still has published. (before :username)

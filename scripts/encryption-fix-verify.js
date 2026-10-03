@@ -326,10 +326,12 @@ async function main() {
   await bob.csrfFetch('/chats/prekeys', { method: 'POST', body: JSON.stringify({ backup: 'BK-ENC', backup_identity: bob.myIdKeys.curve25519, kek_salt: 'rAndOmSaLt' }) });
   const salt1 = await fetch(base + '/chats/kek-salt?username=bob').then(r => r.json());
   ok(salt1.salt === 'rAndOmSaLt', 'salt stored alongside the backup and readable pre-login');
-  // A legacy (unsalted) upload must NOT clobber a salted backup.
+  // An upload that omits kek_salt falls back to the stored salt instead of
+  // being rejected (background vault uploads must land): the salt is never
+  // dropped, so recovery keeps deriving the same KEK.
   await bob.csrfFetch('/chats/prekeys', { method: 'POST', body: JSON.stringify({ backup: 'BK-LEGACY', backup_identity: bob.myIdKeys.curve25519 }) });
   const bk = await bob.csrfFetch('/chats/prekeys/backup').then(r => r.json());
-  ok(bk.backup === 'BK-ENC' && bk.salt === 'rAndOmSaLt', 'legacy (unsalted) upload did not clobber the salted backup');
+  ok(bk.backup === 'BK-LEGACY' && bk.salt === 'rAndOmSaLt', 'unsalted upload landed but kept the stored salt (recovery derives the same KEK)');
 
   // ===== Room multi-device fan-out (P1-8 / P1-9 / P1-10) =====
   console.log('\n=== P1-8/P1-9/P1-10: room key to every device + rotation retention ===');

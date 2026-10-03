@@ -350,12 +350,16 @@
     });
   }
 
-  function saveKekToStorage(k) {
+  function saveKekToStorage(k, salt) {
     if (!k || USE_FILE_STORE) return Promise.resolve();
     var uid = activeUserId();
     if (!uid) return Promise.resolve();
+    if (salt === undefined) salt = kekSalt;
     return crypto.subtle.exportKey('jwk', k).then(function (jwk) {
-      return encryptWithKd(JSON.stringify(jwk));
+      // Store the jwk AND its PBKDF2 salt: without the salt a reload derives or
+      // re-uploads the vault with a mismatched (or missing) kek_salt, breaking
+      // backup recovery on other devices.
+      return encryptWithKd(JSON.stringify({ jwk: jwk, salt: salt || null }));
     }).then(function (enc) {
       return idbSet(STORE_CRYPTO, 'kek:' + uid, enc);
     }).catch(function (e) {
@@ -371,11 +375,14 @@
     return idbGet(STORE_CRYPTO, 'kek:' + uid).then(function (enc) {
       if (!enc) return null;
       return decryptWithKd(enc).then(function (json) {
-        var jwk = JSON.parse(json);
+        var parsed = JSON.parse(json);
+        // New shape: { jwk, salt }. Legacy shape: a bare jwk (no salt known).
+        var jwk = parsed && parsed.jwk ? parsed.jwk : parsed;
         return crypto.subtle.importKey(
           'jwk', jwk, { name: 'AES-GCM', length: 256 }, true, ['wrapKey', 'unwrapKey', 'encrypt', 'decrypt']
         ).then(function (k) {
           kek = k;
+          if (parsed && parsed.jwk && parsed.salt) kekSalt = parsed.salt;
           return k;
         });
       });
@@ -1923,7 +1930,7 @@
                   return saveAccount();
                 }).then(function () {
                   return Promise.all([
-                    saveKekToStorage(kek),
+                    saveKekToStorage(kek, kekSalt),
                     loadLegacyKey(kek),
                     restoreSelfSessionsFromBackup(data),
                     restoreSessionsFromBackup(data),
@@ -1960,14 +1967,15 @@
               return importKek(storedKek).then(function (k) {
                 if (k) {
                   kek = k;
-                  saveKekToStorage(k);
+                  saveKekToStorage(k, kekSalt);
                 }
                 return restoreHistoryFromBackup();
               }).then(function () {
-                if (kek && kekSalt && account && !sessionStorage.getItem('extrovert_kek_synced')) {
-                  return uploadBackup(account.pickle(PICKLE_KEY)).then(function () {
-                    try { sessionStorage.setItem('extrovert_kek_synced', '1'); } catch (_) {}
-                  }).catch(function () {});
+                // Sign-in with a password-derived KEK: upload the vault right
+                // away, unconditionally, so the server is guaranteed to hold a
+                // restorable backup for a second device.
+                if (kek && account) {
+                  return uploadBackup(account.pickle(PICKLE_KEY)).catch(function () {});
                 }
               }).catch(function () {});
             } else if (kek && hasBackup) {
@@ -1983,7 +1991,7 @@
         if (storedKek) {
           return importKek(storedKek).then(function (k) {
             kek = k;
-            if (k) saveKekToStorage(k);
+            if (k) saveKekToStorage(k, kekSalt);
             return loadLegacyKey(kek);
           }).then(function () {
             return createAndPublishAccount().then(function () { return saveAccount(); });
