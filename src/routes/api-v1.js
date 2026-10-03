@@ -3147,14 +3147,14 @@ router.post('/conversations/keys', requireApiAuth('write:direct'), (req, res) =>
 });
 
 // Publish / refresh Olm identity + prekey bundle (supports per-device multi-ID). (must be before :username routes)
-router.post('/conversations/prekeys', requireApiAuth('write:direct'), express.json(), (req, res) => {
+router.post('/conversations/prekeys', requireApiAuth('write:direct'), express.json({ limit: '10mb' }), (req, res) => {
   const deviceId = String(req.body.device_id || '').trim();
   const identityKey = String(req.body.identity_key || '').trim();
   const ed25519Key = String(req.body.ed25519_key || '').trim();
   const fallbackKey = String(req.body.fallback_key || '').trim() || null;
   const deviceName = String(req.body.device_name || '').trim() || null;
   const oneTimeKeys = Array.isArray(req.body.one_time_keys) ? req.body.one_time_keys : [];
-  const backup = String(req.body.backup || '').trim().slice(0, 200000) || null;
+  const backup = String(req.body.backup || '').trim().slice(0, 8000000) || null;
 
   if (deviceId && identityKey && ed25519Key) {
     db.registerUserDevice(req.apiUser.id, deviceId, identityKey, ed25519Key, fallbackKey, deviceName);

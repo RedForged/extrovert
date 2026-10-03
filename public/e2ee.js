@@ -302,7 +302,7 @@
     return crypto.subtle.importKey('raw', e.encode(password), 'PBKDF2', false, ['deriveKey']).then(function (k) {
       return crypto.subtle.deriveKey(
         { name: 'PBKDF2', salt: e.encode(username.toLowerCase()), iterations: 600000, hash: 'SHA-256' },
-        k, { name: 'AES-GCM', length: 256 }, false, ['wrapKey', 'unwrapKey', 'encrypt', 'decrypt']
+        k, { name: 'AES-GCM', length: 256 }, true, ['wrapKey', 'unwrapKey', 'encrypt', 'decrypt']
       );
     });
   }
@@ -315,7 +315,7 @@
     return crypto.subtle.importKey('raw', e.encode(password), 'PBKDF2', false, ['deriveKey']).then(function (k) {
       return crypto.subtle.deriveKey(
         { name: 'PBKDF2', salt: salt, iterations: 600000, hash: 'SHA-256' },
-        k, { name: 'AES-GCM', length: 256 }, false, ['wrapKey', 'unwrapKey', 'encrypt', 'decrypt']
+        k, { name: 'AES-GCM', length: 256 }, true, ['wrapKey', 'unwrapKey', 'encrypt', 'decrypt']
       );
     });
   }
@@ -348,6 +348,38 @@
         return idbSet(STORE_CRYPTO, KEY_DEVICE, key).then(function () { return key; });
       });
     });
+  }
+
+  function saveKekToStorage(k) {
+    if (!k || USE_FILE_STORE) return Promise.resolve();
+    var uid = activeUserId();
+    if (!uid) return Promise.resolve();
+    return crypto.subtle.exportKey('jwk', k).then(function (jwk) {
+      return encryptWithKd(JSON.stringify(jwk));
+    }).then(function (enc) {
+      return idbSet(STORE_CRYPTO, 'kek:' + uid, enc);
+    }).catch(function (e) {
+      console.warn('saveKekToStorage failed', e);
+    });
+  }
+
+  function loadKekFromStorage() {
+    if (kek) return Promise.resolve(kek);
+    if (USE_FILE_STORE) return Promise.resolve(null);
+    var uid = activeUserId();
+    if (!uid) return Promise.resolve(null);
+    return idbGet(STORE_CRYPTO, 'kek:' + uid).then(function (enc) {
+      if (!enc) return null;
+      return decryptWithKd(enc).then(function (json) {
+        var jwk = JSON.parse(json);
+        return crypto.subtle.importKey(
+          'jwk', jwk, { name: 'AES-GCM', length: 256 }, true, ['wrapKey', 'unwrapKey', 'encrypt', 'decrypt']
+        ).then(function (k) {
+          kek = k;
+          return k;
+        });
+      });
+    }).catch(function () { return null; });
   }
 
   function encryptWithKd(plaintext) {
@@ -839,19 +871,23 @@
     };
     // In-memory outbound + inbound sessions (the live copies used for sending).
     Object.keys(sessions).forEach(function (fullKey) {
-      if (String(fullKey).indexOf(uid + ':') !== 0) return; // only this account's
+      if (String(fullKey).indexOf('self') === 0) return;
       try {
         var s = sessions[fullKey];
-        if (s && s.pickle) addPickle(fullKey, s.pickle(PICKLE_KEY), false);
+        if (s && s.pickle) addPickle('out:' + uid + ':' + fullKey, s.pickle(PICKLE_KEY), false);
       } catch (_) {}
     });
     Object.keys(outboundSessions).forEach(function (fullKey) {
-      if (String(fullKey).indexOf(uid + ':') !== 0) return;
-      try { addPickle(fullKey, outboundSessions[fullKey].pickle(PICKLE_KEY), false); } catch (_) {}
+      if (String(fullKey).indexOf('self') === 0) return;
+      try { addPickle('out:' + uid + ':' + fullKey, outboundSessions[fullKey].pickle(PICKLE_KEY), false); } catch (_) {}
+    });
+    Object.keys(inboundSessions).forEach(function (fullKey) {
+      if (String(fullKey).indexOf('self') === 0) return;
+      try { addPickle('in:' + uid + ':' + fullKey, inboundSessions[fullKey].pickle(PICKLE_KEY), false); } catch (_) {}
     });
     Object.keys(inboundBaselinePickles).forEach(function (fullKey) {
-      if (String(fullKey).indexOf(uid + ':') !== 0) return;
-      addPickle(fullKey, inboundBaselinePickles[fullKey], true);
+      if (String(fullKey).indexOf('self') === 0) return;
+      addPickle(uid + ':' + fullKey, inboundBaselinePickles[fullKey], true);
     });
     // Self-session pair.
     if (selfOutbound) { try { addPickle('selfOutbound:' + uid, selfOutbound.pickle(PICKLE_KEY), false); } catch (_) {} }
@@ -883,20 +919,28 @@
       return new Promise(function (resolve, reject) {
         var tx = db.transaction(STORE_OLM, 'readonly');
         var req = tx.objectStore(STORE_OLM).openCursor();
+        var cursorTasks = [];
         req.onsuccess = function () {
           var cursor = req.result;
-          if (!cursor) { resolve(out); return; }
+          if (!cursor) {
+            Promise.all(cursorTasks).then(function () {
+              resolve(out);
+            }).catch(function () {
+              resolve(out);
+            });
+            return;
+          }
           var k = String(cursor.key);
           if (k.indexOf('sessionOut:' + uid + ':') === 0) {
-            decryptWithKd(cursor.value).then(function (pickle) {
+            cursorTasks.push(decryptWithKd(cursor.value).then(function (pickle) {
               addPickle('out:' + k.slice('sessionOut:'.length), pickle, false);
-            }).catch(function () {});
+            }).catch(function () {}));
           } else if (k.indexOf('sessionIn:' + uid + ':') === 0) {
-            decryptWithKd(cursor.value).then(function (pickle) {
+            cursorTasks.push(decryptWithKd(cursor.value).then(function (pickle) {
               addPickle('in:' + k.slice('sessionIn:'.length), pickle, false);
-            }).catch(function () {});
+            }).catch(function () {}));
           } else if (k.indexOf('sessionInBaseList:' + uid + ':') === 0) {
-            decryptWithKd(cursor.value).then(function (json) {
+            cursorTasks.push(decryptWithKd(cursor.value).then(function (json) {
               try {
                 var arr = JSON.parse(json);
                 if (Array.isArray(arr)) {
@@ -906,24 +950,24 @@
                   });
                 }
               } catch (_) {}
-            }).catch(function () {});
+            }).catch(function () {}));
           } else if (k.indexOf('sessionBase:' + uid + ':') === 0) {
-            decryptWithKd(cursor.value).then(function (pickle) {
+            cursorTasks.push(decryptWithKd(cursor.value).then(function (pickle) {
               var baseKey = k.slice('sessionBase:'.length);
               if (!out.baselines[baseKey]) addPickle(baseKey, pickle, true);
-            }).catch(function () {});
+            }).catch(function () {}));
           } else if (k.indexOf('groupIn:' + uid + ':') === 0) {
-            decryptWithKd(cursor.value).then(function (pickle) {
+            cursorTasks.push(decryptWithKd(cursor.value).then(function (pickle) {
               var gKey = k.slice(('groupIn:' + uid + ':').length);
               if (!out.groupIn[gKey]) out.groupIn[gKey] = pickle;
-            }).catch(function () {});
+            }).catch(function () {}));
           } else if (k.indexOf('groupOut:' + uid + ':') === 0) {
-            decryptWithKd(cursor.value).then(function (json) {
+            cursorTasks.push(decryptWithKd(cursor.value).then(function (json) {
               try {
                 var rId = k.slice(('groupOut:' + uid + ':').length);
                 if (!out.groupOut[rId]) out.groupOut[rId] = JSON.parse(json);
               } catch (_) {}
-            }).catch(function () {});
+            }).catch(function () {}));
           }
           cursor.continue();
         };
@@ -1032,14 +1076,16 @@
           selfInboundBaseline = pickle;
         } else if (isPeerOut) {
           var outKey = String(fullKey).slice(('out:' + uid + ':').length);
-          sessions[uid + ':' + outKey] = s;
-          outboundSessions[uid + ':' + outKey] = s;
+          sessions[outKey] = s;
+          outboundSessions[outKey] = s;
         } else if (isPeerIn) {
           var inKey = String(fullKey).slice(('in:' + uid + ':').length);
-          sessions[uid + ':' + inKey] = s;
+          sessions[inKey] = s;
+          inboundSessions[inKey] = s;
         } else {
-          sessions[fullKey] = s;
-          outboundSessions[fullKey] = s;
+          var plainKey = String(fullKey).slice((uid + ':').length);
+          sessions[plainKey] = s;
+          outboundSessions[plainKey] = s;
         }
         // Persist wrapped with Kd so the normal load path finds it.
         return encryptWithKd(pickle).then(function (enc) {
@@ -1047,15 +1093,15 @@
           if (isSelfOut) writes.push(idbSet(STORE_OLM, selfOutKey(), enc));
           else if (isSelfIn) writes.push(idbSet(STORE_OLM, selfInKey(), enc));
           else if (isPeerOut) {
-            writes.push(idbSet(STORE_OLM, sessionOutKey(uid + ':' + outKey), enc));
-            writes.push(idbSet(STORE_OLM, sessionKey(uid + ':' + outKey), enc));
+            writes.push(idbSet(STORE_OLM, sessionOutKey(outKey), enc));
+            writes.push(idbSet(STORE_OLM, sessionKey(outKey), enc));
           } else if (isPeerIn) {
-            writes.push(idbSet(STORE_OLM, sessionInKey(uid + ':' + inKey), enc));
-            writes.push(idbSet(STORE_OLM, sessionKey(uid + ':' + inKey), enc));
+            writes.push(idbSet(STORE_OLM, sessionInKey(inKey), enc));
+            writes.push(idbSet(STORE_OLM, sessionKey(inKey), enc));
           } else {
-            writes.push(idbSet(STORE_OLM, sessionOutKey(fullKey), enc));
-            writes.push(idbSet(STORE_OLM, sessionInKey(fullKey), enc));
-            writes.push(idbSet(STORE_OLM, sessionKey(fullKey), enc));
+            writes.push(idbSet(STORE_OLM, sessionOutKey(plainKey), enc));
+            writes.push(idbSet(STORE_OLM, sessionInKey(plainKey), enc));
+            writes.push(idbSet(STORE_OLM, sessionKey(plainKey), enc));
           }
           return Promise.all(writes);
         });
@@ -1068,13 +1114,17 @@
             selfInboundBaseline = pickle;
             return Promise.resolve();
           }
-          inboundBaselinePickles[fullKey] = pickle;
-          sessionBaselinePickles[fullKey] = pickle;
+          var baseKey = String(fullKey).slice((uid + ':').length);
+          inboundBaselinePickles[baseKey] = pickle;
+          sessionBaselinePickles[baseKey] = pickle;
           return encryptWithKd(pickle).then(function (enc) {
             return Promise.all([
-              idbSet(STORE_OLM, sessionInBaseKey(fullKey), enc),
-              idbSet(STORE_OLM, sessionBaseKey(fullKey), enc),
-              idbSet(STORE_OLM, sessionInKey(fullKey), enc),
+              idbSet(STORE_OLM, sessionInBaseKey(baseKey), enc),
+              idbSet(STORE_OLM, sessionBaseKey(baseKey), enc),
+              idbSet(STORE_OLM, sessionInKey(baseKey), enc),
+              encryptWithKd(JSON.stringify([pickle])).then(function (encList) {
+                return idbSet(STORE_OLM, inboundBaseListKey(baseKey), encList);
+              }),
             ]);
           });
         }).catch(function () {}));
@@ -1777,7 +1827,8 @@
     interceptAuthForm('form[action^="/register"]');
   }
   function storeKek(password, username) {
-    return e2eeFetch('/chats/kek-salt?username=' + encodeURIComponent(username))
+    var base = (NATIVE_CFG && NATIVE_CFG.apiBase) || '';
+    return fetch(base + '/chats/kek-salt?username=' + encodeURIComponent(username), { credentials: 'omit' })
       .then(function (r) { return r.json(); })
       .catch(function () { return null; })
       .then(function (d) {
@@ -1800,11 +1851,13 @@
           deriveP = deriveKek(password, username); chosenSalt = null;
         }
         return deriveP.then(function (k) {
+          kek = k;
+          kekSalt = chosenSalt;
           return crypto.subtle.exportKey('jwk', k);
         }).then(function (jwk) {
           sessionStorage.setItem(KEK_SESSION_KEY, btoa(JSON.stringify({ v: 2, jwk: jwk, salt: chosenSalt })));
         });
-      }).catch(function () {});
+      }).catch(function (e) { console.warn('storeKek failed', e); });
   }
 
   function loadLegacyKey(k) {
@@ -1826,33 +1879,23 @@
     }).then(function () {
       return getOrCreateDeviceId();
     }).then(function () {
+      return loadKekFromStorage();
+    }).then(function () {
       return loadAccountFromStorage();
     }).then(function (acct) {
       var storedKek = sessionStorage.getItem(KEK_SESSION_KEY);
-      if (acct) {
-        return loadSelfSessions().then(function () { return maybeReplenishPrekeys(); }).then(function () {
-          if (storedKek) {
-            importKek(storedKek).then(function (k) {
-              kek = k;
-              return restoreHistoryFromBackup();
-            }).then(function () {
-              // Once per browser session: if the KEK was derived with a random
-              // salt, push a freshly salted backup so recovery is salt-based
-              // (and so a legacy backup gets upgraded after the first login).
-              if (kek && kekSalt && account && !sessionStorage.getItem('extrovert_kek_synced')) {
-                return uploadBackup(account.pickle(PICKLE_KEY)).then(function () {
-                  try { sessionStorage.setItem('extrovert_kek_synced', '1'); } catch (_) {}
-                }).catch(function () {});
-              }
-            }).catch(function () {});
-          }
-          if (opts.onReady) opts.onReady();
-          return true;
-        });
-      }
       return fetchBackup().then(function (data) {
         var hasBackup = data && !!data.backup;
-        if (hasBackup) {
+        var backupIdentity = data && data.backup_identity;
+        var identityMismatch = !!(acct && backupIdentity && myIdKeys && myIdKeys.curve25519 !== backupIdentity);
+
+        // Offer backup restoration whenever an encrypted backup exists and either:
+        // - This device is fresh (!acct)
+        // - Local identity differs from the server's backup identity
+        // - The user just completed sign-in with password (storedKek present)
+        var shouldPrompt = hasBackup && (!acct || identityMismatch || !!storedKek);
+
+        if (shouldPrompt) {
           return new Promise(function (resolve) {
             showBackupPromptOverlay({
               hasStoredKek: !!storedKek,
@@ -1871,7 +1914,7 @@
                 }
                 return deriveP.then(function () {
                   var unwrapped = unwrapBackup(data.backup);
-                  return decryptWithKek(unwrapped.account, kek);
+                  return decryptWithKek(unwrapped.account, kek).catch(function () { throw new Error('Wrong password.'); });
                 }).then(function (pickle) {
                   account = new Olm.Account();
                   account.unpickle(PICKLE_KEY, pickle);
@@ -1880,6 +1923,7 @@
                   return saveAccount();
                 }).then(function () {
                   return Promise.all([
+                    saveKekToStorage(kek),
                     loadLegacyKey(kek),
                     restoreSelfSessionsFromBackup(data),
                     restoreSessionsFromBackup(data),
@@ -1891,20 +1935,15 @@
                 }).then(function () {
                   return ensureSelfSessions();
                 }).then(function () {
-                  sessionStorage.removeItem(KEK_SESSION_KEY);
+                  try { sessionStorage.removeItem(KEK_SESSION_KEY); } catch (_) {}
                   if (opts.onReady) opts.onReady();
                   resolve(true);
                 });
               },
               onFresh: function () {
-                sessionStorage.removeItem(KEK_SESSION_KEY);
-                return createAndPublishAccount().then(function () {
-                  return saveAccount();
-                }).then(function () {
-                  return ensureSelfSessions();
-                }).then(function () {
-                  if (kek) return uploadBackup(account.pickle(PICKLE_KEY));
-                }).then(function () {
+                try { sessionStorage.removeItem(KEK_SESSION_KEY); } catch (_) {}
+                var p = acct ? Promise.resolve() : createAndPublishAccount().then(saveAccount).then(ensureSelfSessions);
+                return p.then(function () {
                   if (opts.onReady) opts.onReady();
                   resolve(true);
                 });
@@ -1912,9 +1951,39 @@
             });
           });
         }
+
+        if (acct) {
+          return loadSelfSessions().then(function () {
+            return maybeReplenishPrekeys();
+          }).then(function () {
+            if (storedKek) {
+              return importKek(storedKek).then(function (k) {
+                if (k) {
+                  kek = k;
+                  saveKekToStorage(k);
+                }
+                return restoreHistoryFromBackup();
+              }).then(function () {
+                if (kek && kekSalt && account && !sessionStorage.getItem('extrovert_kek_synced')) {
+                  return uploadBackup(account.pickle(PICKLE_KEY)).then(function () {
+                    try { sessionStorage.setItem('extrovert_kek_synced', '1'); } catch (_) {}
+                  }).catch(function () {});
+                }
+              }).catch(function () {});
+            } else if (kek && hasBackup) {
+              return restoreRoomSessionsFromBackup(data).catch(function () {});
+            }
+          }).then(function () {
+            try { sessionStorage.removeItem(KEK_SESSION_KEY); } catch (_) {}
+            if (opts.onReady) opts.onReady();
+            return true;
+          });
+        }
+
         if (storedKek) {
           return importKek(storedKek).then(function (k) {
             kek = k;
+            if (k) saveKekToStorage(k);
             return loadLegacyKey(kek);
           }).then(function () {
             return createAndPublishAccount().then(function () { return saveAccount(); });
@@ -1923,11 +1992,12 @@
           }).then(function () {
             return uploadBackup(account.pickle(PICKLE_KEY));
           }).then(function () {
-            sessionStorage.removeItem(KEK_SESSION_KEY);
+            try { sessionStorage.removeItem(KEK_SESSION_KEY); } catch (_) {}
             if (opts.onReady) opts.onReady();
             return true;
           });
         }
+
         return initOlm().then(function () {
           return createAndPublishAccount().then(function () { return saveAccount(); });
         }).then(function () {
@@ -1945,11 +2015,11 @@
       var parsed = JSON.parse(atob(b64));
       if (parsed && parsed.v === 2 && parsed.jwk) {
         kekSalt = parsed.salt || null;
-        return crypto.subtle.importKey('jwk', parsed.jwk, { name: 'AES-GCM', length: 256 }, false, ['wrapKey', 'unwrapKey', 'encrypt', 'decrypt']);
+        return crypto.subtle.importKey('jwk', parsed.jwk, { name: 'AES-GCM', length: 256 }, true, ['wrapKey', 'unwrapKey', 'encrypt', 'decrypt']);
       }
       // Legacy shape (raw jwk): no salt.
       kekSalt = null;
-      return crypto.subtle.importKey('jwk', parsed, { name: 'AES-GCM', length: 256 }, false, ['wrapKey', 'unwrapKey', 'encrypt', 'decrypt']);
+      return crypto.subtle.importKey('jwk', parsed, { name: 'AES-GCM', length: 256 }, true, ['wrapKey', 'unwrapKey', 'encrypt', 'decrypt']);
     } catch (e) { kekSalt = null; return Promise.resolve(null); }
   }
 
