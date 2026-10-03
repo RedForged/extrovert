@@ -7,7 +7,7 @@ Base path: `/api/v1` unless noted. Auth notation: **session** = logged-in web se
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | GET | `/client/bootstrap` | Bearer (`read`) | **Unified startup state** in 1 round-trip: returns `{ user, initial_seq, unread_notifications, rooms, timeline, ice_servers, e2ee, server }`. |
-| POST | `/auth/login` | none | **Direct client login**: accepts `{username, password, client_name}`. Returns standard OAuth tokens or `{totp_required: true, challenge_token}`. Auto-provisions an identifiable client-app row. Protected with brute-force lockout. Disabled when `EXTV_API_PASSWORD_LOGIN=off`. |
+| POST | `/auth/login` | none | **Direct client login**: accepts `{username, password, client_name}`. Returns standard OAuth tokens (`access_token`, `refresh_token`, `client_id`, `expires_in`, `scope`, `user`) or `{totp_required: true, challenge_token}`. Auto-provisions an identifiable client-app row. Protected with brute-force lockout. Disabled when `EXTV_API_PASSWORD_LOGIN=off`. |
 | POST | `/auth/login/totp` | none | **Complete 2FA login**: accepts `{challenge_token, code}` (TOTP or recovery code). Single-use challenge (TTL ≤300s, max 5 attempts). Returns standard OAuth tokens. |
 | POST | `/auth/passkey/options` | none | **Generate passkey authentication options**: accepts `{username?}`. Returns WebAuthn assertion options and challenge token. |
 | POST | `/auth/passkey/verify` | none | **Verify passkey assertion**: accepts `{challenge_token, response, client_name}`. Verifies assertion, increments signature counter, and issues standard OAuth tokens. |

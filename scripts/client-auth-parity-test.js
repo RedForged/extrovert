@@ -81,6 +81,8 @@ test('Client Auth & Admin API Parity Suite', async (t) => {
     assert.ok(data.access_token, 'has access_token');
     assert.strictEqual(data.token_type, 'Bearer');
     assert.ok(data.refresh_token, 'has refresh_token');
+    assert.ok(data.client_id, 'has client_id');
+    assert.match(data.client_id, /^ext_client_/, 'client_id has valid format');
     assert.ok(data.expires_in, 'has expires_in');
     assert.strictEqual(data.user.username, regularUser.username);
 
@@ -191,6 +193,8 @@ test('Client Auth & Admin API Parity Suite', async (t) => {
     assert.strictEqual(goodCodeRes.status, 200);
     const tokens = await goodCodeRes.json();
     assert.ok(tokens.access_token, 'access token issued');
+    assert.ok(tokens.client_id, 'client_id issued');
+    assert.match(tokens.client_id, /^ext_client_/, 'client_id has valid format');
     assert.strictEqual(tokens.user.username, totpUser.username);
 
     // Challenge is single use (replaying fails)
@@ -412,5 +416,38 @@ test('Client Auth & Admin API Parity Suite', async (t) => {
     const qrRes = await fetch(`http://127.0.0.1:${port}/settings/devices/qr?url=${encodeURIComponent(testUrl)}`);
     // Unauthenticated returns 401
     assert.strictEqual(qrRes.status, 401);
+  });
+
+  await t.test('11. Production HTTPS fails closed on non-secure requests and ignores spoofed X-Forwarded-Proto without trust proxy', async () => {
+    process.env.NODE_ENV = 'production';
+    try {
+      const res = await fetch(`${baseUrl}/auth/login`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Forwarded-Proto': 'https', // Spoofed header without trust proxy configured
+        },
+        body: JSON.stringify({ username: regularUser.username, password }),
+      });
+      assert.strictEqual(res.status, 403, 'Plain HTTP request with spoofed header must be rejected 403 in production');
+      const body = await res.json();
+      assert.match(body.detail, /HTTPS is required in production/);
+    } finally {
+      process.env.NODE_ENV = 'test';
+    }
+  });
+
+  await t.test('12. Rate limiting headers on unauthenticated endpoints (/auth/captcha and /auth/passkey/options)', async () => {
+    const capRes = await fetch(`${baseUrl}/auth/captcha`);
+    assert.strictEqual(capRes.status, 200);
+    assert.ok(capRes.headers.get('ratelimit-limit') || capRes.headers.get('x-ratelimit-limit'), 'captcha endpoint has rate limit headers');
+
+    const optRes = await fetch(`${baseUrl}/auth/passkey/options`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    assert.strictEqual(optRes.status, 200);
+    assert.ok(optRes.headers.get('ratelimit-limit') || optRes.headers.get('x-ratelimit-limit'), 'passkey options endpoint has rate limit headers');
   });
 });

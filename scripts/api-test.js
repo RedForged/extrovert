@@ -14,6 +14,7 @@ const TEST_SESSION_DB = path.join(TEST_DIR, 'sessions.db');
 process.env.EXTV_DB_PATH = TEST_DB;
 process.env.EXTV_SESSION_DB_PATH = TEST_SESSION_DB;
 process.env.SESSION_SECRET = 'test-secret-for-api-tests';
+process.env.PORT = '0';
 
 const db = require('../src/db');
 const app = require('../src/server');

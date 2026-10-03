@@ -287,17 +287,16 @@ router.post('/auth/pair/claim', express.json(), (req, res) => {
 // ======== API Authentication & Registration (Password, TOTP, Passkeys, Captcha) ========
 
 function enforceHttpsInProduction(req, res, next) {
-  if (process.env.NODE_ENV === 'production') {
-    const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https';
-    if (!isHttps) {
-      return errorResponse(res, 403, 'Forbidden', 'HTTPS is required in production.');
-    }
+  if (process.env.NODE_ENV === 'production' && !req.secure) {
+    return errorResponse(res, 403, 'Forbidden', 'HTTPS is required in production.');
   }
   next();
 }
 
 
-const loginLockouts = new Map(); // username -> { count: number, lockedUntil: number, lastAttempt: number }
+const loginLockouts = new Map(); // `${username}:${ip}` -> { count: number, lockedUntil: number, lastAttempt: number }
+const globalUserFailures = new Map(); // username -> { count: number, lastAttempt: number }
+
 setInterval(() => {
   const now = Date.now();
   for (const [k, v] of loginLockouts) {
@@ -305,10 +304,19 @@ setInterval(() => {
       loginLockouts.delete(k);
     }
   }
+  for (const [k, v] of globalUserFailures) {
+    if (v.lastAttempt < now - 3600000) {
+      globalUserFailures.delete(k);
+    }
+  }
 }, 60000).unref();
 
-function checkLoginLockout(username) {
-  const key = String(username || '').trim().toLowerCase();
+function getLockoutKey(username, ip) {
+  return `${String(username || '').trim().toLowerCase()}:${String(ip || '').trim() || 'unknown'}`;
+}
+
+function checkLoginLockout(username, ip) {
+  const key = getLockoutKey(username, ip);
   const state = loginLockouts.get(key);
   if (!state) return { locked: false, retryAfter: 0 };
   const now = Date.now();
@@ -319,8 +327,9 @@ function checkLoginLockout(username) {
   return { locked: false, retryAfter: 0 };
 }
 
-function recordFailedLogin(username) {
-  const key = String(username || '').trim().toLowerCase();
+function recordFailedLogin(username, ip) {
+  const key = getLockoutKey(username, ip);
+  const userKey = String(username || '').trim().toLowerCase();
   const now = Date.now();
   const maxAttempts = Number(process.env.EXTV_LOGIN_LOCKOUT_ATTEMPTS) || 5;
   const state = loginLockouts.get(key) || { count: 0, lockedUntil: 0, lastAttempt: now };
@@ -331,11 +340,25 @@ function recordFailedLogin(username) {
     state.lockedUntil = now + backoffMinutes * 60 * 1000;
   }
   loginLockouts.set(key, state);
+
+  const global = globalUserFailures.get(userKey) || { count: 0, lastAttempt: now };
+  global.count += 1;
+  global.lastAttempt = now;
+  globalUserFailures.set(userKey, global);
 }
 
-function resetFailedLogin(username) {
-  const key = String(username || '').trim().toLowerCase();
+function resetFailedLogin(username, ip) {
+  const key = getLockoutKey(username, ip);
   loginLockouts.delete(key);
+}
+
+async function applySoftDelayIfNeeded(username) {
+  const userKey = String(username || '').trim().toLowerCase();
+  const global = globalUserFailures.get(userKey);
+  if (global && global.count >= 3) {
+    const delayMs = Math.min(1500, (global.count - 2) * 200);
+    await new Promise(r => setTimeout(r, delayMs));
+  }
 }
 
 const DUMMY_BCRYPT_HASH = '$2b$10$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ123456';
@@ -390,6 +413,7 @@ function issueOAuthTokensForUser(user, clientName, scopes, req) {
     created_at: Math.floor(Date.now() / 1000),
     expires_in: 86400,
     refresh_token: refreshToken,
+    client_id: app.client_id,
     user: {
       id: String(user.id),
       username: user.username,
@@ -399,7 +423,7 @@ function issueOAuthTokensForUser(user, clientName, scopes, req) {
 }
 
 // 1. Password login endpoint
-router.post('/auth/login', enforceHttpsInProduction, express.json(), (req, res) => {
+router.post('/auth/login', enforceHttpsInProduction, express.json(), async (req, res) => {
   if (process.env.EXTV_API_PASSWORD_LOGIN === 'off') {
     return errorResponse(res, 403, 'Forbidden', 'API password login is disabled on this server.');
   }
@@ -415,7 +439,7 @@ router.post('/auth/login', enforceHttpsInProduction, express.json(), (req, res) 
     return errorResponse(res, 400, 'Bad Request', 'username and password are required.');
   }
 
-  const lockout = checkLoginLockout(username);
+  const lockout = checkLoginLockout(username, req.ip);
   if (lockout.locked) {
     res.set('Retry-After', String(lockout.retryAfter));
     return errorResponse(res, 429, 'Too Many Requests', `Account temporarily locked due to too many failed attempts. Try again in ${lockout.retryAfter} seconds.`);
@@ -426,26 +450,29 @@ router.post('/auth/login', enforceHttpsInProduction, express.json(), (req, res) 
 
   if (!user) {
     bcrypt.compareSync(password, DUMMY_BCRYPT_HASH);
-    recordFailedLogin(username);
+    recordFailedLogin(username, req.ip);
+    await applySoftDelayIfNeeded(username);
     db.auditLog('api_login_failed', null, `Unknown user "${username.slice(0, 30)}", UA: "${userAgent.slice(0, 80)}"`, req.ip);
     return errorResponse(res, 401, 'Unauthorized', 'Invalid username or password.');
   }
 
   if (user.banned) {
     bcrypt.compareSync(password, user.password_hash || DUMMY_BCRYPT_HASH);
-    recordFailedLogin(username);
+    recordFailedLogin(username, req.ip);
+    await applySoftDelayIfNeeded(username);
     db.auditLog('api_login_failed', user.id, `Banned user "${user.username}", UA: "${userAgent.slice(0, 80)}"`, req.ip);
     return errorResponse(res, 401, 'Unauthorized', 'Invalid username or password.');
   }
 
   const passwordOk = bcrypt.compareSync(password, user.password_hash);
   if (!passwordOk) {
-    recordFailedLogin(username);
+    recordFailedLogin(username, req.ip);
+    await applySoftDelayIfNeeded(username);
     db.auditLog('api_login_failed', user.id, `Bad password for "${user.username}", UA: "${userAgent.slice(0, 80)}"`, req.ip);
     return errorResponse(res, 401, 'Unauthorized', 'Invalid username or password.');
   }
 
-  resetFailedLogin(username);
+  resetFailedLogin(username, req.ip);
 
   if (user.totp_enabled) {
     const challengeToken = 'ext_totp_' + crypto.randomBytes(32).toString('hex');
@@ -501,7 +528,7 @@ router.post('/auth/login/totp', enforceHttpsInProduction, express.json(), (req, 
   }
 
   totpChallenges.delete(challengeToken);
-  resetFailedLogin(user.username);
+  resetFailedLogin(user.username, req.ip);
 
   const tokens = issueOAuthTokensForUser(user, challenge.clientName, challenge.scopes, req);
   return res.json(tokens);
@@ -516,7 +543,7 @@ setInterval(() => {
   }
 }, 60000).unref();
 
-router.post('/auth/passkey/options', express.json(), async (req, res) => {
+router.post('/auth/passkey/options', enforceHttpsInProduction, express.json(), async (req, res) => {
   const username = String((req.body && req.body.username) || '').trim();
   let allowCredentials = [];
   let user = null;
@@ -549,7 +576,7 @@ router.post('/auth/passkey/options', express.json(), async (req, res) => {
   });
 });
 
-router.post('/auth/passkey/verify', express.json(), async (req, res) => {
+router.post('/auth/passkey/verify', enforceHttpsInProduction, express.json(), async (req, res) => {
   const challengeToken = String((req.body && req.body.challenge_token) || '').trim();
   const response = req.body && req.body.response;
   const clientName = String((req.body && req.body.client_name) || '').trim();

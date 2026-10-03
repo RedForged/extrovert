@@ -209,7 +209,7 @@ const totpLimiter = rateLimit({
 app.use('/login/totp', totpLimiter);
 app.use('/passkeys', totpLimiter);
 
-// API auth rate limiters (login, totp, register)
+// API auth rate limiters (login, totp, register, passkey, captcha)
 const apiAuthLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: Number(process.env.EXTV_LOGIN_RATE_LIMIT_IP || process.env.EXTV_API_AUTH_RATE_LIMIT_IP) || 15,
@@ -218,9 +218,12 @@ const apiAuthLimiter = rateLimit({
   validate: { xForwardedForHeader: false },
   message: { type: 'about:blank', title: 'Too Many Requests', status: 429, detail: 'Too many authentication attempts. Please try again in a minute.' },
 });
-app.use('/api/v1/auth/login', apiAuthLimiter);
-app.use('/api/v1/auth/login/totp', totpLimiter);
-app.use('/api/v1/auth/register', apiAuthLimiter);
+app.post('/api/v1/auth/login', apiAuthLimiter);
+app.post('/api/v1/auth/login/totp', totpLimiter);
+app.post('/api/v1/auth/register', apiAuthLimiter);
+app.get('/api/v1/auth/captcha', apiAuthLimiter);
+app.post('/api/v1/auth/passkey/options', apiAuthLimiter);
+app.post('/api/v1/auth/passkey/verify', totpLimiter);
 
 
 // CSRF middleware — generates and validates tokens per session.

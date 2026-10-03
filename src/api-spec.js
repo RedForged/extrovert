@@ -287,6 +287,7 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
                         access_token: { type: 'string' },
                         token_type: { type: 'string', example: 'Bearer' },
                         refresh_token: { type: 'string' },
+                        client_id: { type: 'string', example: 'ext_client_0123456789abcdef' },
                         expires_in: { type: 'integer', example: 86400 },
                         scope: { type: 'string' },
                       },
