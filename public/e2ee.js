@@ -1821,7 +1821,9 @@
       if (pass && user && pass.value && user.value) {
         if (btn) btn.disabled = true;
         storeKek(pass.value, user.value).then(submitForm, submitForm);
-        setTimeout(submitForm, 4000);
+        // PBKDF2 (600k iterations) can exceed 4s on slow devices; submitting
+        // first would lose the KEK and the restore prompt with it.
+        setTimeout(submitForm, 10000);
       } else {
         submitForm();
       }
@@ -1847,8 +1849,10 @@
           // Existing salted backup: derive v2 with it.
           deriveP = deriveKekWithSalt(password, salt); chosenSalt = salt;
         } else if (legacy) {
-          // Legacy backup exists: upgrade to a random salt at the next upload.
-          chosenSalt = newSaltB64(); deriveP = deriveKekWithSalt(password, chosenSalt);
+          // Legacy backup exists: it is encrypted with the username-salted KEK,
+          // so derive exactly that — a fresh salt here would produce a key that
+          // can never open the stored vault.
+          deriveP = deriveKek(password, username); chosenSalt = null;
         } else if (fetched) {
           // No backup at all (new account): salt the backup from the start.
           chosenSalt = newSaltB64(); deriveP = deriveKekWithSalt(password, chosenSalt);
@@ -1895,12 +1899,14 @@
         var hasBackup = data && !!data.backup;
         var backupIdentity = data && data.backup_identity;
         var identityMismatch = !!(acct && backupIdentity && myIdKeys && myIdKeys.curve25519 !== backupIdentity);
+        var ownVault = !!(backupIdentity && myIdKeys && myIdKeys.curve25519 === backupIdentity);
 
         // Offer backup restoration whenever an encrypted backup exists and either:
         // - This device is fresh (!acct)
         // - Local identity differs from the server's backup identity
-        // - The user just completed sign-in with password (storedKek present)
-        var shouldPrompt = hasBackup && (!acct || identityMismatch || !!storedKek);
+        // - The user just completed sign-in with password and this device does
+        //   NOT already own the stored vault (never nag the owner device).
+        var shouldPrompt = hasBackup && (!acct || identityMismatch || (!!storedKek && !ownVault));
 
         if (shouldPrompt) {
           return new Promise(function (resolve) {
@@ -1908,9 +1914,8 @@
               hasStoredKek: !!storedKek,
               onRestore: function (pass) {
                 var deriveP;
-                if (storedKek) {
-                  deriveP = importKek(storedKek).then(function (k) { kek = k; return k; });
-                } else {
+                if (pass) {
+                  // A typed password wins (retry after a stored-KEK failure).
                   var salt = data.salt;
                   var uname = currentUsername();
                   deriveP = (salt ? deriveKekWithSalt(pass, salt) : deriveKek(pass, uname)).then(function (k) {
@@ -1918,6 +1923,10 @@
                     kekSalt = salt || null;
                     return k;
                   });
+                } else if (storedKek) {
+                  deriveP = importKek(storedKek).then(function (k) { kek = k; return k; });
+                } else {
+                  deriveP = Promise.reject(new Error('Password is required to decrypt your backup.'));
                 }
                 return deriveP.then(function () {
                   var unwrapped = unwrapBackup(data.backup);
@@ -1980,6 +1989,11 @@
               }).catch(function () {});
             } else if (kek && hasBackup) {
               return restoreRoomSessionsFromBackup(data).catch(function () {});
+            } else if (kek && account && !hasBackup) {
+              // Self-heal: this device holds the account but the server has no
+              // vault yet (uploads used to be silently rejected). Upload now so
+              // a second device can restore without waiting for a re-login.
+              return uploadBackup(account.pickle(PICKLE_KEY)).catch(function () {});
             }
           }).then(function () {
             try { sessionStorage.removeItem(KEK_SESSION_KEY); } catch (_) {}
@@ -3315,6 +3329,12 @@
           restoreBtn.disabled = false;
           restoreBtn.textContent = 'Restore Backup';
           if (freshBtn) freshBtn.disabled = false;
+          // A stored-KEK attempt can fail (stale key): reveal the password box
+          // so the user can retry by typing the password instead of being stuck.
+          if (opts.hasStoredKek && passWrap && passWrap.style.display === 'none') {
+            passWrap.style.display = 'block';
+            if (passInput) passInput.focus();
+          }
           if (errorDiv) {
             errorDiv.textContent = (err && err.message) || 'Failed to restore backup.';
             errorDiv.style.display = 'block';

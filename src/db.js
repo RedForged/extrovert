@@ -1297,15 +1297,26 @@ function setOlmBackup(userId, backup, backupIdentity, kekSalt = null) {
   // is NOT NULL in the schema, so an incomplete row uses empty-string stubs —
   // getOlmIdentity handles them as "no identity published yet".
   const existing = getOlmIdentity(userId);
-  if (existing && existing.identity_key && backupIdentity && backupIdentity !== existing.identity_key) {
-    // Multi-device clients publish per-device identities in user_devices while
-    // olm_identity may still hold a legacy/mismatched key — accept the upload
-    // when the backup identity belongs to one of the user's active devices. A
-    // superseded client uploading a backup of its OLD identity after a rotation
-    // matches neither and is still rejected: storing it would hand the next
-    // unlock attempt a stale account that can never match the server identity.
-    const device = db.prepare(`SELECT 1 FROM user_devices WHERE user_id = ? AND identity_key = ?`).get(userId, backupIdentity);
-    if (!device) return false;
+  const ownerIdentity = existing && existing.identity_key ? existing.identity_key : null;
+  if (backupIdentity && ownerIdentity && backupIdentity !== ownerIdentity) {
+    // The vault has a single owning account identity. A DIFFERENT identity may
+    // only claim the slot when:
+    // - it belongs to one of the user's active devices and the owner identity is
+    //   no longer held by any active device (legacy/mismatched key or a
+    //   rotated-away owner — the multi-device backup-rejection bug), or
+    // - it is the user's FIRST-registered device identity, the recovery
+    //   authority that may reclaim a slot wrongly taken by a younger device's
+    //   freshly-minted blank account (no flip-flop: only one device can do this).
+    // A superseded client uploading its OLD identity matches none of these and
+    // is rejected: storing it would hand the next unlock attempt a stale
+    // account that can never match the server identity.
+    const mine = db.prepare(`SELECT 1 FROM user_devices WHERE user_id = ? AND identity_key = ?`).get(userId, backupIdentity);
+    if (!mine) return false;
+    const ownerAlive = !!db.prepare(`SELECT 1 FROM user_devices WHERE user_id = ? AND identity_key = ?`).get(userId, ownerIdentity);
+    if (ownerAlive) {
+      const oldest = db.prepare(`SELECT identity_key FROM user_devices WHERE user_id = ? ORDER BY created_at ASC, rowid ASC LIMIT 1`).get(userId);
+      if (!oldest || oldest.identity_key !== backupIdentity) return false;
+    }
   }
   // An upload that omits kek_salt keeps the already-stored salt rather than
   // being rejected: its ciphertext was sealed with the KEK derived from that

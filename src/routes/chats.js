@@ -188,7 +188,10 @@ router.get('/kek-salt', (req, res) => {
   const u = getUserByUsername(username);
   if (!u) return res.json({ salt: null, legacy: false });
   const id = getOlmIdentity(u.id);
-  if (id && id.backup && id.kek_salt) return res.json({ salt: id.kek_salt });
+  // The salt is the account's KEK derivation basis: return it whenever it is
+  // known, even with no stored vault, so every login derives the SAME key and
+  // the vault a device uploads is always decryptable with it.
+  if (id && id.kek_salt) return res.json({ salt: id.kek_salt });
   if (id && id.backup) return res.json({ salt: null, legacy: true });
   return res.json({ salt: null, legacy: false });
 });
