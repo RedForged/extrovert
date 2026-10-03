@@ -180,6 +180,22 @@ describe('E2EE Server Enhancements for Client Developers', () => {
     const bundlesJson = await bundlesRes.json();
     assert.strictEqual(bundlesJson.data.returned_bundles, 1);
     assert.strictEqual(bundlesJson.data.bundles[0].username, 'charlie_e2ee');
+
+    // 4. Alice marks Charlie covered via member_ids in session/sync
+    const syncRes3 = await fetch(`${baseUrl}/rooms/${roomId}/session/sync`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${aliceToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        sender_device_id: 'alice_device_1',
+        member_ids: [charlieId],
+      }),
+    });
+    assert.strictEqual(syncRes3.status, 200);
+    const syncJson3 = await syncRes3.json();
+    assert.strictEqual(syncJson3.data.missing_members.length, 0, 'Missing members list shrinks to 0 when covered via member_ids');
   });
 
   it('pushes room_session_key over WebSocket in realtime when a key is saved', async () => {
@@ -370,5 +386,31 @@ describe('E2EE Server Enhancements for Client Developers', () => {
     for (const k of r2KeysJson.data.keys) {
       assert.strictEqual(k.room_id, room2Id, 'Key in room 2 query must belong to room 2');
     }
+  });
+
+  it('bounds grace period for superseded room group sessions and prunes keys when a member leaves', async () => {
+    const room3Id = db.createRoom('Room 3 Grace Period', 'Testing grace period', aliceId, 1);
+    db.addRoomMember(room3Id, bobId);
+
+    // Alice creates initial session in room 3 with key for Bob
+    const s1 = db.publishRoomGroupSession(room3Id, aliceId, 'dev_test', true);
+    db.saveRoomSessionKeys(s1, bobId, 'key_for_bob_s1');
+    assert.strictEqual(db.isRoomGroupSessionUsable(room3Id, aliceId, s1), true);
+
+    // Alice rotates session in room 3 -> s2 is now active, s1 is superseded
+    const s2 = db.publishRoomGroupSession(room3Id, aliceId, 'dev_test', true);
+    db.saveRoomSessionKeys(s2, bobId, 'key_for_bob_s2');
+
+    // While Bob hasn't received s1 key, within grace period s1 is usable
+    assert.strictEqual(db.isRoomGroupSessionUsable(room3Id, aliceId, s1), true);
+
+    // If Bob leaves room 3, his keys are purged and s1 is no longer usable
+    db.removeRoomMember(room3Id, bobId);
+    assert.strictEqual(db.isRoomGroupSessionUsable(room3Id, aliceId, s1), false);
+
+    // Prune superseded sessions
+    db.pruneSupersededRoomGroupSessions(room3Id, aliceId, 'dev_test');
+    assert.strictEqual(db.isRoomGroupSessionUsable(room3Id, aliceId, s1), false);
+    assert.strictEqual(db.isRoomGroupSessionUsable(room3Id, aliceId, s2), true);
   });
 });

@@ -2441,6 +2441,7 @@ router.post('/rooms/:id/session/sync', requireApiAuth('write'), express.json(), 
 
   // 3. Save new encrypted keys published by caller and push in realtime
   const keys = Array.isArray(req.body.keys) ? req.body.keys : [];
+  const memberIds = Array.isArray(req.body.member_ids) ? req.body.member_ids.map(Number) : [];
   const roomMembers = new Set(db.getRoomMembers(room.id).map(m => m.user_id));
   for (const k of keys) {
     const rid = Number(k.recipient_id);
@@ -2456,6 +2457,9 @@ router.post('/rooms/:id/session/sync', requireApiAuth('write'), express.json(), 
       sender_username: req.apiUser.username,
       encrypted_key: ek,
     });
+  }
+  for (const mid of memberIds) {
+    if (roomMembers.has(mid)) db.ensureRoomSessionRecipient(sessionId, mid);
   }
 
   // 4. Fetch caller's pending keys for this room
@@ -2476,7 +2480,7 @@ router.post('/rooms/:id/session/sync', requireApiAuth('write'), express.json(), 
   const missingMembers = [];
   for (const m of allMembers) {
     if (m.user_id === req.apiUser.id) continue;
-    if (!recipients.has(m.user_id) || emptyRecipients.has(m.user_id)) {
+    if (!recipients.has(m.user_id)) {
       missingMembers.push({
         id: String(m.user_id),
         username: m.username,

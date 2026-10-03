@@ -1897,6 +1897,12 @@ function addRoomMember(roomId, userId, roleId) {
 }
 function removeRoomMember(roomId, userId) {
   db.prepare(`DELETE FROM room_members WHERE room_id = ? AND user_id = ?`).run(roomId, userId);
+  // Delete queued undelivered keys for former members in this room so superseded sessions are not blocked
+  db.prepare(`
+    DELETE FROM room_group_session_keys
+    WHERE recipient_id = ?
+      AND session_id IN (SELECT id FROM room_group_sessions WHERE room_id = ?)
+  `).run(userId, roomId);
 }
 function getRoomMembers(roomId) {
   return db.prepare(`SELECT u.id AS user_id, u.username, u.display_name, u.avatar, m.role_id, m.joined_at FROM room_members m INNER JOIN users u ON u.id = m.user_id WHERE m.room_id = ? ORDER BY m.joined_at`).all(roomId);
@@ -1960,11 +1966,22 @@ function sendRoomMessage(channelId, userId, body, proto, ciphertext, groupSessio
 // the not-yet-synced member lose every message sent under the old session.
 // Superseded sessions whose keys are fully delivered are pruned (their rows are
 // only needed for key delivery; message decryption lives client-side).
+const SUPERSEDED_SESSION_GRACE_MS = 15 * 60 * 1000; // 15 minutes max grace period for superseded sessions
+
 function pruneSupersededRoomGroupSessions(roomId, senderId, deviceId) {
-  const rows = db.prepare(`SELECT id FROM room_group_sessions WHERE room_id = ? AND sender_id = ? AND device_id = ? ORDER BY id DESC`).all(roomId, senderId, String(deviceId || ''));
+  const rows = db.prepare(`SELECT id, created_at FROM room_group_sessions WHERE room_id = ? AND sender_id = ? AND device_id = ? ORDER BY id DESC`).all(roomId, senderId, String(deviceId || ''));
+  const now = Date.now();
   for (let i = 1; i < rows.length; i++) {
-    const pending = db.prepare(`SELECT COUNT(*) AS n FROM room_group_session_keys WHERE session_id = ? AND delivered = 0`).get(rows[i].id).n;
-    if (!pending) {
+    // Delete keys for users who are no longer room members
+    db.prepare(`
+      DELETE FROM room_group_session_keys
+      WHERE session_id = ?
+        AND recipient_id NOT IN (SELECT user_id FROM room_members WHERE room_id = ?)
+    `).run(rows[i].id, roomId);
+
+    const pending = db.prepare(`SELECT COUNT(*) AS n FROM room_group_session_keys WHERE session_id = ? AND delivered = 0 AND encrypted_key <> ''`).get(rows[i].id).n;
+    const expired = (now - rows[i].created_at) > SUPERSEDED_SESSION_GRACE_MS;
+    if (!pending || expired) {
       db.prepare(`DELETE FROM room_group_session_keys WHERE session_id = ?`).run(rows[i].id);
       db.prepare(`DELETE FROM room_group_sessions WHERE id = ?`).run(rows[i].id);
     }
@@ -1987,13 +2004,20 @@ function getRoomGroupSession(roomId, senderId, deviceId = '') {
   return db.prepare(`SELECT id FROM room_group_sessions WHERE room_id = ? AND sender_id = ? AND device_id = ? ORDER BY id DESC LIMIT 1`).get(roomId, senderId, String(deviceId || '')) || null;
 }
 // Sending is allowed with the device's newest session, or with a superseded one
-// whose keys are still pending delivery (rotation grace period).
+// whose keys are still pending delivery within the bounded rotation grace period.
 function isRoomGroupSessionUsable(roomId, senderId, sessionId) {
-  const row = db.prepare(`SELECT id, device_id FROM room_group_sessions WHERE id = ? AND room_id = ? AND sender_id = ?`).get(Number(sessionId), roomId, senderId);
+  const row = db.prepare(`SELECT id, device_id, created_at FROM room_group_sessions WHERE id = ? AND room_id = ? AND sender_id = ?`).get(Number(sessionId), roomId, senderId);
   if (!row) return false;
   const latest = getRoomGroupSession(roomId, senderId, row.device_id);
   if (latest && latest.id === row.id) return true;
-  return db.prepare(`SELECT COUNT(*) AS n FROM room_group_session_keys WHERE session_id = ? AND delivered = 0`).get(row.id).n > 0;
+  // Bounded grace period: superseded session only usable within grace window
+  if ((Date.now() - row.created_at) > SUPERSEDED_SESSION_GRACE_MS) return false;
+  return db.prepare(`
+    SELECT COUNT(*) AS n
+    FROM room_group_session_keys k
+    JOIN room_members rm ON rm.user_id = k.recipient_id AND rm.room_id = ?
+    WHERE k.session_id = ? AND k.delivered = 0 AND k.encrypted_key <> ''
+  `).get(roomId, row.id).n > 0;
 }
 // Upsert: re-sharing replaces the key and re-queues delivery.
 function saveRoomSessionKeys(sessionId, recipientId, encryptedKey) {

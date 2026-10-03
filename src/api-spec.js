@@ -1479,6 +1479,7 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
               rotate: { type: 'boolean', description: 'Force rotate session' },
               sender_device_id: { type: 'string' },
               ack_key_ids: { type: 'array', items: { type: 'integer' }, description: 'Key IDs delivered to acknowledge' },
+              member_ids: { type: 'array', items: { type: 'integer' }, description: 'Room members to mark as covered with empty key entries if keyless' },
               keys: { type: 'array', items: { type: 'object', properties: {
                 recipient_id: { type: 'integer' },
                 encrypted_key: { type: 'string' },
@@ -1536,11 +1537,11 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
         parameters: [
           { name: 'id', in: 'path', required: true, schema: { type: 'integer' } },
           { name: 'missing_for_session', in: 'query', required: false, schema: { type: 'string' }, description: 'Only return bundles for members lacking keys for this session ID' },
-          { name: 'claim', in: 'query', required: false, schema: { type: 'boolean' }, description: 'Claim one-time prekeys when fetching bundles' },
+          { name: 'claim', in: 'query', required: false, schema: { type: 'boolean' }, description: 'Claim one-time prekeys when fetching bundles (required when wrapping sessions)' },
         ],
         responses: {
           '200': {
-            description: '{ room_id, total_members, returned_bundles, bundles: [{ user_id, username, display_name, identity_key, one_time_key, one_time_key_id, devices }] }',
+            description: '{ room_id, total_members, returned_bundles, bundles: [{ user_id, username, display_name, identity_key, one_time_key, one_time_key_id, devices }] }. Note: singular identity_key/one_time_key/device_id represent devices[0]; multi-device implementations must iterate devices[].',
           },
           '403': { description: 'Not a member' },
           '404': { description: 'Room not found' },
