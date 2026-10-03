@@ -3,7 +3,7 @@
 const crypto = require('node:crypto');
 const db = require('./db');
 
-const VALID_SCOPES = new Set(['openid', 'read', 'write', 'follow', 'media.write', 'notifications', 'read:direct', 'write:direct', 'profile', 'email']);
+const VALID_SCOPES = new Set(['openid', 'read', 'write', 'follow', 'media.write', 'notifications', 'read:direct', 'write:direct', 'profile', 'email', 'admin']);
 
 function validateScopes(tokenScopes, requiredScopes) {
   const granted = tokenScopes.split(' ');

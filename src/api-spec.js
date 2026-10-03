@@ -253,6 +253,128 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
         },
       },
     },
+    '/api/v1/auth/login': {
+      post: {
+        summary: 'Direct client login with username and password',
+        tags: ['Authentication'],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['username', 'password'],
+                properties: {
+                  username: { type: 'string', example: 'alice' },
+                  password: { type: 'string', format: 'password' },
+                  client_name: { type: 'string', example: 'My Extrovert App' },
+                  scopes: { type: 'string', example: 'read write follow profile' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': {
+            description: 'Login successful (OAuth tokens issued) or TOTP challenge required',
+            content: {
+              'application/json': {
+                schema: {
+                  oneOf: [
+                    {
+                      type: 'object',
+                      properties: {
+                        access_token: { type: 'string' },
+                        token_type: { type: 'string', example: 'Bearer' },
+                        refresh_token: { type: 'string' },
+                        expires_in: { type: 'integer', example: 86400 },
+                        scope: { type: 'string' },
+                      },
+                    },
+                    {
+                      type: 'object',
+                      properties: {
+                        totp_required: { type: 'boolean', example: true },
+                        challenge_token: { type: 'string' },
+                        expires_in: { type: 'integer', example: 300 },
+                      },
+                    },
+                  ],
+                },
+              },
+            },
+          },
+          '401': { description: 'Invalid username or password' },
+          '429': { description: 'Too many failed login attempts / account locked' },
+        },
+      },
+    },
+    '/api/v1/auth/login/totp': {
+      post: {
+        summary: 'Complete two-factor authentication login challenge',
+        tags: ['Authentication'],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['challenge_token', 'code'],
+                properties: {
+                  challenge_token: { type: 'string' },
+                  code: { type: 'string', example: '123456' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': { description: 'Tokens issued upon successful 2FA verification' },
+          '401': { description: 'Invalid verification code' },
+          '429': { description: 'Too many verification attempts' },
+        },
+      },
+    },
+    '/api/v1/auth/captcha': {
+      get: {
+        summary: 'Generate a stateless anti-bot captcha token for API registration',
+        tags: ['Authentication'],
+        responses: {
+          '200': { description: 'Returns captcha token and SVG markup' },
+        },
+      },
+    },
+    '/api/v1/auth/register': {
+      post: {
+        summary: 'Register a new user account over the API',
+        tags: ['Authentication'],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['captcha_token', 'captcha_answer', 'username', 'password'],
+                properties: {
+                  captcha_token: { type: 'string' },
+                  captcha_answer: { type: 'string' },
+                  username: { type: 'string', example: 'newuser' },
+                  password: { type: 'string', format: 'password' },
+                  display_name: { type: 'string' },
+                  email: { type: 'string', format: 'email' },
+                  client_name: { type: 'string' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '201': { description: 'Account registered and OAuth tokens issued' },
+          '400': { description: 'Invalid captcha or validation failure' },
+          '409': { description: 'Username or email already in use' },
+        },
+      },
+    },
     '/api/v1/client/bootstrap': {
       get: {
         summary: 'Unified client startup bootstrap (user, rooms, timeline, notifications, ICE, E2EE status in 1 call)',

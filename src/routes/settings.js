@@ -48,12 +48,38 @@ router.post('/', (req, res) => {
   res.redirect('/settings');
 });
 
+// Devices page & pairing
+router.get('/devices', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.redirect('/login');
+  res.render('settings-devices', {
+    user,
+    devices: db.getUserDevices(user.id),
+    csrfToken: res.locals.csrfToken || '',
+  });
+});
+
+router.get('/devices/qr', async (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.status(401).end();
+  const url = String(req.query.url || '').trim();
+  if (!url || url.length > 500) return res.status(400).end();
+  try {
+    const png = await QRCode.toBuffer(url, { width: 220, margin: 2 });
+    res.set({ 'Content-Type': 'image/png', 'Cache-Control': 'no-store' });
+    res.send(png);
+  } catch (err) {
+    res.status(500).end();
+  }
+});
+
 // Revoke an active device
 router.post('/devices/:deviceId/delete', (req, res) => {
   const user = res.locals.currentUser;
   if (!user) return res.redirect('/login');
   db.deleteUserDevice(user.id, req.params.deviceId);
-  res.redirect('/settings');
+  const referer = req.headers.referer || '';
+  res.redirect(referer.includes('/settings/devices') ? '/settings/devices' : '/settings');
 });
 
 // Add / change email address. Changing an address always triggers a fresh

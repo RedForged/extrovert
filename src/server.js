@@ -41,9 +41,9 @@ app.set('view engine', 'ejs');
 // Favicon (suppress 404 noise in console).
 app.get('/favicon.ico', (req, res) => res.status(204).end());
 app.set('views', path.join(__dirname, 'views'));
-const TRUST_PROXY = process.env.TRUST_PROXY || 'false';
+const TRUST_PROXY = process.env.EXTV_TRUST_PROXY || process.env.TRUST_PROXY || 'false';
 if (TRUST_PROXY !== 'false') {
-  app.set('trust proxy', TRUST_PROXY);
+  app.set('trust proxy', TRUST_PROXY === 'true' ? true : TRUST_PROXY);
 }
 
 // Security headers.
@@ -208,6 +208,20 @@ const totpLimiter = rateLimit({
 });
 app.use('/login/totp', totpLimiter);
 app.use('/passkeys', totpLimiter);
+
+// API auth rate limiters (login, totp, register)
+const apiAuthLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: Number(process.env.EXTV_LOGIN_RATE_LIMIT_IP || process.env.EXTV_API_AUTH_RATE_LIMIT_IP) || 15,
+  standardHeaders: true,
+  legacyHeaders: false,
+  validate: { xForwardedForHeader: false },
+  message: { type: 'about:blank', title: 'Too Many Requests', status: 429, detail: 'Too many authentication attempts. Please try again in a minute.' },
+});
+app.use('/api/v1/auth/login', apiAuthLimiter);
+app.use('/api/v1/auth/login/totp', totpLimiter);
+app.use('/api/v1/auth/register', apiAuthLimiter);
+
 
 // CSRF middleware — generates and validates tokens per session.
 app.use((req, res, next) => {

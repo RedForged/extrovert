@@ -77,4 +77,49 @@ function verify(req, body) {
   return { ok: true };
 }
 
-module.exports = { TTL_MS, LENGTH, generate, verify };
+// Token-based captcha for stateless API registration
+const apiCaptchaStore = new Map();
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of apiCaptchaStore) {
+    if (v.expiresAt <= now) apiCaptchaStore.delete(k);
+  }
+}, 60000).unref();
+
+function generateApiCaptcha() {
+  const cap = svgCaptcha.create({
+    size: LENGTH,
+    ignoreChars: IGNORE_CHARS,
+    noise: 3,
+    color: true,
+    background: '#f2efe8',
+    width: 160,
+    height: 56,
+  });
+  const token = 'ext_cap_' + crypto.randomBytes(24).toString('hex');
+  apiCaptchaStore.set(token, {
+    text: cap.text.toLowerCase(),
+    expiresAt: Date.now() + TTL_MS,
+  });
+  return { token, svg: cap.data, expires_in: Math.floor(TTL_MS / 1000) };
+}
+
+function verifyApiCaptcha(token, answer) {
+  if (!token) return { ok: false, error: 'Captcha token is required.' };
+  const cleanToken = String(token).trim();
+  const data = apiCaptchaStore.get(cleanToken);
+  apiCaptchaStore.delete(cleanToken); // single-use consumed!
+  if (!data) return { ok: false, error: 'Captcha token is invalid or has expired.' };
+  if (Date.now() > data.expiresAt) return { ok: false, error: 'Captcha expired — please request a fresh challenge.' };
+
+  const rawAnswer = String(answer || '').trim().toLowerCase();
+  const a = Buffer.from(rawAnswer, 'utf8');
+  const b = Buffer.from(data.text, 'utf8');
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    return { ok: false, error: 'Incorrect captcha response.' };
+  }
+  return { ok: true };
+}
+
+module.exports = { TTL_MS, LENGTH, generate, verify, generateApiCaptcha, verifyApiCaptcha };
+

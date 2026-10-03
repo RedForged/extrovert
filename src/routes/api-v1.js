@@ -20,6 +20,10 @@ const { onNotification } = require('../notif-broadcaster');
 const dm = require('../dm');
 const { getVapidPublicKey, validatePushEndpoint } = require('../push');
 const { renderMarkdown } = require('../markdown');
+const twofa = require('../twofa');
+const webauthn = require('../webauthn');
+const captcha = require('../captcha');
+const sessionStore = require('../session-store');
 
 const router = express.Router();
 
@@ -126,6 +130,7 @@ function decodeCursor(cursor) {
 
 function serializeAccount(user, currentUserId) {
   const isSelf = currentUserId ? currentUserId === user.id : false;
+  const custom = db.getCustomization(user.id);
   return {
     id: String(user.id),
     username: user.username,
@@ -138,6 +143,8 @@ function serializeAccount(user, currentUserId) {
     following_count: db.countFollowing(user.id),
     is_following: currentUserId ? db.isFollowing(currentUserId, user.id) : false,
     is_self: isSelf,
+    html: (custom && custom.html) || '',
+    css: (custom && custom.css) || '',
     // Email info is only ever exposed to the account owner (never in public
     // profiles), matching how Mastodon-style APIs gate account details.
     email_verified: isSelf ? !!user.email_verified_at : null,
@@ -273,6 +280,419 @@ router.post('/auth/pair/claim', express.json(), (req, res) => {
       token_type: 'Bearer',
       scopes: validScopes.split(' '),
       user: serializeAccount(user, user.id),
+    },
+  });
+});
+
+// ======== API Authentication & Registration (Password, TOTP, Passkeys, Captcha) ========
+
+function enforceHttpsInProduction(req, res, next) {
+  if (process.env.NODE_ENV === 'production') {
+    const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https';
+    if (!isHttps) {
+      return errorResponse(res, 403, 'Forbidden', 'HTTPS is required in production.');
+    }
+  }
+  next();
+}
+
+
+const loginLockouts = new Map(); // username -> { count: number, lockedUntil: number, lastAttempt: number }
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of loginLockouts) {
+    if (v.lastAttempt < now - 3600000 && (!v.lockedUntil || v.lockedUntil < now)) {
+      loginLockouts.delete(k);
+    }
+  }
+}, 60000).unref();
+
+function checkLoginLockout(username) {
+  const key = String(username || '').trim().toLowerCase();
+  const state = loginLockouts.get(key);
+  if (!state) return { locked: false, retryAfter: 0 };
+  const now = Date.now();
+  if (state.lockedUntil && state.lockedUntil > now) {
+    const retryAfter = Math.ceil((state.lockedUntil - now) / 1000);
+    return { locked: true, retryAfter };
+  }
+  return { locked: false, retryAfter: 0 };
+}
+
+function recordFailedLogin(username) {
+  const key = String(username || '').trim().toLowerCase();
+  const now = Date.now();
+  const maxAttempts = Number(process.env.EXTV_LOGIN_LOCKOUT_ATTEMPTS) || 5;
+  const state = loginLockouts.get(key) || { count: 0, lockedUntil: 0, lastAttempt: now };
+  state.count += 1;
+  state.lastAttempt = now;
+  if (state.count >= maxAttempts) {
+    const backoffMinutes = Math.min(15, Math.pow(2, state.count - maxAttempts));
+    state.lockedUntil = now + backoffMinutes * 60 * 1000;
+  }
+  loginLockouts.set(key, state);
+}
+
+function resetFailedLogin(username) {
+  const key = String(username || '').trim().toLowerCase();
+  loginLockouts.delete(key);
+}
+
+const DUMMY_BCRYPT_HASH = '$2b$10$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ123456';
+
+function verifySecondFactor(user, code) {
+  const trimmed = String(code || '').trim();
+  if (!trimmed) return false;
+  try {
+    if (/^\d{6}$/.test(trimmed.replace(/\s+/g, ''))) {
+      return twofa.verifyTotp(twofa.decryptSecret(user.totp_secret), trimmed);
+    }
+    return db.consumeRecoveryCode(user.id, twofa.hashRecoveryCode(trimmed));
+  } catch (err) {
+    console.error('api second-factor verify error:', err.message);
+    return false;
+  }
+}
+
+const totpChallenges = new Map();
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of totpChallenges) {
+    if (v.expiresAt <= now) totpChallenges.delete(k);
+  }
+}, 60000).unref();
+
+function issueOAuthTokensForUser(user, clientName, scopes, req) {
+  const app = db.getOrCreateClientApp(clientName, user.id);
+  const accessToken = 'ext_oat_' + crypto.randomBytes(32).toString('hex');
+  const refreshToken = 'ext_rt_' + crypto.randomBytes(32).toString('hex');
+  const expiresAt = Date.now() + 86400 * 1000;
+  const validScopes = scopes || 'read write follow notifications media.write read:direct write:direct profile';
+  db.createOAuthToken(accessToken, refreshToken, app.id, user.id, validScopes, expiresAt);
+
+  try {
+    db.createNotification({
+      userId: user.id,
+      type: 'security',
+      actorId: user.id,
+    });
+  } catch (err) {
+    console.error('createNotification security error:', err);
+  }
+
+  const userAgent = (req.headers && req.headers['user-agent']) || 'Unknown Client';
+  db.auditLog('api_login_success', user.id, `App: "${app.name}", UA: "${userAgent.slice(0, 80)}"`, req.ip);
+
+  return {
+    access_token: accessToken,
+    token_type: 'Bearer',
+    scope: validScopes,
+    created_at: Math.floor(Date.now() / 1000),
+    expires_in: 86400,
+    refresh_token: refreshToken,
+    user: {
+      id: String(user.id),
+      username: user.username,
+      display_name: user.display_name,
+    },
+  };
+}
+
+// 1. Password login endpoint
+router.post('/auth/login', enforceHttpsInProduction, express.json(), (req, res) => {
+  if (process.env.EXTV_API_PASSWORD_LOGIN === 'off') {
+    return errorResponse(res, 403, 'Forbidden', 'API password login is disabled on this server.');
+  }
+
+  const username = String((req.body && req.body.username) || '').trim();
+  const password = String((req.body && req.body.password) || '');
+  const clientName = String((req.body && req.body.client_name) || '').trim();
+  const requestedScopes = String((req.body && req.body.scopes) || '').trim();
+  const validScopes = requestedScopes.split(/\s+/).filter(s => VALID_SCOPES.has(s)).join(' ') ||
+    'read write follow notifications media.write read:direct write:direct profile';
+
+  if (!username || !password) {
+    return errorResponse(res, 400, 'Bad Request', 'username and password are required.');
+  }
+
+  const lockout = checkLoginLockout(username);
+  if (lockout.locked) {
+    res.set('Retry-After', String(lockout.retryAfter));
+    return errorResponse(res, 429, 'Too Many Requests', `Account temporarily locked due to too many failed attempts. Try again in ${lockout.retryAfter} seconds.`);
+  }
+
+  const user = db.getUserByUsername(username);
+  const userAgent = (req.headers && req.headers['user-agent']) || 'Unknown Client';
+
+  if (!user) {
+    bcrypt.compareSync(password, DUMMY_BCRYPT_HASH);
+    recordFailedLogin(username);
+    db.auditLog('api_login_failed', null, `Unknown user "${username.slice(0, 30)}", UA: "${userAgent.slice(0, 80)}"`, req.ip);
+    return errorResponse(res, 401, 'Unauthorized', 'Invalid username or password.');
+  }
+
+  if (user.banned) {
+    bcrypt.compareSync(password, user.password_hash || DUMMY_BCRYPT_HASH);
+    recordFailedLogin(username);
+    db.auditLog('api_login_failed', user.id, `Banned user "${user.username}", UA: "${userAgent.slice(0, 80)}"`, req.ip);
+    return errorResponse(res, 401, 'Unauthorized', 'Invalid username or password.');
+  }
+
+  const passwordOk = bcrypt.compareSync(password, user.password_hash);
+  if (!passwordOk) {
+    recordFailedLogin(username);
+    db.auditLog('api_login_failed', user.id, `Bad password for "${user.username}", UA: "${userAgent.slice(0, 80)}"`, req.ip);
+    return errorResponse(res, 401, 'Unauthorized', 'Invalid username or password.');
+  }
+
+  resetFailedLogin(username);
+
+  if (user.totp_enabled) {
+    const challengeToken = 'ext_totp_' + crypto.randomBytes(32).toString('hex');
+    totpChallenges.set(challengeToken, {
+      userId: user.id,
+      clientName: clientName || 'Extrovert Client',
+      scopes: validScopes,
+      attempts: 0,
+      expiresAt: Date.now() + 300 * 1000,
+    });
+    return res.json({
+      totp_required: true,
+      challenge_token: challengeToken,
+      expires_in: 300,
+    });
+  }
+
+  const tokens = issueOAuthTokensForUser(user, clientName, validScopes, req);
+  return res.json(tokens);
+});
+
+// 2. TOTP second factor completion
+router.post('/auth/login/totp', enforceHttpsInProduction, express.json(), (req, res) => {
+  const challengeToken = String((req.body && req.body.challenge_token) || '').trim();
+  const code = String((req.body && req.body.code) || '').trim();
+  if (!challengeToken || !code) {
+    return errorResponse(res, 400, 'Bad Request', 'challenge_token and code are required.');
+  }
+
+  const challenge = totpChallenges.get(challengeToken);
+  if (!challenge || challenge.expiresAt < Date.now()) {
+    totpChallenges.delete(challengeToken);
+    return errorResponse(res, 400, 'Bad Request', 'Challenge is invalid or has expired.');
+  }
+
+  challenge.attempts += 1;
+  if (challenge.attempts > 5) {
+    totpChallenges.delete(challengeToken);
+    db.auditLog('api_totp_lockout', challenge.userId, 'Too many failed 2FA attempts', req.ip);
+    return errorResponse(res, 429, 'Too Many Requests', 'Too many failed verification attempts. Please log in again.');
+  }
+
+  const user = db.getUserById(challenge.userId);
+  if (!user || user.banned) {
+    totpChallenges.delete(challengeToken);
+    return errorResponse(res, 401, 'Unauthorized', 'Invalid username or password.');
+  }
+
+  const ok = verifySecondFactor(user, code);
+  if (!ok) {
+    db.auditLog('api_totp_failed', user.id, `Failed 2FA code (attempt ${challenge.attempts}/5)`, req.ip);
+    return errorResponse(res, 401, 'Unauthorized', 'Invalid verification code.');
+  }
+
+  totpChallenges.delete(challengeToken);
+  resetFailedLogin(user.username);
+
+  const tokens = issueOAuthTokensForUser(user, challenge.clientName, challenge.scopes, req);
+  return res.json(tokens);
+});
+
+// Passkey Ceremony over API
+const passkeyApiChallenges = new Map();
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of passkeyApiChallenges) {
+    if (v.expiresAt <= now) passkeyApiChallenges.delete(k);
+  }
+}, 60000).unref();
+
+router.post('/auth/passkey/options', express.json(), async (req, res) => {
+  const username = String((req.body && req.body.username) || '').trim();
+  let allowCredentials = [];
+  let user = null;
+  if (username) {
+    user = db.getUserByUsername(username);
+    if (user) {
+      allowCredentials = db.getPasskeysByUser(user.id).map(p => ({
+        id: p.credential_id,
+        transports: p.transports ? JSON.parse(p.transports) : undefined,
+      }));
+      if (allowCredentials.length === 0) {
+        return errorResponse(res, 400, 'Bad Request', 'No passkeys are registered for that account.');
+      }
+    }
+  }
+
+  const { rpID } = webauthn.rpInfo(req);
+  const options = await webauthn.authenticationOptions({ rpID, allowCredentials });
+  const challengeToken = 'ext_pk_' + crypto.randomBytes(32).toString('hex');
+  passkeyApiChallenges.set(challengeToken, {
+    challenge: options.challenge,
+    userId: user ? user.id : null,
+    expiresAt: Date.now() + 300 * 1000,
+  });
+
+  res.json({
+    challenge_token: challengeToken,
+    options,
+    expires_in: 300,
+  });
+});
+
+router.post('/auth/passkey/verify', express.json(), async (req, res) => {
+  const challengeToken = String((req.body && req.body.challenge_token) || '').trim();
+  const response = req.body && req.body.response;
+  const clientName = String((req.body && req.body.client_name) || '').trim();
+  const requestedScopes = String((req.body && req.body.scopes) || '').trim();
+  const validScopes = requestedScopes.split(/\s+/).filter(s => VALID_SCOPES.has(s)).join(' ') ||
+    'read write follow notifications media.write read:direct write:direct profile';
+
+  if (!challengeToken || !response) {
+    return errorResponse(res, 400, 'Bad Request', 'challenge_token and response are required.');
+  }
+
+  const challengeData = passkeyApiChallenges.get(challengeToken);
+  passkeyApiChallenges.delete(challengeToken);
+  if (!challengeData || challengeData.expiresAt < Date.now()) {
+    return errorResponse(res, 400, 'Bad Request', 'Passkey challenge is invalid or has expired.');
+  }
+
+  const credentialId = response && response.id;
+  if (!credentialId) return errorResponse(res, 400, 'Bad Request', 'Invalid authentication response.');
+
+  const stored = db.getPasskeyByCredentialId(credentialId);
+  if (!stored) {
+    db.auditLog('api_passkey_login_failed', null, 'Unknown passkey credential', req.ip);
+    return errorResponse(res, 401, 'Unauthorized', 'Invalid credentials.');
+  }
+
+  const user = db.getUserById(stored.user_id);
+  if (!user || user.banned) {
+    db.auditLog('api_passkey_login_failed', stored.user_id, 'Banned or deleted user', req.ip);
+    return errorResponse(res, 401, 'Unauthorized', 'Invalid credentials.');
+  }
+
+  const { rpID, origin } = webauthn.rpInfo(req);
+  let verification;
+  try {
+    verification = await webauthn.verifyAuthenticationResponse({
+      response,
+      expectedChallenge: challengeData.challenge,
+      expectedOrigin: origin,
+      expectedRPID: [rpID],
+      requireUserVerification: false,
+      credential: {
+        id: stored.credential_id,
+        publicKey: Buffer.from(stored.public_key, 'base64url'),
+        counter: stored.counter,
+        transports: stored.transports ? JSON.parse(stored.transports) : undefined,
+      },
+    });
+  } catch (err) {
+    db.auditLog('api_passkey_login_failed', user.id, `Verification error: ${err.message}`, req.ip);
+    return errorResponse(res, 401, 'Unauthorized', 'Invalid passkey assertion.');
+  }
+
+  if (!verification || !verification.verified) {
+    db.auditLog('api_passkey_login_failed', user.id, 'Assertion not verified', req.ip);
+    return errorResponse(res, 401, 'Unauthorized', 'Invalid passkey assertion.');
+  }
+
+  const newCount = verification.authenticationInfo.newCounter;
+  if (newCount > 0 && newCount <= stored.counter) {
+    db.auditLog('api_passkey_login_failed', user.id, 'Stale signature counter', req.ip);
+    return errorResponse(res, 401, 'Unauthorized', 'Invalid passkey assertion.');
+  }
+
+  db.updatePasskeyCounter(stored.id, newCount);
+  const tokens = issueOAuthTokensForUser(user, clientName, validScopes, req);
+  res.json(tokens);
+});
+
+// Captcha & Registration over API
+router.get('/auth/captcha', (req, res) => {
+  const cap = captcha.generateApiCaptcha();
+  res.json({
+    data: {
+      captcha_token: cap.token,
+      captcha_svg: cap.svg,
+      expires_in: cap.expires_in,
+    },
+  });
+});
+
+router.post('/auth/register', enforceHttpsInProduction, express.json(), (req, res) => {
+  const { captcha_token, captcha_answer, username, password, display_name, email, client_name } = req.body || {};
+  const cap = captcha.verifyApiCaptcha(captcha_token, captcha_answer);
+  if (!cap.ok) {
+    return errorResponse(res, 400, 'Bad Request', cap.error);
+  }
+
+  const cleanUsername = String(username || '').trim();
+  const cleanPassword = String(password || '');
+  const cleanDisplayName = String(display_name || '').trim() || cleanUsername;
+  const cleanEmail = String(email || '').trim();
+
+  if (!/^[a-zA-Z0-9_]{3,20}$/.test(cleanUsername)) {
+    return errorResponse(res, 400, 'Bad Request', 'Username must be 3-20 letters, numbers, or underscores.');
+  }
+  if (cleanPassword.length < 12 || Buffer.byteLength(cleanPassword, 'utf8') > 72) {
+    return errorResponse(res, 400, 'Bad Request', 'Password must be at least 12 characters and at most 72 bytes.');
+  }
+
+  const emailRequired = db.isEmailVerificationRequired();
+  if (cleanEmail) {
+    if (!db.isValidEmail(cleanEmail)) {
+      return errorResponse(res, 400, 'Bad Request', 'Invalid email address.');
+    }
+    if (db.getUserByEmail(cleanEmail)) {
+      return errorResponse(res, 409, 'Conflict', 'That email address cannot be used.');
+    }
+  } else if (emailRequired) {
+    return errorResponse(res, 400, 'Bad Request', 'This server requires a verified email address to register.');
+  }
+
+  if (db.getUserByUsername(cleanUsername)) {
+    return errorResponse(res, 409, 'Conflict', 'That username is already taken.');
+  }
+
+  const hash = bcrypt.hashSync(cleanPassword, 10);
+  const userId = db.createUser({
+    username: cleanUsername,
+    passwordHash: hash,
+    displayName: cleanDisplayName,
+    referredBy: null,
+    referrerIp: req.ip,
+  });
+
+  if (cleanEmail) {
+    db.setUserEmail(userId, cleanEmail);
+    try {
+      require('../email-verify').sendVerificationEmail({ userId, to: cleanEmail, req }).catch(err => {
+        console.error('api register email error:', err && err.message);
+      });
+    } catch {}
+  }
+
+  const user = db.getUserById(userId);
+  const validScopes = 'read write follow notifications media.write read:direct write:direct profile';
+  const tokens = issueOAuthTokensForUser(user, client_name || 'Extrovert Client', validScopes, req);
+  db.auditLog('api_register_success', userId, 'User registered via API', req.ip);
+
+  res.status(201).json({
+    data: {
+      user: serializeAccount(user, userId),
+      tokens,
     },
   });
 });
@@ -1035,7 +1455,7 @@ router.get('/accounts/verify_credentials', requireApiAuth('read'), (req, res) =>
 });
 
 router.patch('/accounts/update_credentials', requireApiAuth('profile'), (req, res) => {
-  const { display_name, bio, theme } = req.body;
+  const { display_name, bio, theme, html, css } = req.body || {};
   if (display_name !== undefined) req.apiUser.display_name = String(display_name).trim().slice(0, 100);
   if (bio !== undefined) req.apiUser.bio = String(bio).trim().slice(0, 500);
   if (theme !== undefined && ['light', 'dark', 'default'].includes(theme)) {
@@ -1043,7 +1463,17 @@ router.patch('/accounts/update_credentials', requireApiAuth('profile'), (req, re
     db.setUserTheme(req.apiUser.id, theme);
   }
   db.updateUserProfile(req.apiUser.id, { displayName: req.apiUser.display_name, bio: req.apiUser.bio });
-  db.auditLog('profile_updated', req.apiUser.id, 'Updated via API');
+
+  if (html !== undefined || css !== undefined) {
+    const existing = db.getCustomization(req.apiUser.id);
+    const rawHtml = html !== undefined ? String(html).slice(0, 20000) : existing.html;
+    const rawCss = css !== undefined ? String(css).slice(0, 10000) : existing.css;
+    const cleanHtml = sanitizeProfileHTML(rawHtml);
+    const cleanCss = sanitizeCSS(rawCss);
+    db.setCustomization(req.apiUser.id, cleanHtml, cleanCss);
+  }
+
+  db.auditLog('profile_updated', req.apiUser.id, 'Updated via API', req.ip);
   responseEnvelope(res, serializeAccount(req.apiUser, req.apiUser.id));
 });
 
@@ -3129,9 +3559,126 @@ router.get('/discover', requireApiAuth('read'), (req, res) => {
   responseEnvelope(res, data);
 });
 
+// ======== Admin API Endpoints (/api/v1/admin/*) ========
+
+function requireApiAdmin(req, res, next) {
+  requireApiAuth('read')(req, res, () => {
+    if (!req.apiUser || !req.apiUser.is_admin) {
+      return errorResponse(res, 403, 'Forbidden', 'Admin privileges required.');
+    }
+    next();
+  });
+}
+
+// GET /api/v1/admin/users
+router.get('/admin/users', requireApiAdmin, (req, res) => {
+  const users = db.getAllUsers();
+  responseEnvelope(res, users);
+});
+
+// POST /api/v1/admin/users/:id/ban
+router.post('/admin/users/:id/ban', requireApiAdmin, (req, res) => {
+  const target = db.getUserById(Number(req.params.id));
+  if (!target) return errorResponse(res, 404, 'Not Found', 'User not found.');
+  if (target.is_admin) return errorResponse(res, 403, 'Forbidden', 'Cannot ban another admin.');
+  db.banUser(target.id);
+  try { sessionStore.destroySessionsForUser(target.id); } catch {}
+  db.revokeAllOAuthTokensForUser(target.id);
+  db.auditLog('user_banned', req.apiUser.id, target.username, req.ip);
+  responseEnvelope(res, { ok: true, banned: true, user_id: target.id });
+});
+
+// POST /api/v1/admin/users/:id/unban
+router.post('/admin/users/:id/unban', requireApiAdmin, (req, res) => {
+  const target = db.getUserById(Number(req.params.id));
+  if (!target) return errorResponse(res, 404, 'Not Found', 'User not found.');
+  db.unbanUser(target.id);
+  db.auditLog('user_unbanned', req.apiUser.id, target.username, req.ip);
+  responseEnvelope(res, { ok: true, banned: false, user_id: target.id });
+});
+
+// DELETE /api/v1/admin/users/:id
+router.delete('/admin/users/:id', requireApiAdmin, (req, res) => {
+  const target = db.getUserById(Number(req.params.id));
+  if (!target) return errorResponse(res, 404, 'Not Found', 'User not found.');
+  if (target.is_admin) return errorResponse(res, 403, 'Forbidden', 'Cannot delete an admin.');
+  db.deleteUser(target.id);
+  try { sessionStore.destroySessionsForUser(target.id); } catch {}
+  db.auditLog('user_deleted', req.apiUser.id, target.username, req.ip);
+  responseEnvelope(res, { ok: true, deleted: true, user_id: target.id });
+});
+
+// POST /api/v1/admin/users/:id/make_admin
+router.post('/admin/users/:id/make_admin', requireApiAdmin, (req, res) => {
+  const target = db.getUserById(Number(req.params.id));
+  if (!target) return errorResponse(res, 404, 'Not Found', 'User not found.');
+  if (target.is_admin) return errorResponse(res, 400, 'Bad Request', 'Already an admin.');
+  if (target.banned) return errorResponse(res, 400, 'Bad Request', 'Cannot promote a banned user.');
+  db.promoteUser(target.id);
+  db.auditLog('user_promoted', req.apiUser.id, target.username, req.ip);
+  responseEnvelope(res, { ok: true, is_admin: true, user_id: target.id });
+});
+
+// POST /api/v1/admin/users/:id/remove_admin
+router.post('/admin/users/:id/remove_admin', requireApiAdmin, (req, res) => {
+  const target = db.getUserById(Number(req.params.id));
+  if (!target) return errorResponse(res, 404, 'Not Found', 'User not found.');
+  if (target.id === req.apiUser.id) return errorResponse(res, 400, 'Bad Request', 'Cannot demote yourself.');
+  db.demoteUser(target.id);
+  db.auditLog('user_demoted', req.apiUser.id, target.username, req.ip);
+  responseEnvelope(res, { ok: true, is_admin: false, user_id: target.id });
+});
+
+// GET /api/v1/admin/reports
+router.get('/admin/reports', requireApiAdmin, (req, res) => {
+  const reports = db.getPendingReports();
+  responseEnvelope(res, reports);
+});
+
+// POST /api/v1/admin/reports/:id/resolve
+router.post('/admin/reports/:id/resolve', requireApiAdmin, (req, res) => {
+  const report = db.getReport(Number(req.params.id));
+  if (!report) return errorResponse(res, 404, 'Not Found', 'Report not found.');
+  db.resolveReport(report.id);
+  db.auditLog('report_resolved', req.apiUser.id, `Report #${report.id}`, req.ip);
+  responseEnvelope(res, { ok: true, report_id: report.id });
+});
+
+// POST /api/v1/admin/reports/:id/dismiss
+router.post('/admin/reports/:id/dismiss', requireApiAdmin, (req, res) => {
+  const report = db.getReport(Number(req.params.id));
+  if (!report) return errorResponse(res, 404, 'Not Found', 'Report not found.');
+  db.dismissReport(report.id);
+  db.auditLog('report_dismissed', req.apiUser.id, `Report #${report.id}`, req.ip);
+  responseEnvelope(res, { ok: true, report_id: report.id });
+});
+
+// GET /api/v1/admin/announcement
+router.get('/admin/announcement', requireApiAdmin, (req, res) => {
+  const announcement = db.getAnnouncement();
+  responseEnvelope(res, { announcement });
+});
+
+// POST /api/v1/admin/announcement
+router.post('/admin/announcement', requireApiAdmin, express.json(), (req, res) => {
+  const body = String((req.body && req.body.body) || '').trim();
+  if (!body) return errorResponse(res, 400, 'Bad Request', 'Announcement body is required.');
+  db.setAnnouncement(body, req.apiUser.id);
+  db.auditLog('announcement_updated', req.apiUser.id, body.slice(0, 50), req.ip);
+  responseEnvelope(res, { ok: true, announcement: db.getAnnouncement() });
+});
+
+// DELETE /api/v1/admin/announcement
+router.delete('/admin/announcement', requireApiAdmin, (req, res) => {
+  db.clearAnnouncement();
+  db.auditLog('announcement_cleared', req.apiUser.id, '', req.ip);
+  responseEnvelope(res, { ok: true, announcement: null });
+});
+
 // ---------- WebRTC ICE Servers ----------
 router.get('/calls/ice_servers', requireApiAuth('read'), (req, res) => {
   responseEnvelope(res, { ice_servers: getIceServersConfig() });
 });
 
 module.exports = router;
+

@@ -1,0 +1,66 @@
+<%- include('partials/header', { pageTitle: 'Devices & Pairing' }) %>
+  <div class="card" style="max-width:540px;margin:0 auto">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+      <h2 style="margin:0">Devices &amp; Pairing</h2>
+      <a href="/settings" class="btn ghost sm"><%- include('partials/icon', { name: 'arrowLeft', size: 14 }) %> Settings</a>
+    </div>
+
+    <div style="margin-bottom:24px">
+      <h4>Pair a new device</h4>
+      <p style="font-size:0.85rem;color:var(--text-muted);margin:4px 0 14px">
+        Connect a mobile app or secondary desktop client without typing your password. Scan the QR code with your camera or enter the short-lived pairing code.
+      </p>
+
+      <button id="init-pair-btn" class="btn full" type="button">
+        <%- include('partials/icon', { name: 'plus', size: 15 }) %> Generate pairing code
+      </button>
+
+      <div id="pair-result" style="display:none;margin-top:16px;padding:16px;background:var(--surface-2, rgba(0,0,0,0.05));border:1px solid var(--border);border-radius:8px;text-align:center">
+        <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:8px">
+          Code expires in <b id="pair-timer" style="color:var(--text-normal)">300</b> seconds
+        </div>
+
+        <div id="pair-code" style="font-size:1.8rem;font-weight:700;letter-spacing:4px;font-family:monospace;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;margin:8px 0;user-select:all"></div>
+
+        <div style="margin:16px 0;display:flex;justify-content:center">
+          <img id="pair-qr-img" width="220" height="220" alt="Pairing QR Code" style="background:#fff;padding:8px;border-radius:8px;border:1px solid var(--border);display:block">
+        </div>
+
+        <div style="display:flex;gap:8px;margin-top:10px">
+          <input type="text" id="pair-url" readonly style="font-size:0.8rem;font-family:monospace;flex:1">
+          <button id="copy-url-btn" class="btn ghost sm" type="button"><%- include('partials/icon', { name: 'copy', size: 14 }) %> Copy</button>
+        </div>
+      </div>
+    </div>
+
+    <hr>
+
+    <h4>Registered devices</h4>
+    <p style="font-size:0.85rem;color:var(--text-muted);margin:4px 0 12px">Devices with cryptographic keys for end-to-end encrypted messaging.</p>
+
+    <% if (devices && devices.length) { %>
+      <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px">
+        <% devices.forEach(function(dev) { %>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:6px">
+            <div>
+              <div style="font-weight:600;color:var(--text-normal);font-size:0.9rem"><%= dev.device_name || 'Device' %></div>
+              <div style="font-size:0.75rem;color:var(--text-muted);font-family:monospace;margin-top:2px"><%= dev.device_id %></div>
+              <% if (dev.last_seen_at) { %>
+                <div style="font-size:0.7rem;color:var(--text-muted);margin-top:2px">Last active: <%= new Date(dev.last_seen_at).toLocaleDateString() %></div>
+              <% } %>
+            </div>
+            <form method="post" action="/settings/devices/<%= encodeURIComponent(dev.device_id) %>/delete" style="margin:0">
+              <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+              <button class="btn ghost danger" style="padding:4px 10px;font-size:0.75rem" onclick="return confirm('Revoke this device? It will be disconnected from encrypted messaging.')">Revoke</button>
+            </form>
+          </div>
+        <% }); %>
+      </div>
+    <% } else { %>
+      <p class="muted" style="font-size:0.85rem;margin-bottom:16px">No registered devices yet.</p>
+    <% } %>
+  </div>
+
+  <meta name="csrf-token" content="<%= csrfToken %>">
+  <script src="/static/pairing.js" defer></script>
+<%- include('partials/footer') %>

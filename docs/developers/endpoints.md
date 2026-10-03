@@ -2,11 +2,17 @@
 
 Base path: `/api/v1` unless noted. Auth notation: **session** = logged-in web session; **Bearer** = OAuth token (scope in parentheses). All responses use the envelope from the [API overview](api-overview.md).
 
-## Client Ergonomics & Device Pairing
+## Client Ergonomics, Authentication & Device Pairing
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | GET | `/client/bootstrap` | Bearer (`read`) | **Unified startup state** in 1 round-trip: returns `{ user, initial_seq, unread_notifications, rooms, timeline, ice_servers, e2ee, server }`. |
+| POST | `/auth/login` | none | **Direct client login**: accepts `{username, password, client_name}`. Returns standard OAuth tokens or `{totp_required: true, challenge_token}`. Auto-provisions an identifiable client-app row. Protected with brute-force lockout. Disabled when `EXTV_API_PASSWORD_LOGIN=off`. |
+| POST | `/auth/login/totp` | none | **Complete 2FA login**: accepts `{challenge_token, code}` (TOTP or recovery code). Single-use challenge (TTL ≤300s, max 5 attempts). Returns standard OAuth tokens. |
+| POST | `/auth/passkey/options` | none | **Generate passkey authentication options**: accepts `{username?}`. Returns WebAuthn assertion options and challenge token. |
+| POST | `/auth/passkey/verify` | none | **Verify passkey assertion**: accepts `{challenge_token, response, client_name}`. Verifies assertion, increments signature counter, and issues standard OAuth tokens. |
+| GET | `/auth/captcha` | none | **Stateless captcha**: returns `{captcha_token, captcha_svg, expires_in}` for anti-bot API registration. |
+| POST | `/auth/register` | none | **API registration**: accepts `{captcha_token, captcha_answer, username, password, display_name?, email?, client_name?}`. Validates captcha, provisions account and client app, and returns OAuth tokens. |
 | POST | `/auth/pair/init` | Bearer or session (`write`) | Generate a short-lived 5-minute device pairing code (e.g. `EXT-A1B2C3D4`) + QR pairing URL for zero-typing native login. |
 | POST | `/auth/pair/claim` | none | Exchange pairing code (`code`, `client_name`) for a permanent Personal Access Token (`ext_pat_...`) and user profile. Single-use. |
 
@@ -34,7 +40,7 @@ Full flow documentation: [OAuth 2.0 & OpenID Connect](oauth-oidc.md).
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | GET | `/accounts/verify_credentials` | Bearer (`read`) | Your own account. |
-| PATCH | `/accounts/update_credentials` | Bearer (`profile`) | Update `display_name` (≤100), `bio` (≤500), `theme` (`light`/`dark`/`default`). |
+| PATCH | `/accounts/update_credentials` | Bearer (`profile`) | Update `display_name` (≤100), `bio` (≤500), `theme` (`light`/`dark`/`default`), `html` (custom profile markup ≤20k chars, sanitized), and `css` (custom profile styles ≤10k chars, sanitized). |
 | POST | `/accounts/avatar` | Bearer (`profile`) | Multipart `avatar` (image, ≤10 MB) → resized 200×200 JPEG. |
 | DELETE | `/accounts/me` | Bearer (`write`) | Permanently delete your account. Body: `password`*. |
 | GET | `/accounts/tokens` | Bearer (`read` or `profile`) | List your personal access tokens (`id, name, token_prefix, scopes, created_at, expires_at`). |
@@ -211,12 +217,31 @@ All require mutual followers with the peer.
 | POST | `/stickers` | Bearer (`write`) | Upload sticker (multipart `file`, ≤500 KB, auto-compressed) or save existing (`path`). |
 | DELETE | `/stickers/:id` | Bearer (`write`) | Delete one of your personal stickers. |
 
-## Network Discovery & Calls
+## Administration
+
+All `/admin/*` routes require a Bearer token belonging to an account with `is_admin = 1`. Every administrative mutation is audited in the server audit log with the acting admin's user ID, target, and IP.
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| GET | `/discover` | Bearer (`read`) | Friend-of-a-Friend (FoF) suggested users within your 2-hop graph (`limit` ≤50). |
-| GET | `/calls/ice_servers` | Bearer (`read`) | WebRTC STUN/TURN ICE servers configuration: `{ice_servers: [{urls: "..."}]}`. |
+| GET | `/admin/users` | Bearer (`admin` or `read`) | List all registered users with admin and ban status. |
+| POST | `/admin/users/:id/ban` | Bearer (`admin` or `read`) | Suspend a user account, destroy all active web sessions, and revoke all OAuth tokens. Cannot ban another admin. |
+| POST | `/admin/users/:id/unban` | Bearer (`admin` or `read`) | Restore access to a suspended user account. |
+| DELETE | `/admin/users/:id` | Bearer (`admin` or `read`) | Permanently delete a user account and associated content. Cannot delete an admin. |
+| POST | `/admin/users/:id/make_admin` | Bearer (`admin` or `read`) | Promote a user to instance administrator. |
+| POST | `/admin/users/:id/remove_admin` | Bearer (`admin` or `read`) | Demote an administrator back to regular user. Cannot demote yourself. |
+| GET | `/admin/reports` | Bearer (`admin` or `read`) | List unresolved moderation reports. |
+| POST | `/admin/reports/:id/resolve` | Bearer (`admin` or `read`) | Mark a moderation report as resolved. |
+| POST | `/admin/reports/:id/dismiss` | Bearer (`admin` or `read`) | Dismiss a moderation report. |
+| GET | `/admin/announcement` | Bearer (`admin` or `read`) | Retrieve current server-wide announcement. |
+| POST | `/admin/announcement` | Bearer (`admin` or `read`) | Create or update server announcement. Body: `{body: "..."}`. |
+| DELETE | `/admin/announcement` | Bearer (`admin` or `read`) | Clear active server announcement. |
+
+## Transport & Security Configuration
+
+- **Transport Security**: Production deployments (`NODE_ENV=production`) fail closed on unencrypted HTTP requests, requiring HTTPS directly or via an explicit `EXTV_TRUST_PROXY` behind TLS termination proxies.
+- **Uniform Error Responses**: Authentication failures return constant-time generic responses (`401 Unauthorized: Invalid username or password`) regardless of whether the user is unknown, wrong password, or suspended.
+- **Brute Force & Lockout**: Per-IP limiter (`EXTV_LOGIN_RATE_LIMIT_IP`, default 15/min) and per-username lockout with exponential backoff (`EXTV_LOGIN_LOCKOUT_ATTEMPTS`, default 5 failed attempts locks for 1 min up to 15 mins).
+- **OAuth-only Mode**: Set `EXTV_API_PASSWORD_LOGIN=off` to disable direct password login on the API surface while preserving OAuth/OIDC and pairing workflows.
 
 ## Web session routes (not part of the REST API)
 

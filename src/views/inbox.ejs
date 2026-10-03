@@ -21,16 +21,21 @@
           <% if (n.type === 'repost') { %><%- include('partials/icon', { name: 'repost', size: 18 }) %><% } %>
           <% if (n.type === 'message') { %><%- include('partials/icon', { name: 'chat', size: 18 }) %><% } %>
           <% if (n.type === 'missed_call') { %><%- include('partials/icon', { name: 'phone', size: 18 }) %><% } %>
+          <% if (n.type === 'security') { %><%- include('partials/icon', { name: 'shield', size: 18 }) %><% } %>
         </div>
         <div class="notif-body">
-          <a href="/u/<%= n.actor_username %>"><b><%= n.actor_name %></b></a>
-          <% if (n.type === 'follow') { %>followed you<% } %>
-          <% if (n.type === 'like') { %>liked your <a href="/posts/<%= n.post_id %>">post</a><% } %>
-          <% if (n.type === 'comment') { %>commented on your <a href="/posts/<%= n.post_id %>">post</a><% } %>
-          <% if (n.type === 'share') { %>shared your <a href="/posts/<%= n.post_id %>">post</a><% } %>
-          <% if (n.type === 'repost') { %>reposted your <a href="/posts/<%= n.post_id %>">post</a><% } %>
-          <% if (n.type === 'message') { %>sent you a <a href="/chats/<%= n.actor_username %>">message</a><% } %>
-          <% if (n.type === 'missed_call') { %>called you — <a href="/chats/<%= n.actor_username %>?call=1">call back</a><% } %>
+          <% if (n.type === 'security') { %>
+            <b>Security notice:</b> New login to your account from a new client or device.
+          <% } else { %>
+            <a href="/u/<%= n.actor_username %>"><b><%= n.actor_name %></b></a>
+            <% if (n.type === 'follow') { %>followed you<% } %>
+            <% if (n.type === 'like') { %>liked your <a href="/posts/<%= n.post_id %>">post</a><% } %>
+            <% if (n.type === 'comment') { %>commented on your <a href="/posts/<%= n.post_id %>">post</a><% } %>
+            <% if (n.type === 'share') { %>shared your <a href="/posts/<%= n.post_id %>">post</a><% } %>
+            <% if (n.type === 'repost') { %>reposted your <a href="/posts/<%= n.post_id %>">post</a><% } %>
+            <% if (n.type === 'message') { %>sent you a <a href="/chats/<%= n.actor_username %>">message</a><% } %>
+            <% if (n.type === 'missed_call') { %>called you — <a href="/chats/<%= n.actor_username %>?call=1">call back</a><% } %>
+          <% } %>
           <div class="muted" style="font-size:0.78rem"><%= locals.relTime(n.created_at) %></div>
         </div>
       </div>

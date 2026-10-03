@@ -1023,7 +1023,7 @@ function setCustomization(userId, html, css) {
 const { notify } = require('./notif-broadcaster');
 
 function createNotification({ userId, type, actorId, postId }) {
-  if (userId === actorId) return;
+  if (userId === actorId && type !== 'security' && type !== 'login') return;
   const now = Date.now();
   const result = db.prepare(
     `INSERT INTO notifications (user_id, type, actor_id, post_id, created_at) VALUES (?,?,?,?,?)`
@@ -1797,6 +1797,10 @@ function promoteUser(userId) {
   db.prepare(`UPDATE users SET is_admin = 1 WHERE id = ?`).run(userId);
 }
 
+function demoteUser(userId) {
+  db.prepare(`UPDATE users SET is_admin = 0 WHERE id = ?`).run(userId);
+}
+
 function removeReferralBadge(userId) {
   db.prepare(`UPDATE users SET referred_by = NULL WHERE referred_by = ?`).run(userId);
   db.prepare(`UPDATE users SET referral_code = NULL WHERE id = ?`).run(userId);
@@ -2197,6 +2201,25 @@ function getOAuthAppById(id) {
   return db.prepare(`SELECT * FROM oauth_apps WHERE id = ?`).get(id);
 }
 
+function getOrCreateClientApp(clientName, ownerId = null) {
+  const name = String(clientName || 'Extrovert Client').trim().slice(0, 100) || 'Extrovert Client';
+  const existing = db.prepare(`SELECT * FROM oauth_apps WHERE name = ? AND (owner_id = ? OR owner_id IS NULL) LIMIT 1`).get(name, ownerId || null);
+  if (existing) return existing;
+  const clientId = 'ext_client_' + crypto.randomBytes(16).toString('hex');
+  const clientSecret = crypto.randomBytes(32).toString('hex');
+  const appId = createOAuthApp({
+    name,
+    description: 'Auto-provisioned client application',
+    website: '',
+    redirectUris: 'urn:ietf:wg:oauth:2.0:oob',
+    clientId,
+    clientSecret,
+    scopes: 'read write follow notifications media.write read:direct write:direct profile admin',
+    ownerId: ownerId || null,
+  });
+  return getOAuthAppById(appId);
+}
+
 function getOAuthAppsByOwner(ownerId) {
   return db.prepare(`SELECT * FROM oauth_apps WHERE owner_id = ? ORDER BY created_at DESC`).all(ownerId);
 }
@@ -2449,11 +2472,11 @@ function searchPosts(query, viewerId, limit = 20) {
 }
 
 // ---------- Audit log ----------
-function auditLog(action, actorId, details) {
+function auditLog(action, actorId, details, ip = null) {
   const now = Date.now();
   try {
     db.prepare(`INSERT INTO audit_log (action, actor_id, details, ip, created_at) VALUES (?,?,?,?,?)`)
-      .run(action, actorId || null, details || '', null, now);
+      .run(action, actorId || null, details || '', ip || null, now);
   } catch {}
 }
 
@@ -2683,7 +2706,7 @@ module.exports = {
   // Multi-Device Olm E2EE & History Backup
   registerUserDevice, getUserDevices, getUserDevice, getSenderCurve, touchUserDevice, deleteUserDevice, addDevicePrekeys, countAvailableDevicePrekeys, claimDevicePrekey, peekDevicePrekey, getAllDeviceBundlesForUser, claimAllDevicePrekeysForUser, setUserHistoryBackup, getUserHistoryBackup,
   // admin
-  adminExists, getAllUsers, promoteUser, removeReferralBadge, banUser, unbanUser,
+  adminExists, getAllUsers, promoteUser, demoteUser, removeReferralBadge, banUser, unbanUser,
   // referrals
   setReferralCode, getUserByReferralCode, getReferralCount, getReferralCode, getReferrerIp,
   // stickers
@@ -2729,7 +2752,7 @@ module.exports = {
   // join requests
   createJoinRequest, getJoinRequests, getJoinRequestById, approveJoinRequest, rejectJoinRequest, hasPendingRequest,
   // OAuth Apps
-  createOAuthApp, getOAuthAppByClientId, getOAuthAppById, getOAuthAppsByOwner,
+  createOAuthApp, getOAuthAppByClientId, getOAuthAppById, getOAuthAppsByOwner, getOrCreateClientApp,
   getAuthorizedAppsForUser, deleteOAuthApp,
   // OAuth codes
   createOAuthCode, getOAuthCode, markOAuthCodeUsed,
