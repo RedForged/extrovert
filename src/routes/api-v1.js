@@ -2835,15 +2835,23 @@ router.post('/conversations/:username/messages', requireApiAuth('write:direct'),
   db.createNotification({ userId: other.id, type: 'message', actorId: req.apiUser.id });
 
   const msg = db.db.prepare(`SELECT id, from_id, to_id, body, created_at, key_for_sender, key_for_recipient, proto, sender_ciphertext, secure FROM messages WHERE id = ?`).get(msgId);
-  const senderId = db.getOlmIdentity(req.apiUser.id);
+  let senderDeviceId = req.body.sender_device_id || req.body.device_id || null;
+  if (!senderDeviceId && body && body.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(body);
+      if (parsed && parsed.sender_device_id) senderDeviceId = parsed.sender_device_id;
+    } catch {}
+  }
+  const senderCurve = db.getSenderCurve(req.apiUser.id, senderDeviceId, req.body.sender_curve);
   const apiUserRow = db.db.prepare(`SELECT username, display_name FROM users WHERE id = ?`).get(req.apiUser.id);
   const dmPayload = {
     message: msg,
-    sender_curve: senderId ? senderId.identity_key : null,
+    sender_curve: senderCurve,
     from_username: apiUserRow.username,
     from_display: apiUserRow.display_name,
     to_username: other.username,
   };
+  if (senderDeviceId) dmPayload.sender_device_id = String(senderDeviceId);
   if (clientId) dmPayload.client_id = String(clientId);
   sendDmEvent(other.username, dmPayload);
   if (apiUserRow.username !== other.username) {

@@ -138,6 +138,43 @@ async function main() {
   await new Promise(r => setTimeout(r, 500));
   ok(!aliceGotDm, 'sender does not receive their own DM back (no delivery loop)');
 
+  // Test device registration curve resolution without account-level olm_identity
+  const carolId = db.createUser({ username: 'carol', passwordHash: bcrypt.hashSync('pw3', 10), displayName: 'Carol' });
+  db.follow(carolId, bobId);
+  db.follow(bobId, carolId);
+  db.registerUserDevice(carolId, 'carol-phone', 'carol-curve25519-device', 'carol-ed25519', null, 'Carol Phone');
+  // Clear any account-level olm_identity for carol to ensure only device registration exists
+  db.db.prepare('DELETE FROM olm_identity WHERE user_id = ?').run(carolId);
+
+  const ctok = crypto.randomBytes(32).toString('hex');
+  db.createOAuthToken(ctok, null, db.getOAuthAppByClientId('c').id, carolId, 'read write follow read:direct write:direct', Date.now() + 86400000);
+
+  const carolReceived = new Promise((resolve) => {
+    ws.on('message', (raw) => {
+      let msg; try { msg = JSON.parse(raw.toString()); } catch { return; }
+      if (msg.type === 'new_dm' && msg.from_username === 'carol') resolve(msg);
+    });
+  });
+
+  await fetch(base + '/api/v1/conversations/bob/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + ctok },
+    body: JSON.stringify({
+      proto: 'olm',
+      body: '{"t":0,"b":"from-carol"}',
+      sender_ciphertext: '{"t":0,"b":"self-copy"}',
+      sender_device_id: 'carol-phone',
+    }),
+  });
+
+  const carolMsg = await Promise.race([
+    carolReceived,
+    new Promise((_, rej) => setTimeout(() => rej(new Error('timeout waiting for carol new_dm')), 3000)),
+  ]).catch(err => err);
+
+  ok(carolMsg && carolMsg.type === 'new_dm', 'bob receives new_dm from device registration');
+  ok(carolMsg && carolMsg.sender_curve === 'carol-curve25519-device', 'sender_curve resolves to device registration curve');
+
   ws.close();
   wsAlice.close();
   try { fs.rmSync(TEST_DIR, { recursive: true, force: true }); } catch {}

@@ -1419,6 +1419,23 @@ function getUserDevice(userId, deviceId) {
   `).get(userId, String(deviceId)) || null;
 }
 
+function getSenderCurve(userId, senderDeviceId = null, explicitCurve = null) {
+  if (explicitCurve && typeof explicitCurve === 'string' && explicitCurve.trim()) {
+    return explicitCurve.trim();
+  }
+  if (senderDeviceId) {
+    const dev = getUserDevice(userId, String(senderDeviceId).trim());
+    if (dev && dev.identity_key) return dev.identity_key;
+  }
+  const devices = getUserDevices(userId);
+  if (devices && devices.length > 0 && devices[0].identity_key) {
+    return devices[0].identity_key;
+  }
+  const id = getOlmIdentity(userId);
+  if (id && id.identity_key) return id.identity_key;
+  return null;
+}
+
 function touchUserDevice(userId, deviceId) {
   db.prepare(`UPDATE user_devices SET last_seen = ? WHERE user_id = ? AND device_id = ?`).run(Date.now(), userId, String(deviceId));
 }
@@ -2640,7 +2657,7 @@ module.exports = {
   // Olm (Signal-style) E2EE
   setOlmIdentity, getOlmIdentity, setOlmBackup, addOlmPrekeys, countAvailablePrekeys, claimOlmPrekey, peekOlmPrekey, requestDmRekey, dmRekeyNeeded, clearDmRekey,
   // Multi-Device Olm E2EE & History Backup
-  registerUserDevice, getUserDevices, getUserDevice, touchUserDevice, deleteUserDevice, addDevicePrekeys, countAvailableDevicePrekeys, claimDevicePrekey, peekDevicePrekey, getAllDeviceBundlesForUser, claimAllDevicePrekeysForUser, setUserHistoryBackup, getUserHistoryBackup,
+  registerUserDevice, getUserDevices, getUserDevice, getSenderCurve, touchUserDevice, deleteUserDevice, addDevicePrekeys, countAvailableDevicePrekeys, claimDevicePrekey, peekDevicePrekey, getAllDeviceBundlesForUser, claimAllDevicePrekeysForUser, setUserHistoryBackup, getUserHistoryBackup,
   // admin
   adminExists, getAllUsers, promoteUser, removeReferralBadge, banUser, unbanUser,
   // referrals

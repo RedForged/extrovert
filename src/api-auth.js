@@ -5,19 +5,6 @@ const db = require('./db');
 
 const VALID_SCOPES = new Set(['openid', 'read', 'write', 'follow', 'media.write', 'notifications', 'read:direct', 'write:direct', 'profile', 'email']);
 
-const SCOPE_HIERARCHY = {
-  'openid': ['openid'],
-  'read': ['read'],
-  'write': ['write'],
-  'follow': ['follow'],
-  'media.write': ['media.write'],
-  'notifications': ['notifications'],
-  'read:direct': ['read:direct'],
-  'write:direct': ['write:direct'],
-  'profile': ['profile'],
-  'email': ['email'],
-};
-
 function validateScopes(tokenScopes, requiredScopes) {
   const granted = tokenScopes.split(' ');
   for (const required of requiredScopes) {

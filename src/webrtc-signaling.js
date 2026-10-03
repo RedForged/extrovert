@@ -461,7 +461,7 @@ function initSignaling(wss) {
           try {
             ws.send(JSON.stringify({
               seq: globalSeq++,
-              type: 'event',
+              type: 'gateway_event',
               topic: 'notifications',
               event: 'notification_new',
               data: notif,

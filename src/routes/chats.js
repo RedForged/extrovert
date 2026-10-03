@@ -9,7 +9,7 @@ const {
   editMessage, deleteMessage, getEditHistory,
   setDmSecurity, getDmSecurity, ackMessagesReceived,
   setOlmIdentity, getOlmIdentity, addOlmPrekeys, countAvailablePrekeys, claimOlmPrekey, setOlmBackup, requestDmRekey, dmRekeyNeeded, clearDmRekey,
-  registerUserDevice, getUserDevices, getUserDevice, touchUserDevice, deleteUserDevice, addDevicePrekeys, countAvailableDevicePrekeys, claimDevicePrekey, getAllDeviceBundlesForUser, claimAllDevicePrekeysForUser, setUserHistoryBackup, getUserHistoryBackup,
+  registerUserDevice, getUserDevices, getUserDevice, getSenderCurve, touchUserDevice, deleteUserDevice, addDevicePrekeys, countAvailableDevicePrekeys, claimDevicePrekey, getAllDeviceBundlesForUser, claimAllDevicePrekeysForUser, setUserHistoryBackup, getUserHistoryBackup,
 } = require('../db');
 
 // Message / ciphertext size caps. Oversize payloads are REJECTED, never
@@ -369,22 +369,25 @@ router.post('/:username/send', (req, res) => {
     createNotification({ userId: other.id, type: 'message', actorId: user.id });
     const msg = db.prepare(`SELECT id, from_id, body, created_at, key_for_sender, key_for_recipient, proto, sender_ciphertext, secure FROM messages WHERE id = ?`).get(msgId);
     // Live-deliver the ciphertext to the recipient's open tab(s) and sender's other devices.
-    const senderId = getOlmIdentity(user.id);
-    sendDmEvent(other.username, {
+    let senderDeviceId = req.body.sender_device_id || req.body.device_id || null;
+    if (!senderDeviceId && body && body.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(body);
+        if (parsed && parsed.sender_device_id) senderDeviceId = parsed.sender_device_id;
+      } catch {}
+    }
+    const senderCurve = getSenderCurve(user.id, senderDeviceId, req.body.sender_curve);
+    const dmPayload = {
       message: msg,
-      sender_curve: senderId ? senderId.identity_key : null,
+      sender_curve: senderCurve,
       from_username: user.username,
       from_display: user.display_name,
       to_username: other.username,
-    });
+    };
+    if (senderDeviceId) dmPayload.sender_device_id = String(senderDeviceId);
+    sendDmEvent(other.username, dmPayload);
     if (user.username !== other.username) {
-      sendDmEvent(user.username, {
-        message: msg,
-        sender_curve: senderId ? senderId.identity_key : null,
-        from_username: user.username,
-        from_display: user.display_name,
-        to_username: other.username,
-      });
+      sendDmEvent(user.username, dmPayload);
     }
     if (req.xhr) {
       return res.json({ message: msg });

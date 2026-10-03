@@ -389,6 +389,42 @@ describe('Client Ergonomics & Unified Bootstrap Test Suite', () => {
       ws.close();
     });
 
+    it('pushes notification frames with type gateway_event over WebSocket', async () => {
+      const ws = new WebSocket(`${wsUrl}?token=${bobToken}&auto_subscribe=1`);
+      const subPromise = new Promise((resolve) => {
+        ws.on('message', (raw) => {
+          try {
+            const msg = JSON.parse(raw.toString());
+            if (msg.type === 'subscribed' && msg.auto_subscribed) resolve();
+          } catch {}
+        });
+      });
+      await new Promise((resolve) => ws.on('open', resolve));
+      await subPromise;
+
+      const notifPromise = new Promise((resolve) => {
+        ws.on('message', (raw) => {
+          try {
+            const msg = JSON.parse(raw.toString());
+            if (msg.type === 'gateway_event' && msg.topic === 'notifications' && msg.event === 'notification_new') {
+              resolve(msg);
+            }
+          } catch {}
+        });
+      });
+
+      // Alice triggers a notification for Bob
+      db.createNotification({ userId: bobId, type: 'follow', actorId: aliceId });
+
+      const notifFrame = await notifPromise;
+      assert.strictEqual(notifFrame.type, 'gateway_event');
+      assert.strictEqual(notifFrame.topic, 'notifications');
+      assert.strictEqual(notifFrame.event, 'notification_new');
+      assert.strictEqual(notifFrame.data.type, 'follow');
+
+      ws.close();
+    });
+
     it('supports reconnecting and resuming with auto_subscribe: true in one frame', async () => {
       const ws = new WebSocket(wsUrl);
       await new Promise((resolve) => ws.on('open', resolve));
