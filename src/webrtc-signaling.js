@@ -943,6 +943,7 @@ function initSignaling(wss) {
 
     ws.on('close', () => {
       cleanupClientSubscriptions(ws);
+      if (!user) return;
       removeFromVoiceChannels(user.id);
       cancelOutgoingPending(user.id, 'declined');
       const dmSet = dmClients.get(user.id);
