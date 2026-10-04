@@ -349,7 +349,8 @@ router.post('/:username/send', (req, res) => {
   const body = String(req.body.body || '').trim();
   const keyForSender = String(req.body.key_for_sender || '').trim() || null;
   const keyForRecipient = String(req.body.key_for_recipient || '').trim() || null;
-  const proto = String(req.body.proto || 'rsa').trim() === 'olm' ? 'olm' : 'rsa';
+  const rawProto = String(req.body.proto || 'rsa').trim();
+  const proto = (rawProto === 'mls' || rawProto === 'olm') ? rawProto : 'rsa';
   const senderCiphertextRaw = String(req.body.sender_ciphertext || '').trim();
   // Reject oversize payloads outright — truncating a ciphertext would store a
   // corrupted message that can never be decrypted.
@@ -362,8 +363,8 @@ router.post('/:username/send', (req, res) => {
   const senderCiphertext = senderCiphertextRaw || null;
   const isSticker = body.startsWith('/uploads/stickers/');
   if (body && !isSticker) {
-    if (proto !== 'olm' || !senderCiphertext) {
-      return req.xhr ? res.json({ error: 'End-to-end encryption required. All messages must be Olm-encrypted.' }) : res.status(400).send('E2EE required');
+    if ((proto !== 'olm' && proto !== 'mls') || !senderCiphertext) {
+      return req.xhr ? res.json({ error: 'End-to-end encryption required. All messages must be Olm or MLS encrypted.' }) : res.status(400).send('E2EE required');
     }
   }
   if (body) {
@@ -441,14 +442,15 @@ router.post('/:username/edit/:mid', (req, res) => {
   }
   const keyForSender = String(req.body.key_for_sender || '').trim() || null;
   const keyForRecipient = String(req.body.key_for_recipient || '').trim() || null;
-  const proto = String(req.body.proto || 'rsa').trim() === 'olm' ? 'olm' : 'rsa';
+  const rawProto = String(req.body.proto || 'rsa').trim();
+  const proto = (rawProto === 'mls' || rawProto === 'olm') ? rawProto : 'rsa';
   const senderCiphertextRaw = String(req.body.sender_ciphertext || '').trim();
   if (senderCiphertextRaw.length > DM_SENDER_CT_MAX) {
     return req.xhr ? res.json({ error: 'Ciphertext too long.' }) : res.status(400).send('Ciphertext too long.');
   }
   const senderCiphertext = senderCiphertextRaw || null;
-  if (!body.startsWith('/uploads/stickers/') && (proto !== 'olm' || !senderCiphertext)) {
-    return req.xhr ? res.json({ error: 'End-to-end encryption required. All messages must be Olm-encrypted.' }) : res.status(400).send('E2EE required');
+  if (!body.startsWith('/uploads/stickers/') && ((proto !== 'olm' && proto !== 'mls') || !senderCiphertext)) {
+    return req.xhr ? res.json({ error: 'End-to-end encryption required. All messages must be Olm or MLS encrypted.' }) : res.status(400).send('E2EE required');
   }
   const ok = editMessage(Number(req.params.mid), user.id, body, keyForSender, keyForRecipient, proto, senderCiphertext);
   if (!ok) return req.xhr ? res.json({ error: 'not found or not yours' }) : res.status(404).send('Message not found or not yours.');

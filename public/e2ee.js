@@ -1610,6 +1610,62 @@
     });
   }
 
+  // Dual-stack MLS DM Encryption with transparent Olm fallback
+  var peerMlsDeviceCache = {};
+
+  function checkPeerMlsSupport(otherIdStr) {
+    if (typeof window !== 'undefined' && window.ExtrovertMLS && window.ExtrovertMLS.ready()) {
+      var now = Date.now();
+      var cached = peerMlsDeviceCache[otherIdStr];
+      if (cached && now - cached.ts < 60000) {
+        return Promise.resolve(cached.hasMls);
+      }
+      return fetch('/mls/devices?user_id=' + encodeURIComponent(otherIdStr), {
+        credentials: 'same-origin',
+        headers: { 'X-Requested-With': 'XMLHttpRequest' }
+      }).then(function (r) {
+        return r.json();
+      }).then(function (data) {
+        var hasMls = !!(data && data.ok && Array.isArray(data.devices) && data.devices.length > 0);
+        peerMlsDeviceCache[otherIdStr] = { hasMls: hasMls, ts: now };
+        return hasMls;
+      }).catch(function () {
+        return false;
+      });
+    }
+    return Promise.resolve(false);
+  }
+
+  function encryptDmDualStack(plaintext, otherId, otherIdStr, otherUsername) {
+    return checkPeerMlsSupport(otherIdStr).then(function (hasMls) {
+      if (hasMls && window.ExtrovertMLS) {
+        return window.ExtrovertMLS.encryptDmMessage(otherIdStr, plaintext).then(function (mlsRes) {
+          return {
+            proto: 'mls',
+            recipientCipher: mlsRes.body,
+            senderCipher: mlsRes.body,
+          };
+        }).catch(function (err) {
+          console.warn('e2ee: MLS DM encryption failed, falling back to Olm:', err);
+          return encryptOlm(plaintext, otherId, otherIdStr, otherUsername).then(function (res) {
+            return {
+              proto: 'olm',
+              recipientCipher: res.recipientCipher,
+              senderCipher: res.senderCipher,
+            };
+          });
+        });
+      }
+      return encryptOlm(plaintext, otherId, otherIdStr, otherUsername).then(function (res) {
+        return {
+          proto: 'olm',
+          recipientCipher: res.recipientCipher,
+          senderCipher: res.senderCipher,
+        };
+      });
+    });
+  }
+
   // Multi-device DM Decryption
   // Own-message decrypt: try the self-session only. A previous-session message
   // is a real failure state, NOT a fake "plaintext" string persisted as a real
@@ -3012,9 +3068,9 @@
       }
 
       input.disabled = true;
-      encryptOlm(plaintext, recipientId, otherIdStr, otherUsername).then(function (result) {
+      encryptDmDualStack(plaintext, recipientId, otherIdStr, otherUsername).then(function (result) {
         var usp = new URLSearchParams();
-        usp.set('proto', 'olm');
+        usp.set('proto', result.proto || 'olm');
         usp.set('body', result.recipientCipher);
         usp.set('sender_ciphertext', result.senderCipher);
         fetch(sendForm.getAttribute('action'), {
@@ -3030,7 +3086,7 @@
               from_id: currentUserId(),
               created_at: data.message.created_at,
               edited_at: data.message.edited_at || null,
-              proto: 'olm',
+              proto: result.proto || 'olm',
               plaintext: plaintext,
               own: true,
               msg_secure: Number(data.message.secure) === 1,
@@ -3160,7 +3216,8 @@
       saveBtn.disabled = true;
       saveBtn.textContent = 'Saving…';
       var req = { proto: 'olm', body: '', sender_ciphertext: '' };
-      var cryptoP = encryptOlm(val, recipientId, otherIdStr, otherUsername).then(function (r) {
+      var cryptoP = encryptDmDualStack(val, recipientId, otherIdStr, otherUsername).then(function (r) {
+        req.proto = r.proto || 'olm';
         req.body = r.recipientCipher;
         req.sender_ciphertext = r.senderCipher;
       });
@@ -3685,7 +3742,7 @@
     showBackupPromptOverlay: showBackupPromptOverlay,
     // ---- DM bridge (used by the native client; web pages use the DOM wiring) ----
     unlock: unlockWithPassword,
-    encryptDm: encryptOlm,
+    encryptDm: encryptDmDualStack,
     decryptDm: decryptOlm,
     decryptLegacyDm: decryptLegacyRSA,
     replenishPrekeys: maybeReplenishPrekeys,
