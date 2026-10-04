@@ -2503,6 +2503,22 @@
             return;
           }
 
+          if (proto === 'mls') {
+            var mlsP = (typeof window !== 'undefined' && window.ExtrovertMLS && window.ExtrovertMLS.ready())
+              ? window.ExtrovertMLS.decryptDmMessage(otherIdStr, body)
+              : Promise.reject(new Error('MLS engine not ready'));
+            return mlsP.then(function (plain) {
+              bubble.textContent = plain;
+              localMap[String(msgId)] = plain;
+              securePersistMessage(otherIdStr, recordFor(plain));
+              if (msgSecure) markSecure(recordFor(plain));
+            }).catch(function (err) {
+              console.error('MLS DM decrypt failed', err);
+              bubble.textContent = '[unable to decrypt]';
+              return markUndecryptableSeen(undecryptableDmKey(otherIdStr), msgId);
+            });
+          }
+
           if (proto === 'olm') {
             var msg = { body: body, sender_ciphertext: senderCt };
             return decryptOlm(msg, isOwn, otherIdStr, recipientCurve).then(function (plain) {
@@ -2935,6 +2951,10 @@
     var decryptP;
     if (isSticker) {
       decryptP = Promise.resolve(m.body); // sticker body IS the plaintext
+    } else if (proto === 'mls') {
+      decryptP = (typeof window !== 'undefined' && window.ExtrovertMLS && window.ExtrovertMLS.ready())
+        ? window.ExtrovertMLS.decryptDmMessage(otherIdStr, m.body)
+        : Promise.reject(new Error('MLS engine not ready'));
     } else if (proto === 'olm') {
       decryptP = decryptOlm({ body: m.body, sender_ciphertext: m.sender_ciphertext }, false, otherIdStr, senderCurve);
     } else {
@@ -3643,7 +3663,11 @@
             }
           }
           var p;
-          if (proto === 'olm') {
+          if (proto === 'mls') {
+            p = (typeof window !== 'undefined' && window.ExtrovertMLS && window.ExtrovertMLS.ready())
+              ? window.ExtrovertMLS.decryptDmMessage(otherId, body)
+              : Promise.reject(new Error('MLS engine not ready'));
+          } else if (proto === 'olm') {
             p = decryptOlm(
               { body: body, sender_ciphertext: el.getAttribute('data-sender-ciphertext') || '' },
               isOwn, otherId, curve
@@ -3743,7 +3767,16 @@
     // ---- DM bridge (used by the native client; web pages use the DOM wiring) ----
     unlock: unlockWithPassword,
     encryptDm: encryptDmDualStack,
-    decryptDm: decryptOlm,
+    decryptDm: function (msg, isOwn, otherIdStr, theirCurve25519, proto) {
+      if (proto === 'mls' || (msg && msg.proto === 'mls')) {
+        var body = typeof msg === 'object' && msg !== null && 'body' in msg ? msg.body : msg;
+        if (typeof window !== 'undefined' && window.ExtrovertMLS && window.ExtrovertMLS.ready()) {
+          return window.ExtrovertMLS.decryptDmMessage(otherIdStr, body);
+        }
+        return Promise.reject(new Error('MLS engine not ready'));
+      }
+      return decryptOlm(msg, isOwn, otherIdStr, theirCurve25519);
+    },
     decryptLegacyDm: decryptLegacyRSA,
     replenishPrekeys: maybeReplenishPrekeys,
     // ---- Additional Security: device-local copies + receipt acks ----
