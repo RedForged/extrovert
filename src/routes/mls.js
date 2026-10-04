@@ -8,8 +8,18 @@ const {
   getMlsDevice,
   revokeMlsDevice,
   saveMlsKeyPackages,
+  getMlsKeyPackagesForUser,
+  consumeSpecificMlsKeyPackages,
   claimUserMlsKeyPackages,
   getMlsKeyPackageStatus,
+  addMlsGroupMember,
+  removeMlsGroupMember,
+  getMlsGroupMembers,
+  isMlsGroupMember,
+  getUserMlsGroups,
+  saveMlsProposal,
+  getPendingMlsProposals,
+  consumeMlsProposals,
   getMlsGroup,
   initMlsGroup,
   commitMlsGroup,
@@ -18,6 +28,7 @@ const {
   ackMlsWelcome,
   saveMlsBackup,
   getMlsBackup,
+  isRoomMember,
 } = require('../db');
 const { bearerOrSession } = require('../bearer-auth');
 
@@ -98,7 +109,6 @@ router.post('/keypackages', requireAuth, (req, res) => {
     return res.status(400).json({ error: 'device_id and non-empty keypackages array required' });
   }
 
-  // Ensure device belongs to user
   const dev = getMlsDevice(user.id, device_id);
   if (!dev || dev.revoked_at) {
     return res.status(403).json({ error: 'Device not registered or revoked' });
@@ -123,7 +133,8 @@ router.get('/keypackages/status', requireAuth, (req, res) => {
   res.json({ ok: true, available });
 });
 
-// 6. Claim KeyPackages for All Active Devices of a Target User
+// 6. Two-Phase KeyPackage Claiming
+// Phase 1: Query available packages without consuming (default), or consume immediately if query ?consume=1
 router.get('/keypackages/:userId', requireAuth, (req, res) => {
   const user = res.locals.currentUser;
   const targetUserId = parseInt(req.params.userId, 10);
@@ -131,7 +142,6 @@ router.get('/keypackages/:userId', requireAuth, (req, res) => {
     return res.status(400).json({ error: 'Invalid user ID' });
   }
 
-  // Rate limiting check
   const rateLimitKey = `${user.id}:${req.ip}`;
   if (!checkKpRateLimit(rateLimitKey)) {
     return res.status(429).json({ error: 'Too many KeyPackage requests. Please wait a minute.' });
@@ -140,14 +150,90 @@ router.get('/keypackages/:userId', requireAuth, (req, res) => {
   const target = getUserById(targetUserId);
   if (!target) return res.status(404).json({ error: 'User not found' });
 
+  const isPeek = req.query.peek === '1' || req.query.consume === '0' || req.query.consume === 'false';
+  if (isPeek) {
+    const available = getMlsKeyPackagesForUser(targetUserId);
+    return res.json({ ok: true, user_id: targetUserId, keypackages: available });
+  }
+
   const claimed = claimUserMlsKeyPackages(targetUserId);
   res.json({ ok: true, user_id: targetUserId, keypackages: claimed });
 });
 
-// 7. Atomic Group Initialization
+// Phase 2: Consume specific packages after commit incorporates them
+router.post('/keypackages/consume', requireAuth, (req, res) => {
+  const { keypackage_ids } = req.body || {};
+  if (!Array.isArray(keypackage_ids) || !keypackage_ids.length) {
+    return res.status(400).json({ error: 'keypackage_ids array required' });
+  }
+  const consumed = consumeSpecificMlsKeyPackages(keypackage_ids);
+  res.json({ ok: true, consumed_count: consumed.length, consumed_ids: consumed.map(c => c.id) });
+});
+
+// 7. Fetch Pending Welcomes for Device
+router.get('/welcomes', requireAuth, (req, res) => {
+  const user = res.locals.currentUser;
+  const deviceId = req.query.device_id;
+  if (!deviceId) return res.status(400).json({ error: 'device_id is required' });
+
+  const welcomes = getMlsWelcomes(user.id, deviceId);
+  res.json({ ok: true, welcomes });
+});
+
+// 8. Acknowledge Welcome
+router.post('/welcomes/ack', requireAuth, (req, res) => {
+  const user = res.locals.currentUser;
+  const { welcome_id, device_id } = req.body || {};
+  if (!welcome_id || !device_id) {
+    return res.status(400).json({ error: 'welcome_id and device_id are required' });
+  }
+
+  const r = ackMlsWelcome(welcome_id, user.id, device_id);
+  res.json({ ok: true, changes: r.changes });
+});
+
+// 9. Standalone Proposals Management
+router.post('/groups/:groupId/proposals', requireAuth, (req, res) => {
+  const user = res.locals.currentUser;
+  const groupId = req.params.groupId;
+  const { epoch, proposal_ref, sender_leaf, proposal_type, proposal_data, device_id } = req.body || {};
+
+  if (!groupId || epoch === undefined || !proposal_ref || sender_leaf === undefined || !proposal_type || !proposal_data) {
+    return res.status(400).json({ error: 'Missing required proposal fields' });
+  }
+
+  // Authorization check
+  if (groupId.startsWith('dm:')) {
+    const parts = groupId.slice(3).split('_').map(Number);
+    if (!parts.includes(user.id)) return res.status(403).json({ error: 'Not authorized' });
+  } else if (groupId.startsWith('room:')) {
+    const roomId = parseInt(groupId.slice(5), 10);
+    if (!isRoomMember(user.id, roomId)) return res.status(403).json({ error: 'Not a room member' });
+  }
+
+  saveMlsProposal(groupId, epoch, proposal_ref, sender_leaf, proposal_type, proposal_data);
+  res.status(201).json({ ok: true });
+});
+
+router.get('/groups/:groupId/proposals', requireAuth, (req, res) => {
+  const user = res.locals.currentUser;
+  const groupId = req.params.groupId;
+  const epoch = parseInt(req.query.epoch, 10);
+  if (isNaN(epoch)) return res.status(400).json({ error: 'epoch query parameter required' });
+
+  if (groupId.startsWith('dm:')) {
+    const parts = groupId.slice(3).split('_').map(Number);
+    if (!parts.includes(user.id)) return res.status(403).json({ error: 'Not authorized' });
+  }
+
+  const proposals = getPendingMlsProposals(groupId, epoch);
+  res.json({ ok: true, proposals });
+});
+
+// 10. Atomic Group Initialization
 router.post('/groups/init', requireAuth, (req, res) => {
   const user = res.locals.currentUser;
-  const { group_id, initial_commit, welcomes, idempotency_key } = req.body || {};
+  const { group_id, initial_commit, welcomes, members, device_id, idempotency_key } = req.body || {};
   if (!group_id) return res.status(400).json({ error: 'group_id is required' });
 
   // Authorization: for DMs (dm:uid1_uid2), caller must be one of the participants
@@ -156,10 +242,17 @@ router.post('/groups/init', requireAuth, (req, res) => {
     if (!parts.includes(user.id)) {
       return res.status(403).json({ error: 'Not authorized for this DM group' });
     }
+  } else if (group_id.startsWith('room:')) {
+    const roomId = parseInt(group_id.slice(5), 10);
+    if (!isRoomMember(user.id, roomId)) {
+      return res.status(403).json({ error: 'Not a member of this room' });
+    }
   }
 
+  const initialMembers = Array.isArray(members) && members.length ? members : (device_id ? [{ user_id: user.id, device_id, leaf_index: 0, role: 'creator' }] : []);
+
   try {
-    const response = initMlsGroup(group_id, 0, [user.id], initial_commit, welcomes || [], idempotency_key || null);
+    const response = initMlsGroup(group_id, 0, initialMembers, initial_commit || null, welcomes || [], idempotency_key || null);
     res.status(201).json(response);
   } catch (err) {
     if (err.code === 'GROUP_EXISTS') {
@@ -170,26 +263,40 @@ router.post('/groups/init', requireAuth, (req, res) => {
   }
 });
 
-// 8. Atomic Commit Submission with CAS Epoch Check
+// 11. Atomic Commit Submission with CAS Epoch Check
 router.post('/groups/:groupId/commit', requireAuth, (req, res) => {
   const user = res.locals.currentUser;
   const groupId = req.params.groupId;
-  const { current_epoch, commit_message, welcomes, idempotency_key } = req.body || {};
+  const { current_epoch, commit_message, welcomes, proposals_consumed, members_added, members_removed, device_id, idempotency_key } = req.body || {};
 
   if (current_epoch === undefined || !commit_message) {
     return res.status(400).json({ error: 'current_epoch and commit_message are required' });
   }
 
-  // Authorization check for DMs
+  // Authorization check
   if (groupId.startsWith('dm:')) {
     const parts = groupId.slice(3).split('_').map(Number);
     if (!parts.includes(user.id)) {
       return res.status(403).json({ error: 'Not a member of this conversation' });
     }
+  } else if (groupId.startsWith('room:')) {
+    const roomId = parseInt(groupId.slice(5), 10);
+    if (!isRoomMember(user.id, roomId)) {
+      return res.status(403).json({ error: 'Not a member of this room' });
+    }
   }
 
   try {
-    const result = commitMlsGroup(groupId, current_epoch, commit_message, welcomes || [], idempotency_key || null);
+    const result = commitMlsGroup(
+      groupId,
+      current_epoch,
+      commit_message,
+      welcomes || [],
+      proposals_consumed || [],
+      members_added || [],
+      members_removed || [],
+      idempotency_key || null
+    );
     res.json(result);
   } catch (err) {
     if (err.code === 'EPOCH_CONFLICT') {
@@ -207,7 +314,7 @@ router.post('/groups/:groupId/commit', requireAuth, (req, res) => {
   }
 });
 
-// 9. Query Catch-Up Commits (for offline sync & Welcome catch-up)
+// 12. Query Catch-Up Commits (for offline sync & Welcome catch-up)
 router.get('/groups/:groupId/commits', requireAuth, (req, res) => {
   const user = res.locals.currentUser;
   const groupId = req.params.groupId;
@@ -218,35 +325,18 @@ router.get('/groups/:groupId/commits', requireAuth, (req, res) => {
     if (!parts.includes(user.id)) {
       return res.status(403).json({ error: 'Not a member of this conversation' });
     }
+  } else if (groupId.startsWith('room:')) {
+    const roomId = parseInt(groupId.slice(5), 10);
+    if (!isRoomMember(user.id, roomId)) {
+      return res.status(403).json({ error: 'Not a member of this room' });
+    }
   }
 
   const commits = getMlsCommits(groupId, since);
   res.json({ ok: true, group_id: groupId, commits });
 });
 
-// 10. Fetch Pending Welcomes for Device
-router.get('/welcomes', requireAuth, (req, res) => {
-  const user = res.locals.currentUser;
-  const deviceId = req.query.device_id;
-  if (!deviceId) return res.status(400).json({ error: 'device_id is required' });
-
-  const welcomes = getMlsWelcomes(user.id, deviceId);
-  res.json({ ok: true, welcomes });
-});
-
-// 11. Acknowledge Welcome
-router.post('/welcomes/ack', requireAuth, (req, res) => {
-  const user = res.locals.currentUser;
-  const { welcome_id, device_id } = req.body || {};
-  if (!welcome_id || !device_id) {
-    return res.status(400).json({ error: 'welcome_id and device_id are required' });
-  }
-
-  const r = ackMlsWelcome(welcome_id, user.id, device_id);
-  res.json({ ok: true, changes: r.changes });
-});
-
-// 12. Encrypted Credential Backup
+// 13. Encrypted Credential Backup
 router.get('/backup', requireAuth, (req, res) => {
   const user = res.locals.currentUser;
   const backup = getMlsBackup(user.id);

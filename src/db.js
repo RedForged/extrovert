@@ -642,21 +642,52 @@ try { db.exec(`
     device_id       TEXT NOT NULL,
     keypackage_data TEXT NOT NULL,
     ciphersuite     INTEGER NOT NULL DEFAULT 1,
+    not_before      INTEGER NOT NULL DEFAULT 0,
+    not_after       INTEGER NOT NULL DEFAULT 2147483647,
     created_at      INTEGER NOT NULL,
     consumed_at     INTEGER DEFAULT NULL
   );
 `); } catch {}
-try { db.exec(`CREATE INDEX IF NOT EXISTS idx_mls_kp_available ON mls_keypackages(user_id, device_id, consumed_at)`); } catch {}
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_mls_kp_available ON mls_keypackages(user_id, not_before, not_after, consumed_at)`); } catch {}
 
 try { db.exec(`
   CREATE TABLE IF NOT EXISTS mls_groups (
     group_id        TEXT PRIMARY KEY,
     epoch           INTEGER NOT NULL DEFAULT 0,
-    active_members  TEXT NOT NULL,
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL
   );
 `); } catch {}
+
+try { db.exec(`
+  CREATE TABLE IF NOT EXISTS mls_group_members (
+    group_id     TEXT NOT NULL REFERENCES mls_groups(group_id) ON DELETE CASCADE,
+    user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    device_id    TEXT NOT NULL,
+    leaf_index   INTEGER NOT NULL,
+    role         TEXT NOT NULL DEFAULT 'member',
+    joined_at    INTEGER NOT NULL,
+    removed_at   INTEGER DEFAULT NULL,
+    PRIMARY KEY (group_id, user_id, device_id)
+  );
+`); } catch {}
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_group_members_active ON mls_group_members(group_id, removed_at)`); } catch {}
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_user_active_groups ON mls_group_members(user_id, removed_at)`); } catch {}
+
+try { db.exec(`
+  CREATE TABLE IF NOT EXISTS mls_proposals (
+    group_id      TEXT NOT NULL REFERENCES mls_groups(group_id) ON DELETE CASCADE,
+    epoch         INTEGER NOT NULL,
+    proposal_ref  TEXT NOT NULL,
+    sender_leaf   INTEGER NOT NULL,
+    proposal_type INTEGER NOT NULL,
+    proposal_data TEXT NOT NULL,
+    created_at    INTEGER NOT NULL,
+    consumed_at   INTEGER DEFAULT NULL,
+    PRIMARY KEY (group_id, proposal_ref)
+  );
+`); } catch {}
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_proposals_pending ON mls_proposals(group_id, epoch, consumed_at)`); } catch {}
 
 try { db.exec(`
   CREATE TABLE IF NOT EXISTS mls_commits (
@@ -679,19 +710,24 @@ try { db.exec(`
     epoch           INTEGER NOT NULL,
     welcome_data    TEXT NOT NULL,
     created_at      INTEGER NOT NULL,
-    consumed_at     INTEGER DEFAULT NULL
+    fetched_at      INTEGER DEFAULT NULL,
+    acked_at        INTEGER DEFAULT NULL
   );
 `); } catch {}
-try { db.exec(`CREATE INDEX IF NOT EXISTS idx_mls_welcomes_dev ON mls_welcomes(user_id, device_id, consumed_at)`); } catch {}
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_mls_welcomes_pending ON mls_welcomes(user_id, device_id, acked_at)`); } catch {}
 
 try { db.exec(`
   CREATE TABLE IF NOT EXISTS mls_idempotency (
-    key             TEXT PRIMARY KEY,
-    group_id        TEXT NOT NULL,
-    response_body   TEXT NOT NULL,
-    created_at      INTEGER NOT NULL
+    group_id        TEXT NOT NULL REFERENCES mls_groups(group_id) ON DELETE CASCADE,
+    idempotency_key TEXT NOT NULL,
+    epoch           INTEGER NOT NULL,
+    commit_hash     TEXT NOT NULL,
+    created_at      INTEGER NOT NULL,
+    expires_at      INTEGER NOT NULL,
+    PRIMARY KEY (group_id, idempotency_key)
   );
 `); } catch {}
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_mls_idempotency_exp ON mls_idempotency(expires_at)`); } catch {}
 
 try { db.exec(`
   CREATE TABLE IF NOT EXISTS mls_credential_backups (
@@ -1731,15 +1767,17 @@ function saveMlsKeyPackages(userId, deviceId, packages) {
   const cleanDev = String(deviceId).trim();
   if (!Array.isArray(packages) || !packages.length) return 0;
   const insert = db.prepare(`
-    INSERT INTO mls_keypackages (user_id, device_id, keypackage_data, ciphersuite, created_at)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO mls_keypackages (user_id, device_id, keypackage_data, ciphersuite, not_before, not_after, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
   db.exec('BEGIN IMMEDIATE');
   try {
     for (const p of packages) {
       const data = typeof p === 'string' ? p : (p && (p.data || p.keypackage_data));
       const cs = (p && p.ciphersuite) || 1;
-      if (data) insert.run(userId, cleanDev, String(data), cs, now);
+      const notBefore = (p && Number(p.not_before)) || 0;
+      const notAfter = (p && Number(p.not_after)) || Math.floor((now + 90 * 86400000) / 1000);
+      if (data) insert.run(userId, cleanDev, String(data), cs, notBefore, notAfter, now);
     }
     db.exec('COMMIT');
     return packages.length;
@@ -1749,17 +1787,47 @@ function saveMlsKeyPackages(userId, deviceId, packages) {
   }
 }
 
+function getMlsKeyPackagesForUser(userId) {
+  const devices = getMlsDevices(userId);
+  const result = [];
+  const nowSec = Math.floor(Date.now() / 1000);
+  for (const dev of devices) {
+    const kp = db.prepare(`
+      SELECT id, device_id, keypackage_data, ciphersuite, not_before, not_after
+      FROM mls_keypackages
+      WHERE user_id = ? AND device_id = ? AND consumed_at IS NULL AND (? BETWEEN not_before AND not_after)
+      ORDER BY id ASC LIMIT 1
+    `).get(userId, dev.device_id, nowSec);
+    if (kp) result.push(kp);
+  }
+  return result;
+}
+
+function consumeSpecificMlsKeyPackages(keypackageIds) {
+  if (!Array.isArray(keypackageIds) || !keypackageIds.length) return [];
+  const cleanIds = keypackageIds.map(Number).filter(n => Number.isInteger(n) && n > 0);
+  if (!cleanIds.length) return [];
+  const now = Date.now();
+  const placeholders = cleanIds.map(() => '?').join(',');
+  return db.prepare(`
+    UPDATE mls_keypackages SET consumed_at = ?
+    WHERE id IN (${placeholders}) AND consumed_at IS NULL
+    RETURNING id, user_id, device_id
+  `).all(now, ...cleanIds);
+}
+
 function claimMlsKeyPackage(userId, deviceId) {
   const now = Date.now();
+  const nowSec = Math.floor(now / 1000);
   return db.prepare(`
     UPDATE mls_keypackages SET consumed_at = ?
     WHERE id = (
       SELECT id FROM mls_keypackages
-      WHERE user_id = ? AND device_id = ? AND consumed_at IS NULL
+      WHERE user_id = ? AND device_id = ? AND consumed_at IS NULL AND (? BETWEEN not_before AND not_after)
       ORDER BY id ASC LIMIT 1
     )
     RETURNING id, device_id, keypackage_data, ciphersuite
-  `).get(now, userId, String(deviceId)) || null;
+  `).get(now, userId, String(deviceId), nowSec) || null;
 }
 
 function claimUserMlsKeyPackages(userId) {
@@ -1780,32 +1848,127 @@ function claimUserMlsKeyPackages(userId) {
 }
 
 function getMlsKeyPackageStatus(userId, deviceId) {
+  const nowSec = Math.floor(Date.now() / 1000);
   const r = db.prepare(`
     SELECT COUNT(*) AS count
     FROM mls_keypackages
-    WHERE user_id = ? AND device_id = ? AND consumed_at IS NULL
-  `).get(userId, String(deviceId));
+    WHERE user_id = ? AND device_id = ? AND consumed_at IS NULL AND (? BETWEEN not_before AND not_after)
+  `).get(userId, String(deviceId), nowSec);
   return r ? r.count : 0;
+}
+
+// Group Membership Management
+function addMlsGroupMember(groupId, userId, deviceId, leafIndex = 0, role = 'member') {
+  const now = Date.now();
+  db.prepare(`
+    INSERT INTO mls_group_members (group_id, user_id, device_id, leaf_index, role, joined_at, removed_at)
+    VALUES (?, ?, ?, ?, ?, ?, NULL)
+    ON CONFLICT(group_id, user_id, device_id) DO UPDATE SET
+      leaf_index = excluded.leaf_index,
+      role = excluded.role,
+      removed_at = NULL
+  `).run(String(groupId), userId, String(deviceId), Number(leafIndex) || 0, String(role || 'member'), now);
+}
+
+function removeMlsGroupMember(groupId, userId, deviceId) {
+  db.prepare(`
+    UPDATE mls_group_members SET removed_at = ?
+    WHERE group_id = ? AND user_id = ? AND device_id = ? AND removed_at IS NULL
+  `).run(Date.now(), String(groupId), userId, String(deviceId));
+}
+
+function getMlsGroupMembers(groupId) {
+  return db.prepare(`
+    SELECT user_id, device_id, leaf_index, role, joined_at
+    FROM mls_group_members
+    WHERE group_id = ? AND removed_at IS NULL
+    ORDER BY leaf_index ASC
+  `).all(String(groupId));
+}
+
+function isMlsGroupMember(groupId, userId, deviceId = null) {
+  if (deviceId) {
+    const row = db.prepare(`
+      SELECT 1 FROM mls_group_members
+      WHERE group_id = ? AND user_id = ? AND device_id = ? AND removed_at IS NULL
+    `).get(String(groupId), userId, String(deviceId));
+    return !!row;
+  }
+  const row = db.prepare(`
+    SELECT 1 FROM mls_group_members
+    WHERE group_id = ? AND user_id = ? AND removed_at IS NULL
+  `).get(String(groupId), userId);
+  return !!row;
+}
+
+function getUserMlsGroups(userId) {
+  return db.prepare(`
+    SELECT DISTINCT group_id
+    FROM mls_group_members
+    WHERE user_id = ? AND removed_at IS NULL
+  `).all(userId).map(r => r.group_id);
+}
+
+// Standalone Public Proposals
+function saveMlsProposal(groupId, epoch, proposalRef, senderLeaf, proposalType, proposalData) {
+  const now = Date.now();
+  db.prepare(`
+    INSERT INTO mls_proposals (group_id, epoch, proposal_ref, sender_leaf, proposal_type, proposal_data, created_at, consumed_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+    ON CONFLICT(group_id, proposal_ref) DO NOTHING
+  `).run(String(groupId), Number(epoch), String(proposalRef), Number(senderLeaf), Number(proposalType), String(proposalData), now);
+}
+
+function getPendingMlsProposals(groupId, epoch) {
+  return db.prepare(`
+    SELECT proposal_ref, sender_leaf, proposal_type, proposal_data, created_at
+    FROM mls_proposals
+    WHERE group_id = ? AND epoch = ? AND consumed_at IS NULL
+    ORDER BY created_at ASC
+  `).all(String(groupId), Number(epoch));
+}
+
+function consumeMlsProposals(groupId, proposalRefs) {
+  if (!Array.isArray(proposalRefs) || !proposalRefs.length) return 0;
+  const now = Date.now();
+  const placeholders = proposalRefs.map(() => '?').join(',');
+  const res = db.prepare(`
+    UPDATE mls_proposals SET consumed_at = ?
+    WHERE group_id = ? AND proposal_ref IN (${placeholders}) AND consumed_at IS NULL
+  `).run(now, String(groupId), ...proposalRefs);
+  return res.changes;
 }
 
 function getMlsGroup(groupId) {
   const g = db.prepare(`SELECT * FROM mls_groups WHERE group_id = ?`).get(String(groupId));
   if (!g) return null;
+  const members = getMlsGroupMembers(groupId);
   return {
     ...g,
-    active_members: JSON.parse(g.active_members || '[]')
+    members,
+    active_members: members.map(m => m.user_id)
   };
 }
 
-function initMlsGroup(groupId, initialEpoch, activeMembers, commitData, welcomes = [], idempotencyKey = null) {
+function initMlsGroup(groupId, initialEpoch, members = [], commitData = null, welcomes = [], idempotencyKey = null) {
   const now = Date.now();
   const gid = String(groupId).trim();
   const ep = Number(initialEpoch) || 0;
-  const membersJson = JSON.stringify(Array.isArray(activeMembers) ? activeMembers : []);
 
-  if (idempotencyKey) {
-    const existingIdem = db.prepare(`SELECT response_body FROM mls_idempotency WHERE key = ?`).get(String(idempotencyKey));
-    if (existingIdem) return JSON.parse(existingIdem.response_body);
+  // Support positional: initMlsGroup(gid, ep, members, commitData, welcomes, idemKey) or initMlsGroup(gid, ep, members, commitData, idemKey)
+  let idemKey = idempotencyKey;
+  let welc = Array.isArray(welcomes) ? welcomes : [];
+  if (typeof welcomes === 'string') {
+    idemKey = welcomes;
+    welc = [];
+  }
+
+  if (idemKey) {
+    const existingIdem = db.prepare(`
+      SELECT epoch, commit_hash FROM mls_idempotency
+      WHERE group_id = ? AND idempotency_key = ? AND expires_at > ?
+    `).get(gid, String(idemKey), now);
+    if (existingIdem) return { ok: true, group_id: gid, epoch: existingIdem.epoch };
   }
 
   db.exec('BEGIN IMMEDIATE');
@@ -1822,23 +1985,41 @@ function initMlsGroup(groupId, initialEpoch, activeMembers, commitData, welcomes
     const activeEp = commitProvided ? ep + 1 : ep;
 
     db.prepare(`
-      INSERT INTO mls_groups (group_id, epoch, active_members, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(gid, activeEp, membersJson, now, now);
+      INSERT INTO mls_groups (group_id, epoch, created_at, updated_at)
+      VALUES (?, ?, ?, ?)
+    `).run(gid, activeEp, now, now);
 
+    if (Array.isArray(members) && members.length) {
+      const insertMember = db.prepare(`
+        INSERT INTO mls_group_members (group_id, user_id, device_id, leaf_index, role, joined_at, removed_at)
+        VALUES (?, ?, ?, ?, ?, ?, NULL)
+        ON CONFLICT(group_id, user_id, device_id) DO UPDATE SET
+          leaf_index = excluded.leaf_index,
+          role = excluded.role,
+          removed_at = NULL
+      `);
+      for (const m of members) {
+        if (m.user_id && m.device_id) {
+          insertMember.run(gid, m.user_id, String(m.device_id), Number(m.leaf_index) || 0, String(m.role || 'member'), now);
+        }
+      }
+    }
+
+    let commitHash = '';
     if (commitData) {
       db.prepare(`
         INSERT INTO mls_commits (group_id, epoch, commit_data, created_at)
         VALUES (?, ?, ?, ?)
       `).run(gid, activeEp, String(commitData), now);
+      commitHash = String(commitData).slice(0, 32);
     }
 
-    if (Array.isArray(welcomes) && welcomes.length) {
+    if (welc.length) {
       const insertWelcome = db.prepare(`
-        INSERT INTO mls_welcomes (group_id, user_id, device_id, epoch, welcome_data, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO mls_welcomes (group_id, user_id, device_id, epoch, welcome_data, created_at, fetched_at, acked_at)
+        VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)
       `);
-      for (const w of welcomes) {
+      for (const w of welc) {
         if (w.user_id && w.device_id && w.welcome_data) {
           insertWelcome.run(gid, w.user_id, String(w.device_id), activeEp, String(w.welcome_data), now);
         }
@@ -1846,8 +2027,15 @@ function initMlsGroup(groupId, initialEpoch, activeMembers, commitData, welcomes
     }
 
     const response = { ok: true, group_id: gid, epoch: activeEp };
-    if (idempotencyKey) {
-      db.prepare(`INSERT INTO mls_idempotency (key, group_id, response_body, created_at) VALUES (?, ?, ?, ?)`).run(String(idempotencyKey), gid, JSON.stringify(response), now);
+    if (idemKey) {
+      db.prepare(`
+        INSERT INTO mls_idempotency (group_id, idempotency_key, epoch, commit_hash, created_at, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(group_id, idempotency_key) DO UPDATE SET
+          epoch = excluded.epoch,
+          commit_hash = excluded.commit_hash,
+          expires_at = excluded.expires_at
+      `).run(gid, String(idemKey), activeEp, commitHash, now, now + 86400000);
     }
     db.exec('COMMIT');
     return response;
@@ -1857,14 +2045,32 @@ function initMlsGroup(groupId, initialEpoch, activeMembers, commitData, welcomes
   }
 }
 
-function commitMlsGroup(groupId, expectedEpoch, commitData, welcomes = [], idempotencyKey = null) {
+function commitMlsGroup(groupId, expectedEpoch, commitData, welcomes = [], proposalsToConsume = [], membersToAdd = [], membersToRemove = [], idempotencyKey = null) {
   const now = Date.now();
   const gid = String(groupId).trim();
   const expEp = Number(expectedEpoch);
 
-  if (idempotencyKey) {
-    const existingIdem = db.prepare(`SELECT response_body FROM mls_idempotency WHERE key = ?`).get(String(idempotencyKey));
-    if (existingIdem) return JSON.parse(existingIdem.response_body);
+  let proposals = Array.isArray(proposalsToConsume) ? proposalsToConsume : [];
+  let toAdd = Array.isArray(membersToAdd) ? membersToAdd : [];
+  let toRemove = Array.isArray(membersToRemove) ? membersToRemove : [];
+  let welc = Array.isArray(welcomes) ? welcomes : [];
+  let idemKey = idempotencyKey;
+
+  // Support positional idempotencyKey: commitMlsGroup(gid, ep, data, welcomes, idemKey)
+  if (typeof proposalsToConsume === 'string') {
+    idemKey = proposalsToConsume;
+    proposals = [];
+  } else if (typeof membersToAdd === 'string') {
+    idemKey = membersToAdd;
+    toAdd = [];
+  }
+
+  if (idemKey) {
+    const existingIdem = db.prepare(`
+      SELECT epoch, commit_hash FROM mls_idempotency
+      WHERE group_id = ? AND idempotency_key = ? AND expires_at > ?
+    `).get(gid, String(idemKey), now);
+    if (existingIdem) return { ok: true, group_id: gid, new_epoch: existingIdem.epoch };
   }
 
   db.exec('BEGIN IMMEDIATE');
@@ -1885,19 +2091,53 @@ function commitMlsGroup(groupId, expectedEpoch, commitData, welcomes = [], idemp
     const newEpoch = expEp + 1;
     db.prepare(`UPDATE mls_groups SET epoch = ?, updated_at = ? WHERE group_id = ? AND epoch = ?`).run(newEpoch, now, gid, expEp);
 
+    let commitHash = '';
     if (commitData) {
       db.prepare(`
         INSERT INTO mls_commits (group_id, epoch, commit_data, created_at)
         VALUES (?, ?, ?, ?)
       `).run(gid, newEpoch, String(commitData), now);
+      commitHash = String(commitData).slice(0, 32);
     }
 
-    if (Array.isArray(welcomes) && welcomes.length) {
-      const insertWelcome = db.prepare(`
-        INSERT INTO mls_welcomes (group_id, user_id, device_id, epoch, welcome_data, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+    if (toAdd.length) {
+      const insertMember = db.prepare(`
+        INSERT INTO mls_group_members (group_id, user_id, device_id, leaf_index, role, joined_at, removed_at)
+        VALUES (?, ?, ?, ?, ?, ?, NULL)
+        ON CONFLICT(group_id, user_id, device_id) DO UPDATE SET
+          leaf_index = excluded.leaf_index,
+          role = excluded.role,
+          removed_at = NULL
       `);
-      for (const w of welcomes) {
+      for (const m of toAdd) {
+        if (m.user_id && m.device_id) {
+          insertMember.run(gid, m.user_id, String(m.device_id), Number(m.leaf_index) || 0, String(m.role || 'member'), now);
+        }
+      }
+    }
+
+    if (toRemove.length) {
+      const removeMember = db.prepare(`
+        UPDATE mls_group_members SET removed_at = ?
+        WHERE group_id = ? AND user_id = ? AND device_id = ? AND removed_at IS NULL
+      `);
+      for (const m of toRemove) {
+        if (m.user_id && m.device_id) {
+          removeMember.run(now, gid, m.user_id, String(m.device_id));
+        }
+      }
+    }
+
+    if (proposals.length) {
+      consumeMlsProposals(gid, proposals);
+    }
+
+    if (welc.length) {
+      const insertWelcome = db.prepare(`
+        INSERT INTO mls_welcomes (group_id, user_id, device_id, epoch, welcome_data, created_at, fetched_at, acked_at)
+        VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)
+      `);
+      for (const w of welc) {
         if (w.user_id && w.device_id && w.welcome_data) {
           insertWelcome.run(gid, w.user_id, String(w.device_id), newEpoch, String(w.welcome_data), now);
         }
@@ -1905,8 +2145,15 @@ function commitMlsGroup(groupId, expectedEpoch, commitData, welcomes = [], idemp
     }
 
     const response = { ok: true, group_id: gid, new_epoch: newEpoch };
-    if (idempotencyKey) {
-      db.prepare(`INSERT INTO mls_idempotency (key, group_id, response_body, created_at) VALUES (?, ?, ?, ?)`).run(String(idempotencyKey), gid, JSON.stringify(response), now);
+    if (idemKey) {
+      db.prepare(`
+        INSERT INTO mls_idempotency (group_id, idempotency_key, epoch, commit_hash, created_at, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(group_id, idempotency_key) DO UPDATE SET
+          epoch = excluded.epoch,
+          commit_hash = excluded.commit_hash,
+          expires_at = excluded.expires_at
+      `).run(gid, String(idemKey), newEpoch, commitHash, now, now + 86400000);
     }
     db.exec('COMMIT');
     return response;
@@ -1926,18 +2173,27 @@ function getMlsCommits(groupId, sinceEpoch = -1) {
 }
 
 function getMlsWelcomes(userId, deviceId) {
-  return db.prepare(`
-    SELECT id, group_id, epoch, welcome_data, created_at
+  const now = Date.now();
+  const welcomes = db.prepare(`
+    SELECT id, group_id, epoch, welcome_data, created_at, fetched_at
     FROM mls_welcomes
-    WHERE user_id = ? AND device_id = ? AND consumed_at IS NULL
+    WHERE user_id = ? AND device_id = ? AND acked_at IS NULL
     ORDER BY id ASC
   `).all(userId, String(deviceId));
+
+  if (welcomes.length) {
+    const ids = welcomes.map(w => w.id);
+    const placeholders = ids.map(() => '?').join(',');
+    db.prepare(`UPDATE mls_welcomes SET fetched_at = COALESCE(fetched_at, ?) WHERE id IN (${placeholders})`).run(now, ...ids);
+  }
+
+  return welcomes;
 }
 
 function ackMlsWelcome(welcomeId, userId, deviceId) {
   return db.prepare(`
-    UPDATE mls_welcomes SET consumed_at = ?
-    WHERE id = ? AND user_id = ? AND device_id = ? AND consumed_at IS NULL
+    UPDATE mls_welcomes SET acked_at = ?
+    WHERE id = ? AND user_id = ? AND device_id = ? AND acked_at IS NULL
   `).run(Date.now(), Number(welcomeId), userId, String(deviceId));
 }
 
@@ -3166,7 +3422,10 @@ module.exports = {
   getAnnouncement, setAnnouncement, clearAnnouncement,
   // MLS (RFC 9420) Delivery Service & Authentication Service
   registerMlsDevice, getMlsDevices, getMlsDevice, touchMlsDevice, revokeMlsDevice,
-  saveMlsKeyPackages, claimMlsKeyPackage, claimUserMlsKeyPackages, getMlsKeyPackageStatus,
+  saveMlsKeyPackages, getMlsKeyPackagesForUser, consumeSpecificMlsKeyPackages,
+  claimMlsKeyPackage, claimUserMlsKeyPackages, getMlsKeyPackageStatus,
+  addMlsGroupMember, removeMlsGroupMember, getMlsGroupMembers, isMlsGroupMember, getUserMlsGroups,
+  saveMlsProposal, getPendingMlsProposals, consumeMlsProposals,
   getMlsGroup, initMlsGroup, commitMlsGroup, getMlsCommits,
   getMlsWelcomes, ackMlsWelcome,
   saveMlsBackup, getMlsBackup,

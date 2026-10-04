@@ -120,19 +120,24 @@ All 4 test suites (`npm run test:mls`) passed with 100% success rate:
 
 ## 4. Git Process & Branch Discipline Verification
 
-* **Master Branch Cleanliness:**
-  ```text
-  $ git checkout master && git status
-  On branch master
-  Your branch is up to date with 'origin/master'.
-  nothing to commit, working tree clean
+## 5. Phase 0 Gate Status: CLOSED & APPROVED (2026-10-04)
 
-  $ git log master --oneline -1
-  4773666 (origin/master, github/master, github/HEAD, master) fix(e2ee): enforce vault ownership and self-heal uploads so the restore prompt actually appears
-  ```
-* **Spike Isolation:**
-  * All prototype and spike work is isolated on the `mls-spike` branch (commit `67687b5`).
-  * No code from `mls-spike` will be merged to `master` until Phase 0 sign-off is complete.
-  * Committed specification files live inside the repository at:
-    - `docs/migration/mls_migration_plan.md`
-    - `docs/migration/phase-0-gate.md`
+* **Verification Confirmation:**
+  * Integration and multi-device E2E tests re-run and verified against pinned `ts-mls@1.6.4` on 2026-10-04 (`scripts/mls-conformance-test.js` output verified).
+* **Deferred Phase 1a Deliverables:**
+  * `TASK-1A-1`: Official IETF MLS test vector harness (`mlswg/mls-implementations` Suite 1).
+  * `TASK-1A-2`: `mls-rs` external interop validation (highest priority in early Phase 1).
+  * `TASK-1A-3`: 10k-message synthetic benchmark and skip-chain stress testing.
+  * `TASK-1A-4`: Scoped internal audit report published to `docs/security/audit-ts-mls.md`.
+  * `TASK-1A-5`: Mobile KDF iteration benchmark on mid-range Android hardware (evaluating 600k vs. 210k iterations if latency > 2.0s).
+* **Validation Roadmap Item:**
+  * Obtain a production-shaped DB snapshot from an active deployment for Phase 1b real-world pre-decryption and restore UX validation.
+
+---
+
+## 6. Phase 1 Implementation Plan & Priorities
+
+1. **Schema Migrations First:** Land normalized `mls_group_members`, `mls_proposals`, `mls_commits`, `mls_keypackages` (lifetime fields), `mls_welcomes` (retry ACK states), `mls_idempotency` (group-scoped), and `mls_devices`. Keep legacy Olm/Megolm tables completely in place.
+2. **KeyPackage & Welcome APIs First:** Implement `/mls/keypackages` (two-phase query & consume) and `/mls/welcomes` (fetch & ACK) before `/mls/groups/:id/commit`.
+3. **Early `mls-rs` Interop Spike (`TASK-1A-2`):** Run wire format verification early in Phase 1 to catch any divergence in `ts-mls@1.6.4`.
+4. **Master Branch Protection:** Keep `master` untouched until Phase 1 endpoints pass all regression tests (`test:api`, `test:client`, `test:bootstrap`, `test:mls`) in dual-stack mode.
