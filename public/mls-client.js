@@ -83,6 +83,26 @@
     });
   }
 
+  function idbDelete(storeName, key) {
+    return openDB().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(storeName, 'readwrite');
+        var req = tx.objectStore(storeName).delete(key);
+        req.onsuccess = function () { resolve(); };
+        req.onerror = function () { reject(req.error); };
+      });
+    });
+  }
+
+  function uint8ToHex(u) {
+    var s = '';
+    for (var i = 0; i < u.length; i++) {
+      var h = u[i].toString(16);
+      s += (h.length === 1 ? '0' : '') + h;
+    }
+    return s;
+  }
+
   function csrfFetch(url, opts) {
     opts = opts || {};
     opts.headers = opts.headers || {};
@@ -202,25 +222,38 @@
   function replenishKeyPackages(count) {
     var mls = root.MLS;
     var pkgs = [];
-    var tasks = [];
+    var storeTasks = [];
 
     for (var i = 0; i < count; i++) {
-      tasks.push(
-        mls.generateKeyPackage(clientCredential, mls.defaultCapabilities(), mls.defaultLifetime, [], ciphersuiteImpl).then(function (kp) {
-          var encoded = mls.encodeMlsMessage({
-            keyPackage: kp.publicPackage,
-            wireformat: 'mls_key_package',
-            version: 'mls10'
+      (function () {
+        var task = mls.generateKeyPackage(clientCredential, mls.defaultCapabilities(), mls.defaultLifetime, [], ciphersuiteImpl).then(function (kp) {
+          return mls.makeKeyPackageRef(kp.publicPackage, ciphersuiteImpl.hash).then(function (refBytes) {
+            var refHex = uint8ToHex(refBytes);
+            var encoded = mls.encodeMlsMessage({
+              keyPackage: kp.publicPackage,
+              wireformat: 'mls_key_package',
+              version: 'mls10'
+            });
+
+            // STORE BEFORE CONSUME: Persist privatePackage to IndexedDB first
+            return idbSet(STORE_MLS_KEYS, 'kp:' + deviceId + ':' + refHex, {
+              ref: refHex,
+              keyPackage: kp.publicPackage,
+              privatePackage: kp.privatePackage,
+              created_at: Date.now()
+            }).then(function () {
+              pkgs.push({
+                data: uint8ToB64(encoded),
+                ciphersuite: 1
+              });
+            });
           });
-          pkgs.push({
-            data: uint8ToB64(encoded),
-            ciphersuite: 1
-          });
-        })
-      );
+        });
+        storeTasks.push(task);
+      })();
     }
 
-    return Promise.all(tasks).then(function () {
+    return Promise.all(storeTasks).then(function () {
       return csrfFetch('/mls/keypackages', {
         method: 'POST',
         body: JSON.stringify({ device_id: deviceId, keypackages: pkgs })
@@ -251,15 +284,71 @@
     var decoded = mls.decodeMlsMessage(welcomeBytes, 0)[0];
     if (!decoded || decoded.wireformat !== 'mls_welcome') return Promise.resolve();
 
-    // Generate matching keyPackage or joinGroup
-    return mls.generateKeyPackage(clientCredential, mls.defaultCapabilities(), mls.defaultLifetime, [], ciphersuiteImpl).then(function (myKp) {
-      return mls.joinGroup(decoded.welcome, myKp.publicPackage, myKp.privatePackage, mls.emptyPskIndex, ciphersuiteImpl).then(function (groupState) {
+    var welcomeObj = decoded.welcome;
+    if (!welcomeObj || !Array.isArray(welcomeObj.secrets) || !welcomeObj.secrets.length) {
+      return Promise.resolve();
+    }
+
+    // Match KeyPackageRef against local IndexedDB stored private packages
+    var matchPromise = Promise.resolve(null);
+    for (var i = 0; i < welcomeObj.secrets.length; i++) {
+      (function (secret) {
+        matchPromise = matchPromise.then(function (found) {
+          if (found) return found;
+          var newMemberHex = uint8ToHex(secret.newMember);
+          var tombstoneKey = 'tombstone:' + deviceId + ':' + newMemberHex;
+          var kpKey = 'kp:' + deviceId + ':' + newMemberHex;
+
+          return idbGet(STORE_MLS_KEYS, tombstoneKey).then(function (tombstone) {
+            if (tombstone) {
+              // Already joined previously; acknowledge welcome and skip duplicate join
+              return csrfFetch('/mls/welcomes/ack', {
+                method: 'POST',
+                body: JSON.stringify({ welcome_id: w.id, device_id: deviceId })
+              }).then(function () {
+                return { skipped: true };
+              });
+            }
+            return idbGet(STORE_MLS_KEYS, kpKey).then(function (storedKp) {
+              if (storedKp) {
+                return { matched: storedKp, newMemberHex: newMemberHex };
+              }
+              return null;
+            });
+          });
+        });
+      })(welcomeObj.secrets[i]);
+    }
+
+    return matchPromise.then(function (matchRes) {
+      if (!matchRes || matchRes.skipped) return;
+      var storedKp = matchRes.matched;
+      var newMemberHex = matchRes.newMemberHex;
+
+      return mls.joinGroup(
+        welcomeObj,
+        storedKp.keyPackage,
+        storedKp.privatePackage,
+        mls.emptyPskIndex,
+        ciphersuiteImpl
+      ).then(function (groupState) {
         activeGroups[w.group_id] = groupState;
+
         // Catch up on any subsequent commits since the welcome epoch
         return catchUpCommits(w.group_id, groupState, w.epoch).then(function (finalState) {
           activeGroups[w.group_id] = finalState;
           return saveGroupState(w.group_id, finalState);
         }).then(function () {
+          // Write tombstone BEFORE deleting the consumed private package
+          return idbSet(STORE_MLS_KEYS, 'tombstone:' + deviceId + ':' + newMemberHex, {
+            groupId: w.group_id,
+            joinedAt: Date.now()
+          });
+        }).then(function () {
+          // Clean up the consumed private package
+          return idbDelete(STORE_MLS_KEYS, 'kp:' + deviceId + ':' + newMemberHex);
+        }).then(function () {
+          // Acknowledge the welcome to the Delivery Service
           return csrfFetch('/mls/welcomes/ack', {
             method: 'POST',
             body: JSON.stringify({ welcome_id: w.id, device_id: deviceId })
