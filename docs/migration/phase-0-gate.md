@@ -222,8 +222,9 @@ Summary:
   * Heap delta: **1.28 MB** (stable under 500-message chunked batches with microtask yields).
   * Sizing:
     * Raw plaintext JSON: **1.30 MB** (1,358,063 bytes).
-    * Deflate compressed: **57.81 KB** (95.6% size reduction).
+    * Deflate compressed: **57.81 KB** (95.6% size reduction on synthetic repetitive corpus).
     * Encrypted AES-256-GCM vault blob: **57.83 KB** (59,221 bytes total). Fits comfortably in IndexedDB and single-request `POST /mls/backup`.
+    * **Real-World Sizing Caveat:** The measured 57.83 KB vault size reflects synthetic repetition (23:1 Deflate ratio). Expected real-world vault size for 10,000 organic chat messages is **~160–230 KB** based on typical 6:1 to 8:1 Deflate ratios for conversational text with mixed punctuation, URLs, and code snippets.
   * KDF Derivation Latency:
     * PBKDF2-HMAC-SHA256 at 600,000 iterations: **93 ms**.
     * PBKDF2-HMAC-SHA256 at 210,000 iterations: **33 ms**.
