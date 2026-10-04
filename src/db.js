@@ -619,6 +619,88 @@ try { db.exec(`
   );
 `); } catch {}
 try { db.exec(`CREATE INDEX IF NOT EXISTS idx_room_gs_keys_recipient ON room_group_session_keys(recipient_id, delivered)`); } catch {}
+
+// --- MLS (RFC 9420) Delivery Service & Authentication Service ---
+try { db.exec(`
+  CREATE TABLE IF NOT EXISTS mls_devices (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    device_id       TEXT NOT NULL UNIQUE,
+    device_name     TEXT NOT NULL,
+    signing_key_pub TEXT NOT NULL,
+    created_at      INTEGER NOT NULL,
+    last_seen_at    INTEGER NOT NULL,
+    revoked_at      INTEGER DEFAULT NULL
+  );
+`); } catch {}
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_mls_devices_user ON mls_devices(user_id, revoked_at)`); } catch {}
+
+try { db.exec(`
+  CREATE TABLE IF NOT EXISTS mls_keypackages (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    device_id       TEXT NOT NULL,
+    keypackage_data TEXT NOT NULL,
+    ciphersuite     INTEGER NOT NULL DEFAULT 1,
+    created_at      INTEGER NOT NULL,
+    consumed_at     INTEGER DEFAULT NULL
+  );
+`); } catch {}
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_mls_kp_available ON mls_keypackages(user_id, device_id, consumed_at)`); } catch {}
+
+try { db.exec(`
+  CREATE TABLE IF NOT EXISTS mls_groups (
+    group_id        TEXT PRIMARY KEY,
+    epoch           INTEGER NOT NULL DEFAULT 0,
+    active_members  TEXT NOT NULL,
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL
+  );
+`); } catch {}
+
+try { db.exec(`
+  CREATE TABLE IF NOT EXISTS mls_commits (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id     TEXT NOT NULL REFERENCES mls_groups(group_id) ON DELETE CASCADE,
+    epoch        INTEGER NOT NULL,
+    commit_data  TEXT NOT NULL,
+    created_at   INTEGER NOT NULL,
+    UNIQUE(group_id, epoch)
+  );
+`); } catch {}
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_mls_commits_epoch ON mls_commits(group_id, epoch)`); } catch {}
+
+try { db.exec(`
+  CREATE TABLE IF NOT EXISTS mls_welcomes (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id        TEXT NOT NULL REFERENCES mls_groups(group_id) ON DELETE CASCADE,
+    user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    device_id       TEXT NOT NULL,
+    epoch           INTEGER NOT NULL,
+    welcome_data    TEXT NOT NULL,
+    created_at      INTEGER NOT NULL,
+    consumed_at     INTEGER DEFAULT NULL
+  );
+`); } catch {}
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_mls_welcomes_dev ON mls_welcomes(user_id, device_id, consumed_at)`); } catch {}
+
+try { db.exec(`
+  CREATE TABLE IF NOT EXISTS mls_idempotency (
+    key             TEXT PRIMARY KEY,
+    group_id        TEXT NOT NULL,
+    response_body   TEXT NOT NULL,
+    created_at      INTEGER NOT NULL
+  );
+`); } catch {}
+
+try { db.exec(`
+  CREATE TABLE IF NOT EXISTS mls_credential_backups (
+    user_id         INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    backup_data     TEXT NOT NULL,
+    kek_salt        TEXT NOT NULL,
+    updated_at      INTEGER NOT NULL
+  );
+`); } catch {}
 // Fix stale referred_by links for users whose referrer no longer has a referral code.
 db.prepare(`UPDATE users SET referred_by = NULL WHERE referred_by IS NOT NULL AND referred_by IN (SELECT id FROM users WHERE referral_code IS NULL)`).run();
 // Ensure avatar paths have /uploads/ prefix for template rendering.
@@ -1581,6 +1663,302 @@ function setUserHistoryBackup(userId, backupData) {
 function getUserHistoryBackup(userId) {
   const row = db.prepare(`SELECT backup_data, updated_at FROM user_history_backup WHERE user_id = ?`).get(userId);
   return row ? { backup_data: row.backup_data, updated_at: row.updated_at } : null;
+}
+
+// =============================================================================
+// ---------- MLS (RFC 9420) Delivery Service & Authentication Service ---------
+// =============================================================================
+
+const MAX_MLS_DEVICES_PER_USER = 10;
+
+function registerMlsDevice(userId, deviceId, deviceName, signingKeyPub) {
+  const now = Date.now();
+  const cleanId = String(deviceId || '').trim();
+  const cleanName = String(deviceName || '').trim() || 'Default Device';
+  const cleanKey = String(signingKeyPub || '').trim();
+  if (!cleanId || !cleanKey) throw new Error('deviceId and signingKeyPub are required');
+
+  const activeCount = db.prepare(`SELECT COUNT(*) AS count FROM mls_devices WHERE user_id = ? AND revoked_at IS NULL AND device_id != ?`).get(userId, cleanId);
+  if (activeCount && activeCount.count >= MAX_MLS_DEVICES_PER_USER) {
+    const err = new Error('Device quota exceeded (maximum ' + MAX_MLS_DEVICES_PER_USER + ' active devices). Please revoke an old device first.');
+    err.code = 'QUOTA_EXCEEDED';
+    throw err;
+  }
+
+  db.prepare(`
+    INSERT INTO mls_devices (user_id, device_id, device_name, signing_key_pub, created_at, last_seen_at, revoked_at)
+    VALUES (?, ?, ?, ?, ?, ?, NULL)
+    ON CONFLICT(device_id) DO UPDATE SET
+      user_id = excluded.user_id,
+      device_name = excluded.device_name,
+      signing_key_pub = excluded.signing_key_pub,
+      last_seen_at = excluded.last_seen_at,
+      revoked_at = NULL
+  `).run(userId, cleanId, cleanName, cleanKey, now, now);
+
+  return { device_id: cleanId, user_id: userId, device_name: cleanName, signing_key_pub: cleanKey };
+}
+
+function getMlsDevices(userId) {
+  return db.prepare(`
+    SELECT device_id, device_name, signing_key_pub, created_at, last_seen_at
+    FROM mls_devices
+    WHERE user_id = ? AND revoked_at IS NULL
+    ORDER BY created_at ASC
+  `).all(userId);
+}
+
+function getMlsDevice(userId, deviceId) {
+  return db.prepare(`
+    SELECT device_id, device_name, signing_key_pub, created_at, last_seen_at, revoked_at
+    FROM mls_devices
+    WHERE user_id = ? AND device_id = ?
+  `).get(userId, String(deviceId)) || null;
+}
+
+function touchMlsDevice(userId, deviceId) {
+  db.prepare(`UPDATE mls_devices SET last_seen_at = ? WHERE user_id = ? AND device_id = ?`).run(Date.now(), userId, String(deviceId));
+}
+
+function revokeMlsDevice(userId, deviceId) {
+  const now = Date.now();
+  db.prepare(`UPDATE mls_devices SET revoked_at = ? WHERE user_id = ? AND device_id = ?`).run(now, userId, String(deviceId));
+  db.prepare(`UPDATE mls_keypackages SET consumed_at = ? WHERE user_id = ? AND device_id = ? AND consumed_at IS NULL`).run(now, userId, String(deviceId));
+}
+
+function saveMlsKeyPackages(userId, deviceId, packages) {
+  const now = Date.now();
+  const cleanDev = String(deviceId).trim();
+  if (!Array.isArray(packages) || !packages.length) return 0;
+  const insert = db.prepare(`
+    INSERT INTO mls_keypackages (user_id, device_id, keypackage_data, ciphersuite, created_at)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    for (const p of packages) {
+      const data = typeof p === 'string' ? p : (p && (p.data || p.keypackage_data));
+      const cs = (p && p.ciphersuite) || 1;
+      if (data) insert.run(userId, cleanDev, String(data), cs, now);
+    }
+    db.exec('COMMIT');
+    return packages.length;
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+function claimMlsKeyPackage(userId, deviceId) {
+  const now = Date.now();
+  return db.prepare(`
+    UPDATE mls_keypackages SET consumed_at = ?
+    WHERE id = (
+      SELECT id FROM mls_keypackages
+      WHERE user_id = ? AND device_id = ? AND consumed_at IS NULL
+      ORDER BY id ASC LIMIT 1
+    )
+    RETURNING id, device_id, keypackage_data, ciphersuite
+  `).get(now, userId, String(deviceId)) || null;
+}
+
+function claimUserMlsKeyPackages(userId) {
+  const devices = getMlsDevices(userId);
+  const result = [];
+  for (const dev of devices) {
+    const kp = claimMlsKeyPackage(userId, dev.device_id);
+    if (kp) {
+      result.push({
+        device_id: dev.device_id,
+        device_name: dev.device_name,
+        keypackage_data: kp.keypackage_data,
+        ciphersuite: kp.ciphersuite
+      });
+    }
+  }
+  return result;
+}
+
+function getMlsKeyPackageStatus(userId, deviceId) {
+  const r = db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM mls_keypackages
+    WHERE user_id = ? AND device_id = ? AND consumed_at IS NULL
+  `).get(userId, String(deviceId));
+  return r ? r.count : 0;
+}
+
+function getMlsGroup(groupId) {
+  const g = db.prepare(`SELECT * FROM mls_groups WHERE group_id = ?`).get(String(groupId));
+  if (!g) return null;
+  return {
+    ...g,
+    active_members: JSON.parse(g.active_members || '[]')
+  };
+}
+
+function initMlsGroup(groupId, initialEpoch, activeMembers, commitData, welcomes = [], idempotencyKey = null) {
+  const now = Date.now();
+  const gid = String(groupId).trim();
+  const ep = Number(initialEpoch) || 0;
+  const membersJson = JSON.stringify(Array.isArray(activeMembers) ? activeMembers : []);
+
+  if (idempotencyKey) {
+    const existingIdem = db.prepare(`SELECT response_body FROM mls_idempotency WHERE key = ?`).get(String(idempotencyKey));
+    if (existingIdem) return JSON.parse(existingIdem.response_body);
+  }
+
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const existing = db.prepare(`SELECT epoch FROM mls_groups WHERE group_id = ?`).get(gid);
+    if (existing) {
+      const err = new Error('Group already exists');
+      err.code = 'GROUP_EXISTS';
+      err.epoch = existing.epoch;
+      throw err;
+    }
+
+    const commitProvided = !!commitData;
+    const activeEp = commitProvided ? ep + 1 : ep;
+
+    db.prepare(`
+      INSERT INTO mls_groups (group_id, epoch, active_members, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(gid, activeEp, membersJson, now, now);
+
+    if (commitData) {
+      db.prepare(`
+        INSERT INTO mls_commits (group_id, epoch, commit_data, created_at)
+        VALUES (?, ?, ?, ?)
+      `).run(gid, activeEp, String(commitData), now);
+    }
+
+    if (Array.isArray(welcomes) && welcomes.length) {
+      const insertWelcome = db.prepare(`
+        INSERT INTO mls_welcomes (group_id, user_id, device_id, epoch, welcome_data, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `);
+      for (const w of welcomes) {
+        if (w.user_id && w.device_id && w.welcome_data) {
+          insertWelcome.run(gid, w.user_id, String(w.device_id), activeEp, String(w.welcome_data), now);
+        }
+      }
+    }
+
+    const response = { ok: true, group_id: gid, epoch: activeEp };
+    if (idempotencyKey) {
+      db.prepare(`INSERT INTO mls_idempotency (key, group_id, response_body, created_at) VALUES (?, ?, ?, ?)`).run(String(idempotencyKey), gid, JSON.stringify(response), now);
+    }
+    db.exec('COMMIT');
+    return response;
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+function commitMlsGroup(groupId, expectedEpoch, commitData, welcomes = [], idempotencyKey = null) {
+  const now = Date.now();
+  const gid = String(groupId).trim();
+  const expEp = Number(expectedEpoch);
+
+  if (idempotencyKey) {
+    const existingIdem = db.prepare(`SELECT response_body FROM mls_idempotency WHERE key = ?`).get(String(idempotencyKey));
+    if (existingIdem) return JSON.parse(existingIdem.response_body);
+  }
+
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const g = db.prepare(`SELECT epoch FROM mls_groups WHERE group_id = ?`).get(gid);
+    if (!g) {
+      const err = new Error('Group not found');
+      err.code = 'GROUP_NOT_FOUND';
+      throw err;
+    }
+    if (g.epoch !== expEp) {
+      const err = new Error('Epoch conflict: expected ' + expEp + ' but server is at ' + g.epoch);
+      err.code = 'EPOCH_CONFLICT';
+      err.server_epoch = g.epoch;
+      throw err;
+    }
+
+    const newEpoch = expEp + 1;
+    db.prepare(`UPDATE mls_groups SET epoch = ?, updated_at = ? WHERE group_id = ? AND epoch = ?`).run(newEpoch, now, gid, expEp);
+
+    if (commitData) {
+      db.prepare(`
+        INSERT INTO mls_commits (group_id, epoch, commit_data, created_at)
+        VALUES (?, ?, ?, ?)
+      `).run(gid, newEpoch, String(commitData), now);
+    }
+
+    if (Array.isArray(welcomes) && welcomes.length) {
+      const insertWelcome = db.prepare(`
+        INSERT INTO mls_welcomes (group_id, user_id, device_id, epoch, welcome_data, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `);
+      for (const w of welcomes) {
+        if (w.user_id && w.device_id && w.welcome_data) {
+          insertWelcome.run(gid, w.user_id, String(w.device_id), newEpoch, String(w.welcome_data), now);
+        }
+      }
+    }
+
+    const response = { ok: true, group_id: gid, new_epoch: newEpoch };
+    if (idempotencyKey) {
+      db.prepare(`INSERT INTO mls_idempotency (key, group_id, response_body, created_at) VALUES (?, ?, ?, ?)`).run(String(idempotencyKey), gid, JSON.stringify(response), now);
+    }
+    db.exec('COMMIT');
+    return response;
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+function getMlsCommits(groupId, sinceEpoch = -1) {
+  return db.prepare(`
+    SELECT epoch, commit_data, created_at
+    FROM mls_commits
+    WHERE group_id = ? AND epoch > ?
+    ORDER BY epoch ASC
+  `).all(String(groupId), Number(sinceEpoch));
+}
+
+function getMlsWelcomes(userId, deviceId) {
+  return db.prepare(`
+    SELECT id, group_id, epoch, welcome_data, created_at
+    FROM mls_welcomes
+    WHERE user_id = ? AND device_id = ? AND consumed_at IS NULL
+    ORDER BY id ASC
+  `).all(userId, String(deviceId));
+}
+
+function ackMlsWelcome(welcomeId, userId, deviceId) {
+  return db.prepare(`
+    UPDATE mls_welcomes SET consumed_at = ?
+    WHERE id = ? AND user_id = ? AND device_id = ? AND consumed_at IS NULL
+  `).run(Date.now(), Number(welcomeId), userId, String(deviceId));
+}
+
+function saveMlsBackup(userId, backupData, salt) {
+  const now = Date.now();
+  db.prepare(`
+    INSERT INTO mls_credential_backups (user_id, backup_data, kek_salt, updated_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(user_id) DO UPDATE SET
+      backup_data = excluded.backup_data,
+      kek_salt = excluded.kek_salt,
+      updated_at = excluded.updated_at
+  `).run(userId, String(backupData), String(salt), now);
+}
+
+function getMlsBackup(userId) {
+  return db.prepare(`
+    SELECT backup_data, kek_salt, updated_at
+    FROM mls_credential_backups
+    WHERE user_id = ?
+  `).get(userId) || null;
 }
 
 // ---------- two-factor authentication (TOTP / recovery codes) ----------
@@ -2786,4 +3164,10 @@ module.exports = {
   auditLog,
   // announcement (singleton, server-wide)
   getAnnouncement, setAnnouncement, clearAnnouncement,
+  // MLS (RFC 9420) Delivery Service & Authentication Service
+  registerMlsDevice, getMlsDevices, getMlsDevice, touchMlsDevice, revokeMlsDevice,
+  saveMlsKeyPackages, claimMlsKeyPackage, claimUserMlsKeyPackages, getMlsKeyPackageStatus,
+  getMlsGroup, initMlsGroup, commitMlsGroup, getMlsCommits,
+  getMlsWelcomes, ackMlsWelcome,
+  saveMlsBackup, getMlsBackup,
 };

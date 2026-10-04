@@ -35,9 +35,14 @@
     "test:client": "node --test scripts/client-parity-test.js",
     "test:bootstrap": "node --test scripts/client-bootstrap-test.js",
     "test:client-e2ee": "node --test scripts/client-e2ee-test.js",
-    "seed:client": "node scripts/seed-client-test.js"
+    "seed:client": "node scripts/seed-client-test.js",
+    "build:mls": "esbuild src/client-mls/entry.js --bundle --minify --sourcemap --format=iife --global-name=MLSModule --outfile=public/lib/mls.js",
+    "test:mls": "node scripts/mls-conformance-test.js && node scripts/mls-db-test.js && node scripts/mls-api-test.js && node scripts/mls-e2e-chat-test.js"
   },
   "dependencies": {
+    "@noble/ciphers": "^2.1.1",
+    "@noble/curves": "^2.0.1",
+    "@noble/hashes": "^2.4.0",
     "@simplewebauthn/server": "^13.3.2",
     "bcryptjs": "^2.4.3",
     "ejs": "^3.1.10",
@@ -52,10 +57,12 @@
     "sharp": "^0.35.3",
     "svg-captcha": "^1.4.0",
     "swagger-ui-dist": "5.17.14",
+    "ts-mls": "^1.6.4",
     "web-push": "^3.6.7",
     "ws": "^8.21.1"
   },
   "devDependencies": {
-    "@matrix-org/olm": "3.2.15"
+    "@matrix-org/olm": "3.2.15",
+    "esbuild": "^0.28.2"
   }
 }

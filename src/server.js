@@ -171,6 +171,7 @@ const cryptoLimiter = rateLimit({
 const CRYPTO_PREFIXES = [
   '/chats/',                    // bundle/claim/send/rekey/security/received/delete
   '/rooms/',                    // room key fan-out
+  '/mls/',                      // MLS KeyPackage, commit, and welcome exchanges
 ];
 app.use((req, res, next) => {
   if (req.method !== 'POST' || req.path.startsWith('/api/')) return next();
@@ -394,6 +395,7 @@ app.use('/u', require('./routes/profile'));   // profile view + edit
 app.use('/', require('./routes/social'));     // follow/unfollow
 app.use('/inbox', require('./routes/notifications'));
 app.use('/chats', require('./routes/chats'));
+app.use('/mls', require('./routes/mls'));
 app.use('/settings', require('./routes/settings'));
 app.use('/push', require('./routes/push'));
 app.use('/passkeys', require('./routes/webauthn'));

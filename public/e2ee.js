@@ -1644,13 +1644,27 @@
     });
   }
 
-  function pickCipher(e, myDevId) {
-    if (!e || e.v !== 2 || !e.devices) return e;
-    if (e.devices[myDevId]) return e.devices[myDevId];
-    if (e.t !== undefined && e.b) return { t: e.t, b: e.b };
-    var ks = Object.keys(e.devices);
-    if (ks.length) return e.devices[ks[0]];
-    return e;
+  // Candidate ciphers for a v2 multi-device envelope, most-likely first:
+  // my own device slot, then the primary t/b cipher, then every other device
+  // slot. A restored device replaces a previously-registered blank account,
+  // so messages sent in that window carry MY device slot sealed to the dead
+  // identity — the primary or sibling slots (sealed to the restored account's
+  // shared sessions) still decrypt, so every candidate must be tried.
+  function cipherCandidates(e, myDevId) {
+    var out = [];
+    if (!e || e.v !== 2 || !e.devices) {
+      if (e && e.t !== undefined && e.b !== undefined) out.push(e);
+      return out;
+    }
+    if (e.devices[myDevId] && e.devices[myDevId].t !== undefined && e.devices[myDevId].b !== undefined) {
+      out.push(e.devices[myDevId]);
+    }
+    if (e.t !== undefined && e.b !== undefined) out.push({ t: e.t, b: e.b });
+    Object.keys(e.devices).forEach(function (k) {
+      var c = e.devices[k];
+      if (k !== myDevId && c && c.t !== undefined && c.b !== undefined) out.push(c);
+    });
+    return out;
   }
 
   // The decrypt ladder, run under a per-(peer,device) lock so parallel decrypts
@@ -1723,18 +1737,23 @@
 
   function decryptOlmEnvelope(e, otherIdStr, theirCurve) {
     return getOrCreateDeviceId().then(function (myDevId) {
-      var cipher = e;
       var senderDeviceId = 'default';
-      if (e && e.v === 2 && e.devices) {
-        senderDeviceId = e.sender_device_id || 'default';
-        cipher = pickCipher(e, myDevId);
-      }
-      if (!cipher || cipher.b === undefined || cipher.t === undefined) {
+      if (e && e.v === 2 && e.devices) senderDeviceId = e.sender_device_id || 'default';
+      var candidates = cipherCandidates(e, myDevId);
+      if (!candidates.length) {
         return Promise.reject(new Error('empty ciphertext'));
       }
       var fullKey = otherIdStr + ':' + senderDeviceId;
       return withSessionLock('sess:' + fullKey, function () {
-        return decryptCipherLadder(cipher, fullKey, theirCurve, {});
+        // Try each candidate cipher in order; request the peer's rekey heal
+        // only after ALL of them failed, not per candidate.
+        var attempt = function (idx) {
+          var last = idx === candidates.length - 1;
+          return decryptCipherLadder(candidates[idx], fullKey, theirCurve, { noRekey: !last }).catch(function (err) {
+            return last ? Promise.reject(err) : attempt(idx + 1);
+          });
+        };
+        return attempt(0);
       });
     });
   }
