@@ -120,24 +120,100 @@ All 4 test suites (`npm run test:mls`) passed with 100% success rate:
 
 ## 4. Git Process & Branch Discipline Verification
 
-## 5. Phase 0 Gate Status: CLOSED & APPROVED (2026-10-04)
+* **Master Branch Hygiene:**
+  * `master` branch remains pristine at pre-spike commit `4773666` (`fix(e2ee): enforce vault ownership and self-heal uploads so the restore prompt actually appears`).
+  * Zero MLS migration commits have been pushed or merged to `master`.
+* **Branch Lineage:**
+  * All Phase 0, Phase 1 schema, API endpoints, and interop harnesses reside exclusively on branch `mls-spike`.
+  * The Phase 0 sign-off commit `b05f3db` is the direct ancestor of Phase 1 commits (`b21e537`, `3b7a660`, and current HEAD).
+* **Dual-Stack Regression Verification:**
+  * `npm run test:client-e2ee`: **8/8 passing**. Edits to `public/e2ee.js` for dual-stack routing have not broken legacy Olm/Megolm end-to-end encryption.
+  * `npm run test:bootstrap`: **12/12 passing**. Note on count drift: `scripts/client-bootstrap-test.js` contains 12 `it(...)` tests across 4 sub-suites (5 pairing flow, 1 bootstrap payload, 2 optimistic UI echo, 4 WebSocket lifecycle/resumption). The historical README figure of 10 predated the custom pairing scopes test and room sticker echo test.
+  * `npm run test:api`: **36/36 passing**.
+  * `npm run test:client`: **25/25 passing**.
+  * `npm run test:mls`: **4/4 suites passing**.
 
-* **Verification Confirmation:**
-  * Integration and multi-device E2E tests re-run and verified against pinned `ts-mls@1.6.4` on 2026-10-04 (`scripts/mls-conformance-test.js` output verified).
-* **Deferred Phase 1a Deliverables:**
-  * `TASK-1A-1`: Official IETF MLS test vector harness (`mlswg/mls-implementations` Suite 1).
-  * `TASK-1A-2`: `mls-rs` external interop validation (highest priority in early Phase 1).
+---
+
+## 5. RFC 9420 Verification Tasks (TASK-1A Status)
+
+### TASK-1A-1: IETF RFC 9420 Wireformat Framing Sweep (TASK-1A-1a: PASSED / TASK-1A-1b: DEFERRED)
+* **`TASK-1A-1a` Framing Deserializer Sweep:** **PASSED (1,500/1,500 vectors decoded cleanly, zero failures)**.
+  * Test Script: `scripts/mls-ietf-vectors-test.js` (`npm run test:ietf`).
+  * Dataset: Official IETF MLS Working Group vectors (`messages.json` from `mlswg/mls-implementations`).
+  * Coverage: All 300 test vector groups, validating TLS presentation syntax parsing across:
+    * `mls_key_package` (300 vectors)
+    * `mls_public_message` commit (300 vectors)
+    * `mls_public_message` proposal (300 vectors)
+    * `mls_public_message` application (300 vectors)
+    * `mls_private_message` (300 vectors)
+  * **Classification Note:** This validates wireformat framing deserialization only. It does not evaluate semantic group progression or signature verification, as `messages.json` does not provide private keys.
+* **`TASK-1A-1b` Semantic Vector Runner:** **DEFERRED to client hardening phase**.
+  * Scope: Running `passive-client-*.json` and `transcript-hashes.json` against `ts-mls`.
+
+### TASK-1A-2: Cross-Implementation Interoperability with `mls-rs` (PASSED 100%)
+* **Status:** **COMPLETE & VERIFIED**.
+* **Implementations Under Test:**
+  * Implementation A: `ts-mls` @ 1.6.4 (TypeScript / `@noble/*` on Node.js / Browser)
+  * Implementation B: `mls-rs` @ 0.56.0 (Rust / `mls-rs-crypto-rustcrypto` / `ed25519-dalek` / `x25519-dalek`)
+* **Test Harness:** `scripts/mls-rs-interop-test.js` + `scripts/interop-mls-rs/` (`npm run test:interop`).
+* **Execution Transcript:**
+```text
+=== Starting RFC 9420 Cross-Implementation Interoperability Suite (TASK-1A-2) ===
+
+Implementations under test:
+  - Implementation A: ts-mls @ 1.6.4 (TypeScript, @noble/curves, @noble/ciphers)
+  - Implementation B: mls-rs @ 0.56.0 (Rust, mls-rs-crypto-rustcrypto, ed25519-dalek, x25519-dalek)
+
+1. Generating Bob (mls-rs) RFC 9420 KeyPackage...
+   [OK] Bob generated KeyPackage: 288 bytes
+
+2. Alice (ts-mls) initializing ciphersuite MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519...
+   [OK] Alice initialized
+
+3. Alice (ts-mls) parsing Bob's (mls-rs) KeyPackage wireformat bytes...
+   [OK] Alice successfully deserialized Bob’s KeyPackage
+
+4. Alice creating MLS group and committing AddProposal for Bob...
+   [OK] Group created. Welcome generated: 766 bytes
+
+5. Alice (ts-mls) encrypting an ApplicationMessage for the group...
+   [OK] Alice encrypted message: 340 bytes
+
+6. Bob (mls-rs) processing Welcome message from Alice (ts-mls)...
+   [OK] Bob successfully joined group at epoch 1
+
+7. Bob (mls-rs) decrypting Alice's (ts-mls) ApplicationMessage...
+   [OK] Bob successfully decrypted message:
+       "Hello Bob! This is an MLS RFC 9420 application message created by ts-mls."
+
+8. Bob (mls-rs) encrypting a reply ApplicationMessage for Alice (ts-mls)...
+   [OK] Bob encrypted reply: 212 bytes
+
+9. Alice (ts-mls) decrypting Bob's (mls-rs) reply ApplicationMessage...
+   [OK] Alice successfully decrypted Bob’s reply:
+       "Greetings Alice! This reply was encrypted by mls-rs in Rust."
+
+=== Cross-Implementation Interoperability (TASK-1A-2) PASSED 100%! ===
+Summary:
+  - KeyPackage exchange: mls-rs -> ts-mls (VALIDATED)
+  - Group creation & Welcome: ts-mls -> mls-rs (VALIDATED)
+  - Forward encryption: ts-mls -> mls-rs (VALIDATED)
+  - Backward encryption: mls-rs -> ts-mls (VALIDATED)
+  - Ratchet tree sync: Validated across epoch 1
+```
+
+* **Remaining Deferred Phase 1a Items:**
   * `TASK-1A-3`: 10k-message synthetic benchmark and skip-chain stress testing.
   * `TASK-1A-4`: Scoped internal audit report published to `docs/security/audit-ts-mls.md`.
-  * `TASK-1A-5`: Mobile KDF iteration benchmark on mid-range Android hardware (evaluating 600k vs. 210k iterations if latency > 2.0s).
-* **Validation Roadmap Item:**
-  * Obtain a production-shaped DB snapshot from an active deployment for Phase 1b real-world pre-decryption and restore UX validation.
+  * `TASK-1A-5`: Mobile KDF iteration benchmark on mid-range Android hardware.
 
 ---
 
 ## 6. Phase 1 Implementation Plan & Priorities
 
-1. **Schema Migrations First:** Land normalized `mls_group_members`, `mls_proposals`, `mls_commits`, `mls_keypackages` (lifetime fields), `mls_welcomes` (retry ACK states), `mls_idempotency` (group-scoped), and `mls_devices`. Keep legacy Olm/Megolm tables completely in place.
-2. **KeyPackage & Welcome APIs First:** Implement `/mls/keypackages` (two-phase query & consume) and `/mls/welcomes` (fetch & ACK) before `/mls/groups/:id/commit`.
-3. **Early `mls-rs` Interop Spike (`TASK-1A-2`):** Run wire format verification early in Phase 1 to catch any divergence in `ts-mls@1.6.4`.
-4. **Master Branch Protection:** Keep `master` untouched until Phase 1 endpoints pass all regression tests (`test:api`, `test:client`, `test:bootstrap`, `test:mls`) in dual-stack mode.
+1. **Schema Migrations Landed:** Normalized `mls_group_members`, `mls_proposals`, `mls_commits`, `mls_keypackages` (lifetime fields), `mls_welcomes` (retry ACK states), `mls_idempotency` (group-scoped), and `mls_devices`. Legacy Olm/Megolm tables completely in place.
+2. **KeyPackage & Welcome APIs Landed:** `/mls/keypackages` (two-phase query & consume) and `/mls/welcomes` (fetch & ACK) along with `/mls/groups/:id/commit` member authorization.
+3. **External `mls-rs` Interop (`TASK-1A-2`):** Verified bidirectional interoperability between `ts-mls` and `mls-rs`.
+4. **Master Branch Protection:** Maintain `master` at commit `4773666` until the client pipeline (Phase 2) and room migration (Phase 3) are fully integrated and tested in dual-stack mode.
+
