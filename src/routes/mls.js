@@ -86,10 +86,11 @@ router.post('/device/register', requireAuth, (req, res) => {
   }
 });
 
-// 2. List Active Devices for Current User
+// 2. List Active Devices for Current User (or target user)
 router.get('/devices', requireAuth, (req, res) => {
   const user = res.locals.currentUser;
-  const devices = getMlsDevices(user.id);
+  const targetUserId = req.query.user_id ? parseInt(req.query.user_id, 10) : user.id;
+  const devices = getMlsDevices(targetUserId);
   res.json({ ok: true, devices });
 });
 
