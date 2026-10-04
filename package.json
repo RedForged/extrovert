@@ -39,7 +39,8 @@
     "build:mls": "esbuild src/client-mls/entry.js --bundle --minify --sourcemap --format=iife --global-name=MLSModule --outfile=public/lib/mls.js",
     "test:mls": "node scripts/mls-conformance-test.js && node scripts/mls-db-test.js && node scripts/mls-api-test.js && node scripts/mls-e2e-chat-test.js",
     "test:ietf": "node scripts/mls-ietf-vectors-test.js",
-    "test:interop": "node scripts/mls-rs-interop-test.js"
+    "test:interop": "node scripts/mls-rs-interop-test.js",
+    "test:scale": "node scripts/mls-scale-benchmark.js"
   },
   "dependencies": {
     "@noble/ciphers": "^2.1.1",
