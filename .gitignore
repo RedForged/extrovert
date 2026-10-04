@@ -11,3 +11,4 @@ server.log
 .reasonix
 reasonix.toml
 .freebuff
+target/
