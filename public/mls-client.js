@@ -450,10 +450,22 @@
     var gid = getDmGroupId(peerUserId);
 
     return loadGroupState(gid).then(function (existing) {
-      if (existing) return existing;
+      if (existing) {
+        var ep = existing.groupContext ? Number(existing.groupContext.epoch) : 0;
+        return catchUpCommits(gid, existing, ep).then(function (finalState) {
+          activeGroups[gid] = finalState;
+          return saveGroupState(gid, finalState).then(function () { return finalState; });
+        });
+      }
 
-      // Group not yet loaded locally — claim peer KeyPackages and initialize
-      return csrfFetch('/mls/keypackages/' + encodeURIComponent(peerUserId)).then(function (r) {
+      // First check if any Welcome is waiting for us
+      return pollAndProcessWelcomes().then(function () {
+        return loadGroupState(gid);
+      }).then(function (joinedFromWelcome) {
+        if (joinedFromWelcome) return joinedFromWelcome;
+
+        // Group not yet loaded locally — claim peer KeyPackages and initialize
+        return csrfFetch('/mls/keypackages/' + encodeURIComponent(peerUserId)).then(function (r) {
         return r.json();
       }).then(function (kpRes) {
         if (!kpRes.ok || !Array.isArray(kpRes.keypackages) || !kpRes.keypackages.length) {
@@ -505,7 +517,15 @@
                   // Peer beat us to creation! Wait for welcome or catch-up
                   return pollAndProcessWelcomes().then(function () {
                     return loadGroupState(gid);
+                  }).then(function (st) {
+                    if (!st) {
+                      throw new Error('MLS conversation exists on server, but no welcome was received for this device. Please refresh or retry.');
+                    }
+                    return st;
                   });
+                }
+                if (initRes.error) {
+                  throw new Error(initRes.error || initRes.message || 'Server error initializing MLS group');
                 }
                 activeGroups[gid] = commitRes.newState;
                 return saveGroupState(gid, commitRes.newState).then(function () {
@@ -524,6 +544,9 @@
     var gid = getDmGroupId(peerUserId);
 
     return ensureDmGroup(peerUserId).then(function (groupState) {
+      if (!groupState) {
+        throw new Error('Unable to resolve MLS conversation state for peer');
+      }
       return mls.createApplicationMessage(groupState, new TextEncoder().encode(plaintext), ciphersuiteImpl).then(function (sendRes) {
         activeGroups[gid] = sendRes.newState;
         sendRes.consumed.forEach(mls.zeroOutUint8Array);
@@ -550,6 +573,9 @@
     var gid = getDmGroupId(peerUserId);
 
     return ensureDmGroup(peerUserId).then(function (groupState) {
+      if (!groupState) {
+        throw new Error('Unable to resolve MLS conversation state for peer');
+      }
       var msgBytes = b64ToUint8(ciphertextB64);
       var dec = mls.decodeMlsMessage(msgBytes, 0)[0];
       if (!dec || dec.wireformat !== 'mls_private_message') {
@@ -726,7 +752,15 @@
                     if (initRes.error === 'GroupExists') {
                       return pollAndProcessWelcomes().then(function () {
                         return loadGroupState(gid);
+                      }).then(function (st) {
+                        if (!st) {
+                          throw new Error('MLS room exists on server, but no welcome was received for this device. Please refresh or retry.');
+                        }
+                        return st;
                       });
+                    }
+                    if (initRes.error) {
+                      throw new Error(initRes.error || initRes.message || 'Server error initializing MLS room');
                     }
                     if (consumedKpIds.length) {
                       csrfFetch('/mls/keypackages/consume', {
@@ -945,6 +979,9 @@
     var gid = getRoomGroupId(roomId);
 
     return ensureRoomGroup(roomId, memberUserIds).then(function (groupState) {
+      if (!groupState) {
+        throw new Error('Unable to resolve MLS conversation state for room');
+      }
       return mls.createApplicationMessage(groupState, new TextEncoder().encode(plaintext), ciphersuiteImpl).then(function (sendRes) {
         activeGroups[gid] = sendRes.newState;
         sendRes.consumed.forEach(mls.zeroOutUint8Array);
@@ -971,6 +1008,9 @@
     var gid = getRoomGroupId(roomId);
 
     return ensureRoomGroup(roomId).then(function (groupState) {
+      if (!groupState) {
+        throw new Error('Unable to resolve MLS conversation state for room');
+      }
       var msgBytes = b64ToUint8(ciphertextB64);
       var dec = mls.decodeMlsMessage(msgBytes, 0)[0];
       if (!dec || dec.wireformat !== 'mls_private_message') {

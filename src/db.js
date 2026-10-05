@@ -454,6 +454,39 @@ try {
   console.error('[MLS Migration] Error executing one-time migration:', e);
 }
 
+try {
+  const doneV2 = db.prepare(`SELECT value FROM app_meta WHERE key = 'pure_mls_migration_v2'`).get();
+  if (!doneV2) {
+    let needsRecreation = false;
+    try {
+      const gCols = db.prepare("PRAGMA table_info(mls_groups)").all().map(c => c.name);
+      if (gCols.includes('active_members')) needsRecreation = true;
+      const wCols = db.prepare("PRAGMA table_info(mls_welcomes)").all().map(c => c.name);
+      if (!wCols.includes('acked_at')) needsRecreation = true;
+    } catch {}
+
+    if (needsRecreation) {
+      console.log('[MLS Migration] Rebuilding prototype MLS tables to canonical RFC 9420 schema...');
+      db.exec(`
+        DROP TABLE IF EXISTS mls_idempotency;
+        DROP TABLE IF EXISTS mls_welcomes;
+        DROP TABLE IF EXISTS mls_commits;
+        DROP TABLE IF EXISTS mls_group_members;
+        DROP TABLE IF EXISTS mls_proposals;
+        DROP TABLE IF EXISTS mls_groups;
+      `);
+    }
+
+    try { db.exec(`ALTER TABLE mls_keypackages ADD COLUMN not_before INTEGER NOT NULL DEFAULT 0`); } catch {}
+    try { db.exec(`ALTER TABLE mls_keypackages ADD COLUMN not_after INTEGER NOT NULL DEFAULT 2147483647`); } catch {}
+    try { db.exec(`ALTER TABLE mls_keypackages ADD COLUMN keypackage_ref TEXT`); } catch {}
+
+    db.prepare(`INSERT OR REPLACE INTO app_meta (key, value) VALUES ('pure_mls_migration_v2', '1')`).run();
+  }
+} catch (e) {
+  console.error('[MLS Migration] Error executing v2 schema alignment:', e);
+}
+
 // --- MLS (RFC 9420) Delivery Service & Authentication Service ---
 try { db.exec(`
   CREATE TABLE IF NOT EXISTS mls_devices (
