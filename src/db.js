@@ -2226,6 +2226,38 @@ function getMlsBackup(userId) {
   `).get(userId) || null;
 }
 
+function getHistoricalDmMessagesForMigration(userId, afterId = 0, limit = 50) {
+  return db.prepare(`
+    SELECT m.id, m.from_id, m.to_id, m.body, m.proto, m.sender_ciphertext, m.key_for_sender, m.key_for_recipient, m.created_at, m.edited_at, m.secure,
+           u_from.username AS from_username, u_to.username AS to_username
+    FROM messages m
+    JOIN users u_from ON u_from.id = m.from_id
+    JOIN users u_to ON u_to.id = m.to_id
+    WHERE (m.from_id = ? OR m.to_id = ?)
+      AND m.id > ?
+      AND m.proto IN ('olm', 'rsa')
+    ORDER BY m.id ASC
+    LIMIT ?
+  `).all(userId, userId, afterId, limit);
+}
+
+function getHistoricalRoomMessagesForMigration(userId, afterId = 0, limit = 50) {
+  return db.prepare(`
+    SELECT rm.id, rm.channel_id, rc.room_id, rm.user_id, rm.body, rm.proto, rm.ciphertext, rm.group_session_id, rm.created_at, rm.edited_at,
+           u.username AS author_username
+    FROM room_messages rm
+    JOIN room_channels rc ON rc.id = rm.channel_id
+    JOIN rooms r ON r.id = rc.room_id
+    LEFT JOIN room_members mem ON mem.room_id = r.id AND mem.user_id = ?
+    JOIN users u ON u.id = rm.user_id
+    WHERE rm.id > ?
+      AND rm.proto = 'megolm'
+      AND (mem.user_id IS NOT NULL OR r.creator_id = ?)
+    ORDER BY rm.id ASC
+    LIMIT ?
+  `).all(userId, afterId, userId, limit);
+}
+
 // ---------- two-factor authentication (TOTP / recovery codes) ----------
 function setTotpSecret(userId, encryptedSecret) {
   db.prepare(`UPDATE users SET totp_secret = ? WHERE id = ?`).run(encryptedSecret || null, userId);
@@ -3438,4 +3470,5 @@ module.exports = {
   getMlsGroup, initMlsGroup, commitMlsGroup, getMlsCommits,
   getMlsWelcomes, ackMlsWelcome,
   saveMlsBackup, getMlsBackup,
+  getHistoricalDmMessagesForMigration, getHistoricalRoomMessagesForMigration,
 };

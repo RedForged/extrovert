@@ -417,6 +417,14 @@
   // ---- Olm ----
   function initOlm() {
     if (olmInitPromise) return olmInitPromise;
+    if (typeof Olm !== 'undefined' && typeof Olm.Account === 'function') {
+      try {
+        var testAcct = new Olm.Account();
+        testAcct.free();
+        olmInitPromise = Promise.resolve();
+        return olmInitPromise;
+      } catch (_) {}
+    }
     var wasmUrl = (NATIVE_CFG && NATIVE_CFG.olmWasmUrl) || '/static/lib/olm.wasm?v=1';
     olmInitPromise = Olm.init({ locateFile: function () { return wasmUrl; } });
     return olmInitPromise;
@@ -701,6 +709,46 @@
      secureWriteQueues[otherIdStr] = next.catch(function () {});
      return next;
    }
+
+  // Room-local message store in STORE_SECURE (encrypted with deviceKey Kd)
+  function secureRoomKey(roomId) { return 'room:' + activeUserId() + ':' + roomId; }
+
+  function secureLoadRoomMessages(roomId) {
+    return idbGet(STORE_SECURE, secureRoomKey(roomId)).then(function (enc) {
+      if (!enc) return [];
+      return decryptWithKd(enc).then(function (json) {
+        var msgs;
+        try { msgs = JSON.parse(json); } catch (e) { msgs = []; }
+        return Array.isArray(msgs) ? msgs : [];
+      });
+    });
+  }
+
+  function secureSaveRoomMessages(roomId, msgs) {
+    return encryptWithKd(JSON.stringify(msgs)).then(function (enc) {
+      return idbSet(STORE_SECURE, secureRoomKey(roomId), enc);
+    });
+  }
+
+  var secureRoomWriteQueues = {};
+  function securePersistRoomMessage(roomId, record) {
+    var prev = secureRoomWriteQueues[roomId] || Promise.resolve();
+    var next = prev.then(function () {
+      return secureLoadRoomMessages(roomId).then(function (msgs) {
+        var found = -1;
+        for (var i = 0; i < msgs.length; i++) {
+          if (String(msgs[i].id) === String(record.id)) { found = i; break; }
+        }
+        if (found === -1) msgs.push(record); else msgs[found] = record;
+        msgs.sort(function (a, b) {
+          return (a.created_at - b.created_at) || (Number(a.id) - Number(b.id));
+        });
+        return secureSaveRoomMessages(roomId, msgs);
+      });
+    });
+    secureRoomWriteQueues[roomId] = next.catch(function () {});
+    return next;
+  }
 
    // ---- "Seen undecryptable" list (device-local, never synced) ----
    // When a message renders `[unable to decrypt]` on THIS device, its id is
@@ -1729,18 +1777,24 @@
   // so the in-memory copy never drifts into an inconsistent state.
   function decryptCipherLadder(cipher, fullKey, theirCurve, opts) {
     opts = opts || {};
+    var hadSession = false;
+    var sessionDecryptError = null;
+
     return loadInboundSessionFresh(fullKey).then(function (inLive) {
       if (inLive) {
+        hadSession = true;
         var livePickle = inLive.pickle(PICKLE_KEY);
         try {
           var plain = inLive.decrypt(cipher.t, cipher.b);
           scheduleHistorySync();
           return saveInboundSession(fullKey, inLive).then(function () { return plain; });
-        } catch (_) {
+        } catch (e1) {
+          sessionDecryptError = e1;
           inboundSessions[fullKey] = safeUnpickle(livePickle);
         }
       }
       return loadInboundBaselines(fullKey).then(function (bases) {
+        if (bases && bases.length > 0) hadSession = true;
         for (var i = 0; i < bases.length; i++) {
           try {
             var plain2 = bases[i].decrypt(cipher.t, cipher.b);
@@ -1748,20 +1802,32 @@
             return inLive
               ? Promise.resolve(plain2)
               : saveInboundSession(fullKey, bases[i]).then(function () { return plain2; });
-          } catch (_) {}
+          } catch (e2) {
+            if (!sessionDecryptError) sessionDecryptError = e2;
+          }
         }
         return loadOutboundSessionFresh(fullKey).then(function (outLive) {
           if (outLive) {
+            hadSession = true;
             var outPickle = outLive.pickle(PICKLE_KEY);
             try {
               var pOut = outLive.decrypt(cipher.t, cipher.b);
               scheduleHistorySync();
               return saveOutboundSession(fullKey, outLive).then(function () { return pOut; });
-            } catch (_) {
+            } catch (e3) {
+              if (!sessionDecryptError) sessionDecryptError = e3;
               outboundSessions[fullKey] = safeUnpickle(outPickle);
             }
           }
           if (cipher.t === 0 || cipher.t === 2) {
+            if (!account) {
+              if (hadSession) {
+                var errDetail0 = (sessionDecryptError && sessionDecryptError.message) ? sessionDecryptError.message : String(sessionDecryptError || 'corrupt message payload');
+                throw new Error('Decryption failed for session (' + fullKey + '): ' + errDetail0);
+              }
+              if (!opts.noRekey) requestRekeyFrom(String(fullKey).split(':')[0]);
+              throw new Error('No session for sender and no local account available');
+            }
             var ns = new Olm.Session();
             try {
               ns.create_inbound(account, cipher.b);
@@ -1780,9 +1846,17 @@
                 return saveAccount().then(function () { return plain3; });
               });
             } catch (createErr) {
+              if (hadSession) {
+                var errDetail1 = (sessionDecryptError && sessionDecryptError.message) ? sessionDecryptError.message : String(sessionDecryptError || 'corrupt message payload');
+                throw new Error('Decryption failed for session (' + fullKey + '): ' + errDetail1);
+              }
               if (!opts.noRekey) requestRekeyFrom(String(fullKey).split(':')[0]);
-              throw createErr;
+              throw new Error('No session for sender (inbound session creation failed: ' + (createErr && createErr.message ? createErr.message : createErr) + ')');
             }
+          }
+          if (hadSession) {
+            var errDetail2 = (sessionDecryptError && sessionDecryptError.message) ? sessionDecryptError.message : String(sessionDecryptError || 'corrupt message payload');
+            throw new Error('Decryption failed for session (' + fullKey + '): ' + errDetail2);
           }
           if (!opts.noRekey) requestRekeyFrom(String(fullKey).split(':')[0]);
           throw new Error('No session for sender and message could not be decrypted.');
@@ -3751,7 +3825,435 @@
     startRekeyPolling(otherIdStr, otherUsername);
   }
 
-    // Room pages (and any future consumer) drive Megolm through this global.
+  // ---- Phase 4: Historical Message Pre-Decryption Migration Worker ----
+  var MIGRATION_CHECKPOINT_KEY = 'migration:checkpoint';
+  var migrationRunning = false;
+
+  function getMigrationCheckpoint() {
+    return idbGet(STORE_SECURE, MIGRATION_CHECKPOINT_KEY).then(function (enc) {
+      if (!enc) {
+        return {
+          dmCursor: 0,
+          roomCursor: 0,
+          totalMigrated: 0,
+          failedCount: 0,
+          cascadeSessions: {},
+          done: false,
+          updatedAt: Date.now()
+        };
+      }
+      return decryptWithKd(enc).then(function (json) {
+        try { return JSON.parse(json); } catch (_) {
+          return { dmCursor: 0, roomCursor: 0, totalMigrated: 0, failedCount: 0, cascadeSessions: {}, done: false, updatedAt: Date.now() };
+        }
+      }).catch(function () {
+        return { dmCursor: 0, roomCursor: 0, totalMigrated: 0, failedCount: 0, cascadeSessions: {}, done: false, updatedAt: Date.now() };
+      });
+    });
+  }
+
+  function saveMigrationCheckpoint(cp) {
+    cp.updatedAt = Date.now();
+    return encryptWithKd(JSON.stringify(cp)).then(function (enc) {
+      return idbSet(STORE_SECURE, MIGRATION_CHECKPOINT_KEY, enc);
+    });
+  }
+
+  function runMigrationBatch(options) {
+    options = options || {};
+    var batchSize = options.batchSize || 50;
+
+    return getOrCreateDeviceKey().then(function () {
+      return getMigrationCheckpoint();
+    }).then(function (cp) {
+      if (cp.done) return { done: true, checkpoint: cp };
+
+      var url = '/mls/migration/messages?dm_cursor=' + encodeURIComponent(cp.dmCursor || 0) +
+                '&room_cursor=' + encodeURIComponent(cp.roomCursor || 0) +
+                '&limit=' + encodeURIComponent(batchSize);
+
+      return csrfFetch(url).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status + ' fetching migration messages');
+        return r.json();
+      }).then(function (res) {
+        if (!res || !res.ok) throw new Error('Invalid response from migration messages endpoint');
+
+        var dmMessages = res.dm_messages || [];
+        var roomMessages = res.room_messages || [];
+        var myId = activeUserId();
+        var chain = Promise.resolve();
+
+        // 1. Process DM messages in ascending m.id order (global monotonicity)
+        dmMessages.forEach(function (m) {
+          chain = chain.then(function () {
+            var otherId = (Number(m.from_id) === Number(myId)) ? String(m.to_id) : String(m.from_id);
+            var isOwn = (Number(m.from_id) === Number(myId));
+            var sessionKey = 'dm:' + otherId;
+
+            return secureLoadMessages(otherId).then(function (existing) {
+              for (var i = 0; i < existing.length; i++) {
+                if (String(existing[i].id) === String(m.id)) {
+                  return; // already migrated
+                }
+              }
+
+              // Check if session has a cascade failure (SESSION_EXPIRED or RATCHET_DESYNC)
+              if (cp.cascadeSessions && cp.cascadeSessions[sessionKey]) {
+                var reason = cp.cascadeSessions[sessionKey];
+                var failRec = {
+                  id: m.id,
+                  from_id: m.from_id,
+                  to_id: m.to_id,
+                  created_at: m.created_at,
+                  proto: m.proto,
+                  unrecoverable: true,
+                  reason: reason
+                };
+                cp.failedCount++;
+                return securePersistMessage(otherId, failRec);
+              }
+
+              var decryptPromise;
+              if (m.proto === 'olm') {
+                decryptPromise = decryptOlm(m, isOwn, otherId, null);
+              } else if (m.proto === 'rsa') {
+                var k = isOwn ? m.key_for_sender : m.key_for_recipient;
+                decryptPromise = (m.body && k) ? decryptLegacyRSA(m.body, k) : Promise.reject(new Error('No RSA key for legacy message'));
+              } else {
+                decryptPromise = Promise.resolve(m.body || '');
+              }
+
+              return decryptPromise.then(function (plaintext) {
+                var rec = {
+                  id: m.id,
+                  from_id: m.from_id,
+                  to_id: m.to_id,
+                  created_at: m.created_at,
+                  proto: m.proto,
+                  plaintext: plaintext
+                };
+                cp.totalMigrated++;
+                return securePersistMessage(otherId, rec);
+              }).catch(function (err) {
+                var errMsg = (err && err.message) ? err.message : String(err);
+                var category = 'CORRUPT_PAYLOAD';
+                var label = 'message ciphertext corrupted';
+
+                if (errMsg.indexOf('No session') !== -1 || errMsg.indexOf('Session not found') !== -1 || errMsg.indexOf('No inbound') !== -1) {
+                  category = 'SESSION_EXPIRED';
+                  label = 'session expired prior to vault migration';
+                  cp.cascadeSessions = cp.cascadeSessions || {};
+                  cp.cascadeSessions[sessionKey] = label;
+                } else if (errMsg.indexOf('advanced past') !== -1 || errMsg.indexOf('BAD_MESSAGE_KEY_ID') !== -1 || errMsg.indexOf('OLM.BAD_MESSAGE_KEY_ID') !== -1) {
+                  category = 'RATCHET_DESYNC';
+                  label = 'ratchet advanced past this message';
+                }
+
+                var failRec = {
+                  id: m.id,
+                  from_id: m.from_id,
+                  to_id: m.to_id,
+                  created_at: m.created_at,
+                  proto: m.proto,
+                  unrecoverable: true,
+                  reason: label,
+                  error_category: category
+                };
+                cp.failedCount++;
+                return securePersistMessage(otherId, failRec);
+              });
+            });
+          });
+        });
+
+        // 2. Process Room messages in ascending rm.id order (global monotonicity)
+        roomMessages.forEach(function (rm) {
+          chain = chain.then(function () {
+            var roomId = String(rm.room_id);
+            var sessionKey = 'room:' + roomId + ':' + rm.user_id + ':' + (rm.group_session_id || 'default');
+
+            return secureLoadRoomMessages(roomId).then(function (existing) {
+              for (var i = 0; i < existing.length; i++) {
+                if (String(existing[i].id) === String(rm.id)) {
+                  return;
+                }
+              }
+
+              if (cp.cascadeSessions && cp.cascadeSessions[sessionKey]) {
+                var reason = cp.cascadeSessions[sessionKey];
+                var failRec = {
+                  id: rm.id,
+                  room_id: rm.room_id,
+                  channel_id: rm.channel_id,
+                  user_id: rm.user_id,
+                  created_at: rm.created_at,
+                  proto: rm.proto,
+                  unrecoverable: true,
+                  reason: reason
+                };
+                cp.failedCount++;
+                return securePersistRoomMessage(roomId, failRec);
+              }
+
+              var decryptPromise;
+              if (rm.proto === 'megolm') {
+                decryptPromise = decryptRoomMessage(rm.room_id, rm.user_id, rm.ciphertext || rm.body, rm.group_session_id);
+              } else {
+                decryptPromise = Promise.resolve(rm.body || '');
+              }
+
+              return decryptPromise.then(function (plaintext) {
+                var rec = {
+                  id: rm.id,
+                  room_id: rm.room_id,
+                  channel_id: rm.channel_id,
+                  user_id: rm.user_id,
+                  created_at: rm.created_at,
+                  proto: rm.proto,
+                  plaintext: plaintext
+                };
+                cp.totalMigrated++;
+                return securePersistRoomMessage(roomId, rec);
+              }).catch(function (err) {
+                var errMsg = (err && err.message) ? err.message : String(err);
+                var category = 'CORRUPT_PAYLOAD';
+                var label = 'message ciphertext corrupted';
+
+                if (errMsg.indexOf('No inbound group session') !== -1 || errMsg.indexOf('Session not found') !== -1) {
+                  category = 'SESSION_EXPIRED';
+                  label = 'session expired prior to vault migration';
+                  cp.cascadeSessions = cp.cascadeSessions || {};
+                  cp.cascadeSessions[sessionKey] = label;
+                } else if (errMsg.indexOf('advanced past') !== -1 || errMsg.indexOf('UNKNOWN_MESSAGE_INDEX') !== -1 || errMsg.indexOf('OLM.UNKNOWN_MESSAGE_INDEX') !== -1) {
+                  category = 'RATCHET_DESYNC';
+                  label = 'ratchet advanced past this message';
+                }
+
+                var failRec = {
+                  id: rm.id,
+                  room_id: rm.room_id,
+                  channel_id: rm.channel_id,
+                  user_id: rm.user_id,
+                  created_at: rm.created_at,
+                  proto: rm.proto,
+                  unrecoverable: true,
+                  reason: label,
+                  error_category: category
+                };
+                cp.failedCount++;
+                return securePersistRoomMessage(roomId, failRec);
+              });
+            });
+          });
+        });
+
+        return chain.then(function () {
+          cp.dmCursor = res.next_dm_cursor || cp.dmCursor;
+          cp.roomCursor = res.next_room_cursor || cp.roomCursor;
+          if (!res.has_more) {
+            cp.done = true;
+          }
+          return saveMigrationCheckpoint(cp).then(function () {
+            if (typeof options.onProgress === 'function') {
+              options.onProgress(cp);
+            }
+            return {
+              done: cp.done,
+              checkpoint: cp,
+              batchCount: dmMessages.length + roomMessages.length
+            };
+          });
+        });
+      });
+    });
+  }
+
+  var scheduleIdle = (typeof window !== 'undefined' && window.requestIdleCallback)
+    ? function (cb) { return window.requestIdleCallback(cb, { timeout: 5000 }); }
+    : function (cb) { return setTimeout(cb, 20); };
+
+  function startHistoricalMigration(options) {
+    options = options || {};
+    if (migrationRunning && !options.force) {
+      return Promise.resolve({ running: true });
+    }
+    migrationRunning = true;
+
+    function step() {
+      return runMigrationBatch(options).then(function (batchResult) {
+        if (batchResult.done) {
+          migrationRunning = false;
+          return batchResult;
+        }
+        if (options.singleBatch) {
+          migrationRunning = false;
+          return batchResult;
+        }
+        return new Promise(function (resolve, reject) {
+          scheduleIdle(function () {
+            step().then(resolve, reject);
+          });
+        });
+      }).catch(function (err) {
+        migrationRunning = false;
+        throw err;
+      });
+    }
+
+    return step();
+  }
+
+  // ---- Phase 4: Data Export Semantics (GDPR Article 20 / Portable Archive) ----
+  function exportDecryptedVault(options) {
+    options = options || {};
+    var format = options.format || 'encrypted'; // default to encrypted per §7.5
+    var password = options.password;
+    var acknowledgePlaintext = options.acknowledgePlaintext === true;
+
+    if (format === 'json' && !acknowledgePlaintext) {
+      return Promise.reject(new Error('Plaintext export requires explicit user confirmation. Warning: Exported plaintext contains unencrypted message history.'));
+    }
+
+    if (format === 'encrypted' && (!password || typeof password !== 'string')) {
+      return Promise.reject(new Error('Password required for encrypted export'));
+    }
+
+    return openDB().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(STORE_SECURE, 'readonly');
+        var store = tx.objectStore(STORE_SECURE);
+        var req = store.getAllKeys();
+        req.onsuccess = function () { resolve(req.result || []); };
+        req.onerror = function () { reject(req.error); };
+      });
+    }).then(function (keys) {
+      var dms = {};
+      var rooms = {};
+      var total = 0;
+      var unrec = 0;
+      var chain = Promise.resolve();
+
+      keys.forEach(function (k) {
+        if (typeof k !== 'string') return;
+        if (k.indexOf('conv:' + activeUserId() + ':') === 0) {
+          var otherId = k.split(':')[2];
+          chain = chain.then(function () {
+            return secureLoadMessages(otherId).then(function (msgs) {
+              dms[otherId] = (msgs || []).map(function (m) {
+                total++;
+                if (m.unrecoverable) {
+                  unrec++;
+                  return {
+                    id: m.id,
+                    from_id: m.from_id,
+                    to_id: m.to_id,
+                    created_at: m.created_at,
+                    proto: m.proto,
+                    unrecoverable: true,
+                    plaintext: '[Message unrecoverable: ' + (m.reason || 'legacy session expired prior to vault migration') + ']'
+                  };
+                }
+                return {
+                  id: m.id,
+                  from_id: m.from_id,
+                  to_id: m.to_id,
+                  created_at: m.created_at,
+                  proto: m.proto,
+                  plaintext: m.plaintext
+                };
+              });
+            });
+          });
+        } else if (k.indexOf('room:' + activeUserId() + ':') === 0) {
+          var roomId = k.split(':')[2];
+          chain = chain.then(function () {
+            return secureLoadRoomMessages(roomId).then(function (msgs) {
+              rooms[roomId] = (msgs || []).map(function (m) {
+                total++;
+                if (m.unrecoverable) {
+                  unrec++;
+                  return {
+                    id: m.id,
+                    room_id: m.room_id,
+                    channel_id: m.channel_id,
+                    user_id: m.user_id,
+                    created_at: m.created_at,
+                    proto: m.proto,
+                    unrecoverable: true,
+                    plaintext: '[Message unrecoverable: ' + (m.reason || 'legacy session expired prior to vault migration') + ']'
+                  };
+                }
+                return {
+                  id: m.id,
+                  room_id: m.room_id,
+                  channel_id: m.channel_id,
+                  user_id: m.user_id,
+                  created_at: m.created_at,
+                  proto: m.proto,
+                  plaintext: m.plaintext
+                };
+              });
+            });
+          });
+        }
+      });
+
+      return chain.then(function () {
+        var exportObj = {
+          version: 1,
+          exported_at: new Date().toISOString(),
+          user_id: activeUserId(),
+          conversations: dms,
+          rooms: rooms,
+          stats: {
+            total_messages: total,
+            unrecoverable_messages: unrec
+          },
+          metadata: {
+            acknowledged_plaintext: format === 'json' ? true : false,
+            format: format
+          }
+        };
+
+        var jsonStr = JSON.stringify(exportObj, null, 2);
+        if (format === 'json') {
+          return { format: 'json', data: jsonStr, stats: exportObj.stats };
+        }
+
+        var salt = new Uint8Array(16);
+        crypto.getRandomValues(salt);
+        var iv = new Uint8Array(12);
+        crypto.getRandomValues(iv);
+
+        var enc = new TextEncoder();
+        return crypto.subtle.importKey('raw', enc.encode(password), { name: 'PBKDF2' }, false, ['deriveKey'])
+          .then(function (baseKey) {
+            return crypto.subtle.deriveKey(
+              { name: 'PBKDF2', salt: salt, iterations: 100000, hash: 'SHA-256' },
+              baseKey,
+              { name: 'AES-GCM', length: 256 },
+              false,
+              ['encrypt']
+            );
+          }).then(function (aesKey) {
+            return crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, aesKey, enc.encode(jsonStr));
+          }).then(function (encryptedBuf) {
+            return {
+              format: 'encrypted',
+              algorithm: 'AES-256-GCM',
+              kdf: 'PBKDF2-HMAC-SHA256',
+              iterations: 100000,
+              salt: uint8ToB64(salt),
+              iv: uint8ToB64(iv),
+              ciphertext: uint8ToB64(new Uint8Array(encryptedBuf)),
+              stats: exportObj.stats
+            };
+          });
+      });
+    });
+  }
+
+  // Room pages (and any future consumer) drive Megolm through this global.
   window.ExtrovertE2EE = {
     ensureReady: ensureReady,
     initOlm: initOlm,
@@ -3783,9 +4285,21 @@
     persistSecureMessage: securePersistMessage,
     deleteSecureMessage: secureDeleteMessage,
     loadSecureMessages: secureLoadMessages,
+    persistSecureRoomMessage: securePersistRoomMessage,
+    loadSecureRoomMessages: secureLoadRoomMessages,
     ackSecureMessages: ackSecureMessages,
     fetchRecipientBundle: fetchBundle,
     myEd25519: function () { return myIdKeys ? myIdKeys.ed25519 : null; },
     ready: function () { return !!account; },
+    // ---- Phase 4 Migration & Export ----
+    startHistoricalMigration: startHistoricalMigration,
+    runMigrationBatch: runMigrationBatch,
+    getMigrationCheckpoint: getMigrationCheckpoint,
+    saveMigrationCheckpoint: saveMigrationCheckpoint,
+    exportDecryptedVault: exportDecryptedVault,
+    saveInboundSession: saveInboundSession,
+    saveGroupInbound: saveGroupInbound,
+    getOrCreateDeviceKey: getOrCreateDeviceKey,
+    createOlmAccount: createOlmAccount,
   };
 })();

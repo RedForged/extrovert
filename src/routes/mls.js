@@ -29,6 +29,8 @@ const {
   saveMlsBackup,
   getMlsBackup,
   isRoomMember,
+  getHistoricalDmMessagesForMigration,
+  getHistoricalRoomMessagesForMigration,
 } = require('../db');
 const { bearerOrSession } = require('../bearer-auth');
 
@@ -427,6 +429,33 @@ router.post('/backup', requireAuth, (req, res) => {
 
   saveMlsBackup(user.id, backup_data, salt);
   res.json({ ok: true });
+});
+
+// 14. Historical Messages for Pre-Decryption Migration Worker
+router.get('/migration/messages', requireAuth, (req, res) => {
+  const user = res.locals.currentUser;
+  const dmCursor = parseInt(req.query.dm_cursor, 10) || 0;
+  const roomCursor = parseInt(req.query.room_cursor, 10) || 0;
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 100);
+
+  const dmMessages = getHistoricalDmMessagesForMigration(user.id, dmCursor, limit);
+  const remainingLimit = limit - dmMessages.length;
+  const roomMessages = remainingLimit > 0
+    ? getHistoricalRoomMessagesForMigration(user.id, roomCursor, remainingLimit)
+    : [];
+
+  const nextDmCursor = dmMessages.length ? dmMessages[dmMessages.length - 1].id : dmCursor;
+  const nextRoomCursor = roomMessages.length ? roomMessages[roomMessages.length - 1].id : roomCursor;
+  const hasMore = dmMessages.length === limit || (remainingLimit > 0 && roomMessages.length === remainingLimit);
+
+  res.json({
+    ok: true,
+    dm_messages: dmMessages,
+    room_messages: roomMessages,
+    next_dm_cursor: nextDmCursor,
+    next_room_cursor: nextRoomCursor,
+    has_more: hasMore
+  });
 });
 
 module.exports = router;
