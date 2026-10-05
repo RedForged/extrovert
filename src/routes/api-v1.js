@@ -2758,7 +2758,8 @@ router.post('/rooms/:id/channels/:cid/messages', requireApiAuth('write'), requir
   }
 
   const body = String(req.body.body || '').trim();
-  const proto = String(req.body.proto || 'plain').trim() === 'megolm' ? 'megolm' : 'plain';
+  const rawProto = String(req.body.proto || 'plain').trim();
+  const proto = (rawProto === 'mls' || rawProto === 'megolm') ? rawProto : 'plain';
   const ciphertextRaw = String(req.body.ciphertext || '').trim();
   const groupSessionId = String(req.body.group_session_id || '').trim() || null;
   const isSticker = body.startsWith('/uploads/stickers/');
@@ -2767,11 +2768,16 @@ router.post('/rooms/:id/channels/:cid/messages', requireApiAuth('write'), requir
     if (body.length > 20000 || ciphertextRaw.length > 20000) {
       return errorResponse(res, 400, 'Bad Request', 'Message is too long.');
     }
-    if (proto !== 'megolm' || !ciphertextRaw || !groupSessionId) {
-      return errorResponse(res, 400, 'Bad Request', 'End-to-end encryption required. Room messages must be Megolm-encrypted.');
+    if ((proto !== 'megolm' && proto !== 'mls') || !ciphertextRaw) {
+      return errorResponse(res, 400, 'Bad Request', 'End-to-end encryption required. Room messages must be Megolm or MLS-encrypted.');
     }
-    if (!db.isRoomGroupSessionUsable(room.id, req.apiUser.id, groupSessionId)) {
-      return errorResponse(res, 400, 'Bad Request', 'Unknown group session.');
+    if (proto === 'megolm') {
+      if (!groupSessionId) {
+        return errorResponse(res, 400, 'Bad Request', 'group_session_id required for Megolm messages.');
+      }
+      if (!db.isRoomGroupSessionUsable(room.id, req.apiUser.id, groupSessionId)) {
+        return errorResponse(res, 400, 'Bad Request', 'Unknown group session.');
+      }
     }
   }
   const ciphertext = ciphertextRaw || null;

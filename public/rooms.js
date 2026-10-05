@@ -50,7 +50,11 @@ document.addEventListener('DOMContentLoaded', function() {
     var e2ee = window.ExtrovertRoomE2EE;
     if (e2ee && e2ee.ready()) {
       e2ee.encryptMessage(body).then(function(r) {
-        doPost('proto=megolm&ciphertext=' + encodeURIComponent(r.ciphertext) + '&group_session_id=' + encodeURIComponent(r.group_session_id));
+        if (r.proto === 'mls') {
+          doPost('proto=mls&ciphertext=' + encodeURIComponent(r.ciphertext));
+        } else {
+          doPost('proto=megolm&ciphertext=' + encodeURIComponent(r.ciphertext) + '&group_session_id=' + encodeURIComponent(r.group_session_id));
+        }
       }).catch(function() { input.disabled = false; });
       return;
     }
@@ -114,7 +118,11 @@ document.addEventListener('DOMContentLoaded', function() {
       var e2ee = window.ExtrovertRoomE2EE;
       if (e2ee && e2ee.ready()) {
         e2ee.encryptMessage(newBody).then(function(r) {
-          doEditPost('proto=megolm&ciphertext=' + encodeURIComponent(r.ciphertext) + '&group_session_id=' + encodeURIComponent(r.group_session_id));
+          if (r.proto === 'mls') {
+            doEditPost('proto=mls&ciphertext=' + encodeURIComponent(r.ciphertext));
+          } else {
+            doEditPost('proto=megolm&ciphertext=' + encodeURIComponent(r.ciphertext) + '&group_session_id=' + encodeURIComponent(r.group_session_id));
+          }
         });
         return;
       }
@@ -247,6 +255,11 @@ document.addEventListener('DOMContentLoaded', function() {
         div.setAttribute('data-sender-id', m.user_id);
         div.setAttribute('data-ciphertext', m.ciphertext || '');
         div.setAttribute('data-group-session-id', m.group_session_id || '');
+        textSpan.textContent = '';
+      } else if (m.proto === 'mls') {
+        div.setAttribute('data-proto', 'mls');
+        div.setAttribute('data-sender-id', m.user_id);
+        div.setAttribute('data-ciphertext', m.ciphertext || '');
         textSpan.textContent = '';
       } else {
         textSpan.textContent = m.body;

@@ -93,14 +93,15 @@
     var e2ee = window.ExtrovertE2EE;
     if (!e2ee || !e2ee.loadUndecryptable || !e2ee.undecryptableRoomKey) {
       // Older/partial bridge: fall back to the plain placeholder behavior.
-      document.querySelectorAll('#room-messages .room-msg[data-proto="megolm"]').forEach(function (el) {
+      document.querySelectorAll('#room-messages .room-msg[data-proto="megolm"], #room-messages .room-msg[data-proto="mls"]').forEach(function (el) {
+        var proto = el.getAttribute('data-proto') || 'megolm';
         var senderId = el.getAttribute('data-sender-id');
         var ciphertext = el.getAttribute('data-ciphertext');
         var gsid = el.getAttribute('data-group-session-id');
         var textEl = el.querySelector('.room-msg-text');
         if (!textEl) return;
-        if (textEl.textContent && textEl.textContent !== '[unable to decrypt]') return;
-        decryptMessage(senderId, ciphertext, gsid).then(function (plain) {
+        if (textEl.textContent && textEl.textContent !== '[unable to decrypt]' && textEl.textContent !== '…') return;
+        decryptMessage(senderId, ciphertext, gsid, proto).then(function (plain) {
           textEl.textContent = plain;
           textEl.classList.remove('e2ee-pending');
         }).catch(function () {
@@ -113,7 +114,8 @@
     e2ee.loadUndecryptable(e2ee.undecryptableRoomKey(roomId)).then(function (seen) {
       var seenMap = {};
       (seen || []).forEach(function (id) { seenMap[String(id)] = true; });
-      document.querySelectorAll('#room-messages .room-msg[data-proto="megolm"]').forEach(function (el) {
+      document.querySelectorAll('#room-messages .room-msg[data-proto="megolm"], #room-messages .room-msg[data-proto="mls"]').forEach(function (el) {
+        var proto = el.getAttribute('data-proto') || 'megolm';
         var senderId = el.getAttribute('data-sender-id');
         var ciphertext = el.getAttribute('data-ciphertext');
         var gsid = el.getAttribute('data-group-session-id');
@@ -127,8 +129,8 @@
           textEl.textContent = '[unable to decrypt]';
           return;
         }
-        if (textEl.textContent && textEl.textContent !== '[unable to decrypt]') return;
-        decryptMessage(senderId, ciphertext, gsid).then(function (plain) {
+        if (textEl.textContent && textEl.textContent !== '[unable to decrypt]' && textEl.textContent !== '…') return;
+        decryptMessage(senderId, ciphertext, gsid, proto).then(function (plain) {
           textEl.textContent = plain;
           textEl.classList.remove('e2ee-pending');
         }).catch(function () {
@@ -150,7 +152,7 @@
     var container = document.getElementById('room-messages');
     if (!container) return;
     var failedNow = [];
-    container.querySelectorAll('.room-msg[data-proto="megolm"]').forEach(function (el) {
+    container.querySelectorAll('.room-msg[data-proto="megolm"], .room-msg[data-proto="mls"]').forEach(function (el) {
       var textEl = el.querySelector('.room-msg-text');
       if (textEl && textEl.textContent === '[unable to decrypt]') failedNow.push(String(el.getAttribute('data-msg-id') || ''));
     });
@@ -160,7 +162,7 @@
     var existing = container.querySelector('.room-undecryptable-stack');
     if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
     var failed = [];
-    container.querySelectorAll('.room-msg[data-proto="megolm"]').forEach(function (el) {
+    container.querySelectorAll('.room-msg[data-proto="megolm"], .room-msg[data-proto="mls"]').forEach(function (el) {
       var textEl = el.querySelector('.room-msg-text');
       if (textEl && textEl.textContent === '[unable to decrypt]') failed.push(el);
     });
@@ -197,11 +199,35 @@
   }
 
   function encryptMessage(plaintext) {
+    if (window.ExtrovertMLS && window.ExtrovertMLS.ready()) {
+      return window.ExtrovertMLS.checkRoomMlsSupport(roomId, members).then(function (hasMls) {
+        if (hasMls) {
+          return window.ExtrovertMLS.encryptRoomMessage(roomId, plaintext, members).then(function (res) {
+            return {
+              proto: 'mls',
+              ciphertext: res.body,
+            };
+          }).catch(function (err) {
+            console.warn('MLS room encryption failed, falling back to Megolm:', err);
+            if (!ready) throw err;
+            return window.ExtrovertE2EE.encryptRoomMessage(roomId, plaintext);
+          });
+        }
+        if (!ready) throw new Error('Encryption not ready');
+        return window.ExtrovertE2EE.encryptRoomMessage(roomId, plaintext);
+      });
+    }
     if (!ready) return Promise.reject(new Error('not ready'));
     return window.ExtrovertE2EE.encryptRoomMessage(roomId, plaintext);
   }
 
-  function decryptMessage(senderId, ciphertext, gsid) {
+  function decryptMessage(senderId, ciphertext, gsid, proto) {
+    if (proto === 'mls') {
+      if (window.ExtrovertMLS && window.ExtrovertMLS.ready()) {
+        return window.ExtrovertMLS.decryptRoomMessage(roomId, ciphertext);
+      }
+      return Promise.reject(new Error('MLS engine not ready'));
+    }
     return window.ExtrovertE2EE.decryptRoomMessage(roomId, senderId, ciphertext, gsid);
   }
 

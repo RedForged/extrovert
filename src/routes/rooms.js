@@ -386,7 +386,8 @@ router.post('/:id/channels/:cid/send', (req, res) => {
   }
   if (!checkPerm(room.id, res.locals.currentUser.id, PERM.WRITE)) return res.status(403).json({ error: 'No write permission' });
   const body = String(req.body.body || '').trim();
-  const proto = String(req.body.proto || 'plain').trim() === 'megolm' ? 'megolm' : 'plain';
+  const rawProto = String(req.body.proto || 'plain').trim();
+  const proto = (rawProto === 'mls' || rawProto === 'megolm') ? rawProto : 'plain';
   const ciphertextRaw = String(req.body.ciphertext || '').trim();
   const groupSessionId = String(req.body.group_session_id || '').trim() || null;
   const isSticker = body.startsWith('/uploads/stickers/');
@@ -395,11 +396,16 @@ router.post('/:id/channels/:cid/send', (req, res) => {
     if (body.length > ROOM_BODY_MAX || ciphertextRaw.length > ROOM_CT_MAX) {
       return res.status(400).json({ error: 'Message is too long.' });
     }
-    if (proto !== 'megolm' || !ciphertextRaw || !groupSessionId) {
-      return res.status(400).json({ error: 'End-to-end encryption required. Room messages must be Megolm-encrypted.' });
+    if ((proto !== 'megolm' && proto !== 'mls') || !ciphertextRaw) {
+      return res.status(400).json({ error: 'End-to-end encryption required. Room messages must be Megolm or MLS-encrypted.' });
     }
-    if (!isRoomGroupSessionUsable(room.id, res.locals.currentUser.id, groupSessionId)) {
-      return res.status(400).json({ error: 'Unknown group session.' });
+    if (proto === 'megolm') {
+      if (!groupSessionId) {
+        return res.status(400).json({ error: 'End-to-end encryption required. Room messages must have a group session ID for Megolm.' });
+      }
+      if (!isRoomGroupSessionUsable(room.id, res.locals.currentUser.id, groupSessionId)) {
+        return res.status(400).json({ error: 'Unknown group session.' });
+      }
     }
   }
   const ciphertext = ciphertextRaw || null;
@@ -575,7 +581,8 @@ router.post('/:id/channels/:cid/messages/:mid/edit', (req, res) => {
   const channel = getRoomChannel(Number(req.params.cid));
   if (!channel || channel.room_id !== room.id) return res.status(404).json({ error: 'Channel not found' });
   const body = String(req.body.body || '').trim();
-  const proto = String(req.body.proto || 'plain').trim() === 'megolm' ? 'megolm' : 'plain';
+  const rawProto = String(req.body.proto || 'plain').trim();
+  const proto = (rawProto === 'mls' || rawProto === 'megolm') ? rawProto : 'plain';
   const ciphertextRaw = String(req.body.ciphertext || '').trim();
   const groupSessionId = String(req.body.group_session_id || '').trim() || null;
   const isSticker = body.startsWith('/uploads/stickers/');
@@ -584,11 +591,16 @@ router.post('/:id/channels/:cid/messages/:mid/edit', (req, res) => {
     if (body.length > ROOM_BODY_MAX || ciphertextRaw.length > ROOM_CT_MAX) {
       return res.status(400).json({ error: 'Message is too long.' });
     }
-    if (proto !== 'megolm' || !ciphertextRaw || !groupSessionId) {
-      return res.status(400).json({ error: 'End-to-end encryption required. Room messages must be Megolm-encrypted.' });
+    if ((proto !== 'megolm' && proto !== 'mls') || !ciphertextRaw) {
+      return res.status(400).json({ error: 'End-to-end encryption required. Room messages must be Megolm or MLS-encrypted.' });
     }
-    if (!isRoomGroupSessionUsable(room.id, userId, groupSessionId)) {
-      return res.status(400).json({ error: 'Unknown group session.' });
+    if (proto === 'megolm') {
+      if (!groupSessionId) {
+        return res.status(400).json({ error: 'End-to-end encryption required. Room messages must have a group session ID for Megolm.' });
+      }
+      if (!isRoomGroupSessionUsable(room.id, userId, groupSessionId)) {
+        return res.status(400).json({ error: 'Unknown group session.' });
+      }
     }
   }
   const ciphertext = ciphertextRaw || null;

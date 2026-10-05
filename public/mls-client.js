@@ -33,18 +33,21 @@
   }
 
   function getCsrfToken() {
+    if (typeof document === 'undefined') return '';
     var meta = document.querySelector('meta[name="csrf-token"]');
     return meta ? meta.getAttribute('content') : '';
   }
 
   function currentUserId() {
+    if (typeof document === 'undefined') return root.__mlsCurrentUserId || null;
     var meta = document.querySelector('meta[name="current-user-id"]');
-    return meta ? parseInt(meta.getAttribute('content'), 10) : null;
+    return meta ? parseInt(meta.getAttribute('content'), 10) : (root.__mlsCurrentUserId || null);
   }
 
   function currentUsername() {
+    if (typeof document === 'undefined') return root.__mlsCurrentUsername || '';
     var meta = document.querySelector('meta[name="current-username"]');
-    return meta ? meta.getAttribute('content') : '';
+    return meta ? meta.getAttribute('content') : (root.__mlsCurrentUsername || '');
   }
 
   function openDB() {
@@ -527,6 +530,288 @@
     });
   }
 
+  // --- Room Group Initialization & Message Encryption ---
+  var roomMlsSupportCache = {};
+  var ROOM_MLS_CACHE_TTL = 60000;
+
+  function getRoomGroupId(roomId) {
+    return 'room:' + String(roomId);
+  }
+
+  function checkRoomMlsSupport(roomId, memberUserIds) {
+    if (!ciphersuiteImpl || !deviceId) return Promise.resolve(false);
+    var myId = currentUserId();
+    var others = (memberUserIds || []).map(function (m) {
+      return typeof m === 'object' && m !== null ? (m.id || m.user_id) : m;
+    }).map(Number).filter(function (uid) {
+      return uid && uid !== myId;
+    });
+
+    if (!others.length) return Promise.resolve(true);
+
+    var gid = getRoomGroupId(roomId);
+    if (activeGroups[gid]) return Promise.resolve(true);
+
+    var cacheKey = gid + ':' + others.slice().sort().join(',');
+    var cached = roomMlsSupportCache[cacheKey];
+    if (cached && Date.now() - cached.ts < ROOM_MLS_CACHE_TTL) {
+      return Promise.resolve(cached.hasMls);
+    }
+
+    return Promise.all(others.map(function (uid) {
+      return fetch('/mls/devices?user_id=' + encodeURIComponent(uid), {
+        headers: { 'Accept': 'application/json' },
+        credentials: 'same-origin'
+      }).then(function (r) { return r.json(); }).then(function (data) {
+        return !!(data && data.ok && Array.isArray(data.devices) && data.devices.length > 0);
+      }).catch(function () { return false; });
+    })).then(function (results) {
+      var allMls = results.every(Boolean);
+      roomMlsSupportCache[cacheKey] = { hasMls: allMls, ts: Date.now() };
+      return allMls;
+    });
+  }
+
+  function ensureRoomGroup(roomId, memberUserIds) {
+    var mls = root.MLS;
+    var gid = getRoomGroupId(roomId);
+
+    return loadGroupState(gid).then(function (existing) {
+      if (existing) {
+        return catchUpCommits(gid, existing, existing.epoch || 0).then(function (finalState) {
+          activeGroups[gid] = finalState;
+          return saveGroupState(gid, finalState).then(function () { return finalState; });
+        });
+      }
+
+      // First check if any Welcome is waiting for us
+      return pollAndProcessWelcomes().then(function () {
+        return loadGroupState(gid);
+      }).then(function (joinedFromWelcome) {
+        if (joinedFromWelcome) return joinedFromWelcome;
+
+        // Group not yet loaded locally — claim member KeyPackages and initialize
+        var membersP;
+        if (Array.isArray(memberUserIds) && memberUserIds.length) {
+          membersP = Promise.resolve(memberUserIds);
+        } else {
+          membersP = fetch('/rooms/' + encodeURIComponent(roomId) + '/channels/0/messages').then(function (r) {
+            return r.json();
+          }).then(function (d) {
+            if (d && Array.isArray(d.members)) {
+              return d.members.map(function (m) { return m.user_id; });
+            }
+            return [];
+          }).catch(function () { return []; });
+        }
+
+        return membersP.then(function (rawMembers) {
+          var myId = currentUserId();
+          var otherMembers = (rawMembers || []).map(function (m) {
+            return typeof m === 'object' && m !== null ? (m.id || m.user_id) : m;
+          }).map(Number).filter(function (uid) {
+            return uid && uid !== myId;
+          });
+
+          // Fetch KeyPackages for all other members
+          var kpPromises = otherMembers.map(function (uid) {
+            return csrfFetch('/mls/keypackages/' + encodeURIComponent(uid)).then(function (r) {
+              return r.json();
+            }).then(function (kpRes) {
+              if (!kpRes.ok || !Array.isArray(kpRes.keypackages) || !kpRes.keypackages.length) {
+                throw new Error('Room member ' + uid + ' has no available MLS devices or KeyPackages');
+              }
+              return { uid: uid, packages: kpRes.keypackages };
+            });
+          });
+
+          return Promise.all(kpPromises).then(function (peerKps) {
+            return mls.generateKeyPackage(clientCredential, mls.defaultCapabilities(), mls.defaultLifetime, [], ciphersuiteImpl).then(function (myKp) {
+              var groupBytes = new TextEncoder().encode(gid);
+              return mls.createGroup(groupBytes, myKp.publicPackage, myKp.privatePackage, [], ciphersuiteImpl).then(function (freshGroup) {
+                var proposals = [];
+                var welcomesList = [];
+                var consumedKpIds = [];
+
+                peerKps.forEach(function (peer) {
+                  peer.packages.forEach(function (pkg) {
+                    var decKp = mls.decodeMlsMessage(b64ToUint8(pkg.keypackage_data), 0)[0];
+                    if (decKp && decKp.keyPackage) {
+                      proposals.push({ proposalType: 'add', add: { keyPackage: decKp.keyPackage } });
+                      consumedKpIds.push(pkg.id);
+                    }
+                  });
+                });
+
+                return mls.createCommit(
+                  { state: freshGroup, cipherSuite: ciphersuiteImpl },
+                  { extraProposals: proposals, ratchetTreeExtension: true }
+                ).then(function (commitRes) {
+                  var welcomeEnc = mls.encodeMlsMessage({
+                    welcome: commitRes.welcome,
+                    wireformat: 'mls_welcome',
+                    version: 'mls10'
+                  });
+                  var commitEnc = mls.encodeMlsMessage(commitRes.commit);
+
+                  peerKps.forEach(function (peer) {
+                    peer.packages.forEach(function (pkg) {
+                      welcomesList.push({
+                        user_id: peer.uid,
+                        device_id: pkg.device_id,
+                        welcome_data: uint8ToB64(welcomeEnc)
+                      });
+                    });
+                  });
+
+                  return csrfFetch('/mls/groups/init', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                      group_id: gid,
+                      initial_commit: uint8ToB64(commitEnc),
+                      welcomes: welcomesList,
+                      idempotency_key: 'init_' + gid + '_' + Date.now()
+                    })
+                  }).then(function (r) { return r.json(); }).then(function (initRes) {
+                    if (initRes.error === 'GroupExists') {
+                      return pollAndProcessWelcomes().then(function () {
+                        return loadGroupState(gid);
+                      });
+                    }
+                    if (consumedKpIds.length) {
+                      csrfFetch('/mls/keypackages/consume', {
+                        method: 'POST',
+                        body: JSON.stringify({ keypackage_ids: consumedKpIds })
+                      }).catch(function () {});
+                    }
+                    activeGroups[gid] = commitRes.newState;
+                    return saveGroupState(gid, commitRes.newState).then(function () {
+                      return commitRes.newState;
+                    });
+                  });
+                });
+              });
+            });
+          });
+        });
+      });
+    });
+  }
+
+  function addMemberToRoomGroup(roomId, targetUserId) {
+    var mls = root.MLS;
+    var gid = getRoomGroupId(roomId);
+
+    return ensureRoomGroup(roomId).then(function (groupState) {
+      return csrfFetch('/mls/keypackages/' + encodeURIComponent(targetUserId)).then(function (r) {
+        return r.json();
+      }).then(function (kpRes) {
+        if (!kpRes.ok || !Array.isArray(kpRes.keypackages) || !kpRes.keypackages.length) {
+          throw new Error('User has no available MLS devices or KeyPackages');
+        }
+
+        var pkg = kpRes.keypackages[0];
+        var decKp = mls.decodeMlsMessage(b64ToUint8(pkg.keypackage_data), 0)[0];
+        if (!decKp || !decKp.keyPackage) {
+          throw new Error('Failed to decode target KeyPackage');
+        }
+
+        var addProposal = { proposalType: 'add', add: { keyPackage: decKp.keyPackage } };
+        return mls.createCommit(
+          { state: groupState, cipherSuite: ciphersuiteImpl },
+          { extraProposals: [addProposal], ratchetTreeExtension: true }
+        ).then(function (commitRes) {
+          var welcomeEnc = mls.encodeMlsMessage({
+            welcome: commitRes.welcome,
+            wireformat: 'mls_welcome',
+            version: 'mls10'
+          });
+          var commitEnc = mls.encodeMlsMessage(commitRes.commit);
+
+          return csrfFetch('/mls/groups/' + encodeURIComponent(gid) + '/commit', {
+            method: 'POST',
+            body: JSON.stringify({
+              current_epoch: groupState.epoch,
+              commit_message: uint8ToB64(commitEnc),
+              welcomes: [{
+                user_id: parseInt(targetUserId, 10),
+                device_id: pkg.device_id,
+                welcome_data: uint8ToB64(welcomeEnc)
+              }],
+              members_added: [{
+                user_id: parseInt(targetUserId, 10),
+                device_id: pkg.device_id,
+                role: 'member'
+              }],
+              idempotency_key: 'add_' + gid + '_' + targetUserId + '_' + Date.now()
+            })
+          }).then(function (r) { return r.json(); }).then(function (commitApiRes) {
+            if (commitApiRes.error === 'EpochConflict') {
+              return catchUpCommits(gid, groupState, groupState.epoch).then(function (updatedState) {
+                activeGroups[gid] = updatedState;
+                return addMemberToRoomGroup(roomId, targetUserId);
+              });
+            }
+            csrfFetch('/mls/keypackages/consume', {
+              method: 'POST',
+              body: JSON.stringify({ keypackage_ids: [pkg.id] })
+            }).catch(function () {});
+            activeGroups[gid] = commitRes.newState;
+            return saveGroupState(gid, commitRes.newState).then(function () {
+              return commitRes.newState;
+            });
+          });
+        });
+      });
+    });
+  }
+
+  function encryptRoomMessage(roomId, plaintext, memberUserIds) {
+    var mls = root.MLS;
+    var gid = getRoomGroupId(roomId);
+
+    return ensureRoomGroup(roomId, memberUserIds).then(function (groupState) {
+      return mls.createApplicationMessage(groupState, new TextEncoder().encode(plaintext), ciphersuiteImpl).then(function (sendRes) {
+        activeGroups[gid] = sendRes.newState;
+        sendRes.consumed.forEach(mls.zeroOutUint8Array);
+
+        var enc = mls.encodeMlsMessage({
+          privateMessage: sendRes.privateMessage,
+          wireformat: 'mls_private_message',
+          version: 'mls10'
+        });
+
+        return saveGroupState(gid, sendRes.newState).then(function () {
+          return {
+            proto: 'mls',
+            group_id: gid,
+            body: uint8ToB64(enc)
+          };
+        });
+      });
+    });
+  }
+
+  function decryptRoomMessage(roomId, ciphertextB64) {
+    var mls = root.MLS;
+    var gid = getRoomGroupId(roomId);
+
+    return ensureRoomGroup(roomId).then(function (groupState) {
+      var msgBytes = b64ToUint8(ciphertextB64);
+      var dec = mls.decodeMlsMessage(msgBytes, 0)[0];
+      if (!dec || dec.wireformat !== 'mls_private_message') {
+        throw new Error('Malformed MLS private message');
+      }
+
+      return mls.processPrivateMessage(groupState, dec.privateMessage, mls.emptyPskIndex, ciphersuiteImpl).then(function (recvRes) {
+        activeGroups[gid] = recvRes.newState;
+        return saveGroupState(gid, recvRes.newState).then(function () {
+          return new TextDecoder().decode(recvRes.message);
+        });
+      });
+    });
+  }
+
   // Export onto window.ExtrovertMLS
   root.ExtrovertMLS = {
     init: initDevice,
@@ -534,6 +819,12 @@
     ensureDmGroup: ensureDmGroup,
     encryptDmMessage: encryptDmMessage,
     decryptDmMessage: decryptDmMessage,
+    getRoomGroupId: getRoomGroupId,
+    checkRoomMlsSupport: checkRoomMlsSupport,
+    ensureRoomGroup: ensureRoomGroup,
+    addMemberToRoomGroup: addMemberToRoomGroup,
+    encryptRoomMessage: encryptRoomMessage,
+    decryptRoomMessage: decryptRoomMessage,
     pollWelcomes: pollAndProcessWelcomes,
     getDeviceId: function () { return deviceId; },
     ready: function () { return !!(ciphersuiteImpl && deviceId); },

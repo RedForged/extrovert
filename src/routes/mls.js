@@ -209,7 +209,7 @@ router.post('/groups/:groupId/proposals', requireAuth, (req, res) => {
     if (!parts.includes(user.id)) return res.status(403).json({ error: 'Not authorized' });
   } else if (groupId.startsWith('room:')) {
     const roomId = parseInt(groupId.slice(5), 10);
-    if (!isRoomMember(user.id, roomId)) return res.status(403).json({ error: 'Not a room member' });
+    if (!isRoomMember(roomId, user.id)) return res.status(403).json({ error: 'Not a room member' });
   }
 
   saveMlsProposal(groupId, epoch, proposal_ref, sender_leaf, proposal_type, proposal_data);
@@ -245,7 +245,7 @@ router.post('/groups/init', requireAuth, (req, res) => {
     }
   } else if (group_id.startsWith('room:')) {
     const roomId = parseInt(group_id.slice(5), 10);
-    if (!isRoomMember(user.id, roomId)) {
+    if (!isRoomMember(roomId, user.id)) {
       return res.status(403).json({ error: 'Not a member of this room' });
     }
   }
@@ -282,7 +282,7 @@ router.post('/groups/:groupId/commit', requireAuth, (req, res) => {
     }
   } else if (groupId.startsWith('room:')) {
     const roomId = parseInt(groupId.slice(5), 10);
-    if (!isRoomMember(user.id, roomId)) {
+    if (!isRoomMember(roomId, user.id)) {
       return res.status(403).json({ error: 'Not a member of this room' });
     }
   }
@@ -328,7 +328,7 @@ router.get('/groups/:groupId/commits', requireAuth, (req, res) => {
     }
   } else if (groupId.startsWith('room:')) {
     const roomId = parseInt(groupId.slice(5), 10);
-    if (!isRoomMember(user.id, roomId)) {
+    if (!isRoomMember(roomId, user.id)) {
       return res.status(403).json({ error: 'Not a member of this room' });
     }
   }

@@ -242,3 +242,31 @@ Summary:
 3. **External `mls-rs` Interop (`TASK-1A-2`):** Verified bidirectional interoperability between `ts-mls` and `mls-rs`.
 4. **Master Branch Protection:** Maintain `master` at commit `4773666` until the client pipeline (Phase 2) and room migration (Phase 3) are fully integrated and tested in dual-stack mode.
 
+---
+
+## 7. Phase 2 DM Dual-Stack Verification (PASSED 100%)
+
+* **Status:** **COMPLETE & VERIFIED**.
+* **Harness:** `scripts/mls-dualstack-dm-test.js` (`npm run test:mls`).
+* **Verified Behaviors:**
+  - Alice (dual-stack) -> Bob (legacy Olm): peer MLS capability check resolves `false`; transparently encrypts via pairwise Olm ratchet (`proto: 'olm'`).
+  - Alice (dual-stack) -> Charlie (dual-stack MLS): peer MLS capability check resolves `true`; initializes group `dm:alice_charlie`, distributes Welcome, posts single MLS ciphertext (`proto: 'mls'`).
+  - Charlie (dual-stack) replies via active MLS DM group state; Alice decrypts cleanly.
+  - Transparent fallback resiliency: if MLS prerequisites fail (e.g. pool exhaustion), fallback cleanly sends via Olm without dropping messages.
+
+---
+
+## 8. Phase 3 Group Room MLS Migration Verification (PASSED 100%)
+
+* **Status:** **COMPLETE & VERIFIED**.
+* **Harness:** `scripts/mls-dualstack-room-test.js` (`npm run test:mls`).
+* **Verified Behaviors:**
+  - Alice + Bob in Room 1: Bob lacks MLS devices; room capability check resolves `false`; messages encrypt via Megolm session (`proto: 'megolm'`).
+  - Alice + Charlie + Dave in Room 2: All hold active MLS devices; room capability check resolves `true`; initializes MLS group `room:2` on server at epoch 1.
+  - Single Ciphertext Broadcast: Alice encrypts once; zero Olm fanout envelopes; stored with zero Megolm session wrapper.
+  - Multi-Member Decryption: Charlie and Dave consume Welcomes from Delivery Service and both cleanly decrypt Alice's message.
+  - Peer Reply: Dave replies with `proto: 'mls'`; Alice and Charlie both decrypt cleanly.
+  - Message Edit: Dave edits message with `proto: 'mls'`; updated ciphertext cleanly decrypted by peers.
+  - Dynamic Member Addition: Eve joins Room 2; Alice client commits `AddProposal(Eve)` advancing epoch to 2; Eve receives Welcome and joins at epoch 2; Charlie catches up via `/mls/groups/room:2/commits`; all 4 members decrypt subsequent messages.
+  - CAS Epoch Conflict Resiliency: Concurrent or stale commits rejected with `409 EpochConflict` and client rebases seamlessly.
+
