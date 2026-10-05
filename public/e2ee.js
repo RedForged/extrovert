@@ -238,9 +238,16 @@
             'X-Requested-With': 'XMLHttpRequest'
           },
           body: usp.toString(),
-        }).then(function (r) { return r.json(); }).then(function (data) {
+        }).then(function (r) {
+          if (r.status === 426) {
+            alert('Extrovert has upgraded to modern MLS encryption (RFC 9420). Please refresh your browser tab to continue messaging.');
+            location.reload();
+            return { error: 'LegacyProtocolRetired' };
+          }
+          return r.json();
+        }).then(function (data) {
           if (data.error) {
-            alert('Send error: ' + data.error);
+            alert('Send error: ' + (data.message || data.error));
             input.disabled = false;
             return;
           }

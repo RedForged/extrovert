@@ -423,26 +423,35 @@ try { db.exec(`ALTER TABLE messages ADD COLUMN received_by_sender INTEGER`); } c
 try { db.exec(`ALTER TABLE messages ADD COLUMN received_by_recipient INTEGER`); } catch {}
 try { db.exec(`ALTER TABLE room_messages ADD COLUMN proto TEXT NOT NULL DEFAULT 'mls'`); } catch {}
 try { db.exec(`ALTER TABLE room_messages ADD COLUMN ciphertext TEXT`); } catch {}
+try { db.exec(`ALTER TABLE room_messages ADD COLUMN group_session_id TEXT`); } catch {}
 
-// --- Pure MLS Migration & Cleanup: purge old non-MLS messages and drop legacy Olm/Megolm tables ---
+// --- Pure MLS Migration & Cleanup: gated one-time schema migration ---
 try {
-  db.exec(`
-    DELETE FROM messages WHERE proto != 'mls' OR proto IS NULL;
-    DELETE FROM room_messages WHERE proto != 'mls' OR proto IS NULL;
-    DROP TABLE IF EXISTS olm_device_prekeys;
-    DROP TABLE IF EXISTS olm_prekeys;
-    DROP TABLE IF EXISTS olm_identity;
-    DROP TABLE IF EXISTS user_devices;
-    DROP TABLE IF EXISTS user_history_backup;
-    DROP TABLE IF EXISTS dm_rekey_requests;
-    DROP TABLE IF EXISTS room_group_sessions;
-    DROP TABLE IF EXISTS room_group_session_keys;
-    DROP TABLE IF EXISTS mls_traffic_stats;
-    DROP TABLE IF EXISTS mls_migration_telemetry;
-    DROP TABLE IF EXISTS mls_sunset_audit;
-  `);
+  db.exec(`CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT)`);
+  const done = db.prepare(`SELECT value FROM app_meta WHERE key = 'pure_mls_migration_v1'`).get();
+  if (!done) {
+    const delMsg = db.prepare(`DELETE FROM messages WHERE proto != 'mls' OR proto IS NULL`).run();
+    const delRoomMsg = db.prepare(`DELETE FROM room_messages WHERE proto != 'mls' OR proto IS NULL`).run();
+    if (delMsg.changes > 0 || delRoomMsg.changes > 0) {
+      console.log(`[MLS Migration] Purged ${delMsg.changes} legacy messages and ${delRoomMsg.changes} legacy room messages.`);
+    }
+    db.exec(`
+      DROP TABLE IF EXISTS olm_device_prekeys;
+      DROP TABLE IF EXISTS olm_prekeys;
+      DROP TABLE IF EXISTS olm_identity;
+      DROP TABLE IF EXISTS user_devices;
+      DROP TABLE IF EXISTS user_history_backup;
+      DROP TABLE IF EXISTS dm_rekey_requests;
+      DROP TABLE IF EXISTS room_group_sessions;
+      DROP TABLE IF EXISTS room_group_session_keys;
+      DROP TABLE IF EXISTS mls_traffic_stats;
+      DROP TABLE IF EXISTS mls_migration_telemetry;
+      DROP TABLE IF EXISTS mls_sunset_audit;
+    `);
+    db.prepare(`INSERT OR REPLACE INTO app_meta (key, value) VALUES ('pure_mls_migration_v1', '1')`).run();
+  }
 } catch (e) {
-  console.error('Migration cleanup error:', e);
+  console.error('[MLS Migration] Error executing one-time migration:', e);
 }
 
 // --- MLS (RFC 9420) Delivery Service & Authentication Service ---
@@ -2381,12 +2390,6 @@ function addRoomMember(roomId, userId, roleId) {
 }
 function removeRoomMember(roomId, userId) {
   db.prepare(`DELETE FROM room_members WHERE room_id = ? AND user_id = ?`).run(roomId, userId);
-  // Delete queued undelivered keys for former members in this room so superseded sessions are not blocked
-  db.prepare(`
-    DELETE FROM room_group_session_keys
-    WHERE recipient_id = ?
-      AND session_id IN (SELECT id FROM room_group_sessions WHERE room_id = ?)
-  `).run(userId, roomId);
 }
 function getRoomMembers(roomId) {
   return db.prepare(`SELECT u.id AS user_id, u.username, u.display_name, u.avatar, m.role_id, m.joined_at FROM room_members m INNER JOIN users u ON u.id = m.user_id WHERE m.room_id = ? ORDER BY m.joined_at`).all(roomId);

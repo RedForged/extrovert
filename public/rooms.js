@@ -38,8 +38,19 @@ document.addEventListener('DOMContentLoaded', function() {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf },
         body: params
-      }).then(function(r) { return r.json(); }).then(function(d) {
-        if (d.error) { input.disabled = false; return; }
+      }).then(function(r) {
+        if (r.status === 426) {
+          alert('Extrovert has upgraded to modern MLS encryption (RFC 9420). Please refresh your browser tab to continue messaging.');
+          location.reload();
+          return { error: 'LegacyProtocolRetired' };
+        }
+        return r.json();
+      }).then(function(d) {
+        if (d.error) {
+          alert('Send error: ' + (d.message || d.error));
+          input.disabled = false;
+          return;
+        }
         input.value = '';
         input.disabled = false;
         input.focus();
@@ -50,11 +61,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var e2ee = window.ExtrovertRoomE2EE;
     if (e2ee && e2ee.ready()) {
       e2ee.encryptMessage(body).then(function(r) {
-        if (r.proto === 'mls') {
-          doPost('proto=mls&ciphertext=' + encodeURIComponent(r.ciphertext));
-        } else {
-          doPost('proto=megolm&ciphertext=' + encodeURIComponent(r.ciphertext) + '&group_session_id=' + encodeURIComponent(r.group_session_id));
-        }
+        doPost('proto=mls&ciphertext=' + encodeURIComponent(r.ciphertext));
       }).catch(function() { input.disabled = false; });
       return;
     }
@@ -107,10 +114,18 @@ document.addEventListener('DOMContentLoaded', function() {
           method: 'POST',
           headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf },
           body: params
-        }).then(function(r) { return r.json(); }).then(function(d) {
+        }).then(function(r) {
+          if (r.status === 426) {
+            alert('Extrovert has upgraded to modern MLS encryption (RFC 9420). Please refresh your browser tab to continue messaging.');
+            location.reload();
+            return { error: 'LegacyProtocolRetired' };
+          }
+          return r.json();
+        }).then(function(d) {
           if (d.ok) {
             loadMessages(cid);
           } else {
+            alert('Edit error: ' + (d.message || d.error || 'Failed to edit'));
             cancelEditRoomMsg(msgDiv, saveBtn, newBody);
           }
         });
@@ -118,11 +133,7 @@ document.addEventListener('DOMContentLoaded', function() {
       var e2ee = window.ExtrovertRoomE2EE;
       if (e2ee && e2ee.ready()) {
         e2ee.encryptMessage(newBody).then(function(r) {
-          if (r.proto === 'mls') {
-            doEditPost('proto=mls&ciphertext=' + encodeURIComponent(r.ciphertext));
-          } else {
-            doEditPost('proto=megolm&ciphertext=' + encodeURIComponent(r.ciphertext) + '&group_session_id=' + encodeURIComponent(r.group_session_id));
-          }
+          doEditPost('proto=mls&ciphertext=' + encodeURIComponent(r.ciphertext));
         });
         return;
       }

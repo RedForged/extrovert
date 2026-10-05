@@ -1,5 +1,9 @@
 # Phase 6: Empirical Validation & Dual-Profile Pre-Decryption Benchmark Report
 
+> [!NOTE]
+> **Historical Reference Document**
+> This document describes the coexistence and pre-decryption evaluation conducted before the clean-break decision in commit `3a258f8`. Extrovert runs in 100% pure MLS (RFC 9420) mode; legacy Olm/Megolm code and dual-stack rollout benchmarking are preserved for historical reference only.
+
 > **Methodology & Provenance Notice:**
 > Empirical validation executed against a **realistic synthetic corpus** modeling real-world messaging workloads across two distinct parameter regimes: **Profile A (Realistic Baseline)** and **Profile B (Conservative Stress Test)** totaling 18,345 messages across 118 sessions. Production measurement pending active deployment fleet telemetry.
 

@@ -1,5 +1,9 @@
 # Extrovert MLS Migration Specification & Phase 0 RFC (RFC 9420)
 
+> [!NOTE]
+> **Historical Reference Document**
+> This document describes the dual-stack coexistence approach considered before the clean-break decision in commit `3a258f8`. Extrovert runs in 100% pure MLS (RFC 9420) mode; legacy Olm/Megolm code, multi-tier rollout machinery, and telemetry have been permanently decommissioned.
+
 ## 1. Executive Summary & Problem Definition
 
 Extrovert's current end-to-end encryption couples **Olm** (1:1 Double Ratchet) and **Megolm** (group ratchet). While functional for single-device 1:1 chats, multi-device usage and group rooms have resulted in compounding operational failure modes:

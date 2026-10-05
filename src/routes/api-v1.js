@@ -2767,7 +2767,7 @@ router.post('/rooms/:id/channels/:cid/messages', requireApiAuth('write'), requir
       return errorResponse(res, 400, 'Bad Request', 'Message is too long.');
     }
     if (rawProto !== 'mls') {
-      return errorResponse(res, 400, 'Bad Request', 'End-to-end encryption required. Room messages must be MLS-encrypted.');
+      return errorResponse(res, 426, 'Upgrade Required', 'LegacyProtocolRetired: Extrovert has upgraded to MLS encryption (RFC 9420). Please refresh your client.');
     }
   }
   const ciphertext = ciphertextRaw || null;
@@ -3283,7 +3283,7 @@ router.post('/conversations/:username/messages', requireApiAuth('write:direct'),
 
   if (!body.startsWith('/uploads/stickers/')) {
     if (rawProto !== 'mls') {
-      return errorResponse(res, 400, 'Bad Request', 'End-to-end encryption required. All messages must be MLS encrypted.');
+      return errorResponse(res, 426, 'Upgrade Required', 'LegacyProtocolRetired: Extrovert has upgraded to MLS encryption (RFC 9420). Please refresh your client.');
     }
   }
 

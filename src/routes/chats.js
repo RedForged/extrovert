@@ -355,7 +355,10 @@ router.post('/:username/send', (req, res) => {
   const isSticker = body.startsWith('/uploads/stickers/');
   if (body && !isSticker) {
     if (rawProto !== 'mls') {
-      return req.xhr ? res.json({ error: 'End-to-end encryption required. All messages must be MLS encrypted.' }) : res.status(400).send('MLS required');
+      return res.status(426).json({
+        error: 'LegacyProtocolRetired',
+        message: 'Extrovert now uses pure MLS encryption (RFC 9420). Please refresh your browser tab to continue messaging.'
+      });
     }
   }
   if (body) {

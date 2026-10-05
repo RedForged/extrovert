@@ -395,7 +395,10 @@ router.post('/:id/channels/:cid/send', (req, res) => {
       return res.status(400).json({ error: 'Message is too long.' });
     }
     if (rawProto !== 'mls') {
-      return res.status(400).json({ error: 'End-to-end encryption required. Room messages must be MLS-encrypted.' });
+      return res.status(426).json({
+        error: 'LegacyProtocolRetired',
+        message: 'Extrovert now uses pure MLS encryption (RFC 9420). Please refresh your browser tab to continue messaging.'
+      });
     }
   }
   const ciphertext = ciphertextRaw || null;
@@ -442,7 +445,10 @@ router.post('/:id/channels/:cid/messages/:mid/edit', (req, res) => {
       return res.status(400).json({ error: 'Message is too long.' });
     }
     if (rawProto !== 'mls') {
-      return res.status(400).json({ error: 'End-to-end encryption required. Room messages must be MLS-encrypted.' });
+      return res.status(426).json({
+        error: 'LegacyProtocolRetired',
+        message: 'Extrovert now uses pure MLS encryption (RFC 9420). Please refresh your browser tab to continue messaging.'
+      });
     }
   }
   const ciphertext = ciphertextRaw || null;
