@@ -34,6 +34,7 @@ const {
   recordMigrationTelemetry,
   getFleetMigrationSummary,
   getLegacyTrafficSunsetStatus,
+  isLegacyE2eeEnabled,
 } = require('../db');
 const { bearerOrSession } = require('../bearer-auth');
 
@@ -464,7 +465,7 @@ router.get('/migration/messages', requireAuth, (req, res) => {
 // 15. Migration Status Telemetry (Privacy-Preserving Bucket Reporting)
 router.post('/migration/status', requireAuth, (req, res) => {
   const user = res.locals.currentUser;
-  const { has_completed_full_scan, total_migrated, unrecoverable_count_bucket } = req.body || {};
+  const { has_completed_full_scan, total_migrated, unrecoverable_count_bucket, blocked_by_policy } = req.body || {};
 
   const allowedBuckets = ['0', '1-10', '11-100', '100+'];
   if (!unrecoverable_count_bucket || !allowedBuckets.includes(unrecoverable_count_bucket)) {
@@ -475,21 +476,42 @@ router.post('/migration/status', requireAuth, (req, res) => {
     user.id,
     Boolean(has_completed_full_scan),
     parseInt(total_migrated, 10) || 0,
-    unrecoverable_count_bucket
+    unrecoverable_count_bucket,
+    Boolean(blocked_by_policy)
   );
 
   res.json({ ok: true });
 });
 
-// 16. Fleet Migration Summary & Traffic Sunset Criteria Status
+// 16. Fleet Migration Summary & Multi-Criteria Status
 router.get('/migration/fleet-summary', requireAuth, (req, res) => {
   const fleetSummary = getFleetMigrationSummary();
-  const sunsetStatus = getLegacyTrafficSunsetStatus();
 
   res.json({
     ok: true,
-    fleet_summary: fleetSummary,
-    sunset_status: sunsetStatus
+    traffic_sunset: fleetSummary.traffic_sunset,
+    fleet_migration: fleetSummary.fleet_migration,
+    time_window: fleetSummary.time_window,
+    all_criteria_met: fleetSummary.all_criteria_met,
+    force_sunset_active: fleetSummary.force_sunset_active
+  });
+});
+
+// 17. Client MLS & Sunset Configuration Transport
+router.get('/config', (req, res) => {
+  const legacyEnabled = isLegacyE2eeEnabled();
+  const launchDateStr = process.env.MLS_MIGRATION_START_DATE || '2026-10-05T00:00:00.000Z';
+  const launchTs = new Date(launchDateStr).getTime();
+  const cutoffDateStr = process.env.MLS_SUNSET_DATE || new Date(launchTs + (365 * 86400 * 1000)).toISOString();
+  const cutoffTs = new Date(cutoffDateStr).getTime();
+  const daysRemaining = Math.max(0, Math.ceil((cutoffTs - Date.now()) / (86400 * 1000)));
+
+  res.json({
+    ok: true,
+    legacy_e2ee_enabled: legacyEnabled,
+    migration_start_date: launchDateStr,
+    sunset_cutoff_date: cutoffDateStr,
+    days_remaining_to_cutoff: daysRemaining
   });
 });
 

@@ -8,6 +8,7 @@
   <link rel="manifest" href="/static/manifest.webmanifest">
   <meta name="csrf-token" content="<%= csrfToken %>">
   <% if (typeof currentUser !== 'undefined' && currentUser && currentUser.id) { %><meta name="current-user-id" content="<%= currentUser.id %>"><meta name="current-username" content="<%= currentUser.username %>"><% } %>
+  <script>window.ExtrovertConfig = window.ExtrovertConfig || {}; window.ExtrovertConfig.legacyE2eeEnabled = <%= (typeof legacyE2eeEnabled !== 'undefined' ? legacyE2eeEnabled : true) %>;</script>
   <script src="/static/lib/olm.js?v=1"></script>
   <script src="/static/e2ee.js?v=29"></script>
   <script src="/static/lib/mls.js?v=1"></script>

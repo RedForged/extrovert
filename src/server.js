@@ -250,6 +250,7 @@ app.use((req, res, next) => {
     console.log('CSRF: generated new token for session', req.sessionID);
   }
   res.locals.csrfToken = req.session.csrfToken;
+  res.locals.legacyE2eeEnabled = db.isLegacyE2eeEnabled ? db.isLegacyE2eeEnabled() : true;
 
   // Skip CSRF validation for API routes (Bearer token auth) and multipart forms.
   if (req.path.startsWith('/api/')) return next();
@@ -471,6 +472,19 @@ app.use((err, req, res, next) => {
 
 const server = app.listen(PORT, HOST, () => {
   console.log(`Extrovert is running on http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
+
+  if (process.env.MLS_FORCE_SUNSET === 'true') {
+    if (process.env.MLS_FORCE_SUNSET_ACK === 'I_ACCEPT_DATA_LOSS') {
+      const summary = db.getFleetMigrationSummary ? db.getFleetMigrationSummary() : { fleet_migration: { fleet_coverage_pct: 0 } };
+      const pct = (summary.fleet_migration && summary.fleet_migration.fleet_coverage_pct) || 0;
+      console.error(`[CRITICAL] [MLS Sunset]: MLS_FORCE_SUNSET engaged with MLS_FORCE_SUNSET_ACK="I_ACCEPT_DATA_LOSS". Legacy Olm/Megolm E2EE is forcefully disabled. Fleet migration coverage at engagement: ${pct}%. Data loss may occur for unmigrated clients.`);
+      if (db.recordSunsetAudit) {
+        db.recordSunsetAudit('force_sunset_engaged', pct, 'OPERATOR_STARTUP', '127.0.0.1');
+      }
+    } else {
+      console.warn('[WARNING] [MLS Sunset]: MLS_FORCE_SUNSET=true was specified, but MLS_FORCE_SUNSET_ACK="I_ACCEPT_DATA_LOSS" was NOT provided. Force sunset is INACTIVE to prevent unintentional data loss.');
+    }
+  }
 });
 
 // Bound slowloris / header-flood exposure.

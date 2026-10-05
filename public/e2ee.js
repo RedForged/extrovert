@@ -39,7 +39,13 @@
   var NATIVE_CFG = window.ExtrovertE2EEConfig || null;
   // Phase 5 Feature Flag: Legacy E2EE (Olm/Megolm) enabled by default.
   // When false, Olm crypto initialization is skipped and legacy UI is suppressed.
-  var LEGACY_ENABLED = (typeof window !== 'undefined' && window.ExtrovertConfig && window.ExtrovertConfig.legacyE2eeEnabled === false) ? false : true;
+  function isLegacyEnabled() {
+    if (typeof window !== 'undefined' && window.ExtrovertConfig && window.ExtrovertConfig.legacyE2eeEnabled === false) {
+      return false;
+    }
+    return true;
+  }
+  var olmPurged = false;
 
   // How often to poll for a peer's ratchet-reset request while an outbound
   // session is being reused (kept separate from the slower identity check).
@@ -419,7 +425,11 @@
 
   // ---- Olm ----
   function initOlm() {
-    if (!LEGACY_ENABLED) {
+    if (olmPurged) {
+      olmInitPromise = Promise.resolve(false);
+      return olmInitPromise;
+    }
+    if (!isLegacyEnabled()) {
       olmInitPromise = Promise.resolve(false);
       return olmInitPromise;
     }
@@ -438,14 +448,21 @@
   }
 
   function loadAccountFromStorage() {
-    return idbGet(STORE_OLM, acctKey()).then(function (enc) {
-      if (!enc) return null;
-      return decryptWithKd(enc).then(function (pickle) {
-        account = new Olm.Account();
-        account.unpickle(PICKLE_KEY, pickle);
-        var k = JSON.parse(account.identity_keys());
-        myIdKeys = { curve25519: k.curve25519, ed25519: k.ed25519 };
-        return account;
+    return idbGet(STORE_SECURE, 'olm_purged_at').then(function (purged) {
+      if (purged) {
+        olmPurged = true;
+        account = null;
+        return null;
+      }
+      return idbGet(STORE_OLM, acctKey()).then(function (enc) {
+        if (!enc) return null;
+        return decryptWithKd(enc).then(function (pickle) {
+          account = new Olm.Account();
+          account.unpickle(PICKLE_KEY, pickle);
+          var k = JSON.parse(account.identity_keys());
+          myIdKeys = { curve25519: k.curve25519, ed25519: k.ed25519 };
+          return account;
+        });
       });
     });
   }
@@ -1896,6 +1913,9 @@
   }
 
   function decryptOlm(msg, isOwn, otherIdStr, theirCurve25519) {
+    if (olmPurged) {
+      return Promise.resolve('[Legacy message — encryption retired]');
+    }
     if (isOwn) {
       return getOrCreateDeviceId().then(function (myDevId) {
         var env = null;
@@ -2495,6 +2515,9 @@
   }
 
   function decryptRoomMessage(roomId, senderId, ciphertext, groupSessionId) {
+    if (olmPurged) {
+      return Promise.resolve('[Legacy message — encryption retired]');
+    }
     var lockKey = 'groupIn:' + roomId + ':' + senderId + ':' + groupSessionId;
     return withSessionLock(lockKey, function () {
       return loadGroupInbound(roomId, senderId, groupSessionId).then(function (ig) {
@@ -3873,6 +3896,12 @@
     return getOrCreateDeviceKey().then(function () {
       return getMigrationCheckpoint();
     }).then(function (cp) {
+      if (!isLegacyEnabled() && !cp.hasCompletedFullScan) {
+        var err = new Error('Legacy migration blocked: server has deactivated legacy E2EE before full scan completed.');
+        err.code = 'BLOCKED_BY_POLICY';
+        err.blockedByPolicy = true;
+        return Promise.reject(err);
+      }
       if (cp.done) return { done: true, checkpoint: cp };
 
       var url = '/mls/migration/messages?dm_cursor=' + encodeURIComponent(cp.dmCursor || 0) +
@@ -4082,33 +4111,41 @@
 
   function startHistoricalMigration(options) {
     options = options || {};
-    if (migrationRunning && !options.force) {
-      return Promise.resolve({ running: true });
-    }
-    migrationRunning = true;
+    return getMigrationCheckpoint().then(function (cp) {
+      if (!isLegacyEnabled() && !cp.hasCompletedFullScan) {
+        var err = new Error('Legacy migration blocked: server has deactivated legacy E2EE before full scan completed.');
+        err.code = 'BLOCKED_BY_POLICY';
+        err.blockedByPolicy = true;
+        return Promise.reject(err);
+      }
+      if (migrationRunning && !options.force) {
+        return Promise.resolve({ running: true });
+      }
+      migrationRunning = true;
 
-    function step() {
-      return runMigrationBatch(options).then(function (batchResult) {
-        if (batchResult.done) {
-          migrationRunning = false;
-          return batchResult;
-        }
-        if (options.singleBatch) {
-          migrationRunning = false;
-          return batchResult;
-        }
-        return new Promise(function (resolve, reject) {
-          scheduleIdle(function () {
-            step().then(resolve, reject);
+      function step() {
+        return runMigrationBatch(options).then(function (batchResult) {
+          if (batchResult.done) {
+            migrationRunning = false;
+            return batchResult;
+          }
+          if (options.singleBatch) {
+            migrationRunning = false;
+            return batchResult;
+          }
+          return new Promise(function (resolve, reject) {
+            scheduleIdle(function () {
+              step().then(resolve, reject);
+            });
           });
+        }).catch(function (err) {
+          migrationRunning = false;
+          throw err;
         });
-      }).catch(function (err) {
-        migrationRunning = false;
-        throw err;
-      });
-    }
+      }
 
-    return step();
+      return step();
+    });
   }
 
   // ---- Phase 4: Data Export Semantics (GDPR Article 20 / Portable Archive) ----
@@ -4274,21 +4311,28 @@
     return Promise.all([
       getMigrationCheckpoint(),
       idbGet(STORE_SECURE, 'last_legacy_activity_at'),
-      idbGet(STORE_SECURE, 'first_mls_session_at')
+      idbGet(STORE_SECURE, 'first_mls_session_at'),
+      idbGet(STORE_SECURE, 'olm_purged_at')
     ]).then(function (res) {
       var cp = res[0] || {};
       var lastLegacy = Number(res[1]) || 0;
       var firstMls = Number(res[2]) || 0;
+      var purgedAt = Number(res[3]) || 0;
+      if (purgedAt) olmPurged = true;
       var now = Date.now();
       var anchor = Math.max(firstMls, lastLegacy);
       var RETENTION_MS = 180 * 86400 * 1000;
       var elapsed = anchor > 0 ? (now - anchor) : 0;
       var timeEligible = (anchor > 0 && elapsed >= RETENTION_MS);
       var scanEligible = (cp.hasCompletedFullScan === true);
-      var purgeEligible = timeEligible && scanEligible;
+      var purgeEligible = timeEligible && scanEligible && !purgedAt;
 
       var state;
-      if (!firstMls) {
+      if (purgedAt) {
+        state = 'OlmPurged';
+      } else if (!isLegacyEnabled() && !cp.hasCompletedFullScan) {
+        state = 'BlockedByServerPolicy';
+      } else if (!firstMls) {
         state = 'LegacyActive';
       } else if (!cp.hasCompletedFullScan) {
         state = 'CoexistenceAndMigrating';
@@ -4305,7 +4349,8 @@
         anchorAt: anchor,
         elapsedMs: elapsed,
         hasCompletedFullScan: !!cp.hasCompletedFullScan,
-        purgeEligible: purgeEligible
+        purgeEligible: purgeEligible,
+        olmPurgedAt: purgedAt || null
       };
     });
   }
@@ -4313,6 +4358,33 @@
   function canPurgeLegacySessions() {
     return getLegacyLifecycleStatus().then(function (status) {
       return status.purgeEligible;
+    });
+  }
+
+  function purgeLegacySessions() {
+    return getLegacyLifecycleStatus().then(function (status) {
+      if (!status.purgeEligible && status.state !== 'PurgeEligible') {
+        return Promise.reject(new Error('Cannot purge legacy sessions: retention criteria not met (180 days + full scan)'));
+      }
+      return purgeOlmSessions().then(function () {
+        if (!USE_FILE_STORE) {
+          return openDB().then(function (db) {
+            return new Promise(function (resolve, reject) {
+              var tx = db.transaction(STORE_OLM, 'readwrite');
+              var req = tx.objectStore(STORE_OLM).clear();
+              req.onsuccess = function () { resolve(); };
+              req.onerror = function () { reject(req.error); };
+            });
+          });
+        }
+      }).then(function () {
+        account = null;
+        selfOutbound = null;
+        selfInbound = null;
+        sessions = {};
+        olmPurged = true;
+        return idbSet(STORE_SECURE, 'olm_purged_at', Date.now());
+      });
     });
   }
 
@@ -4329,7 +4401,8 @@
         body: JSON.stringify({
           has_completed_full_scan: !!cp.hasCompletedFullScan,
           total_migrated: cp.totalMigrated || 0,
-          unrecoverable_count_bucket: bucket
+          unrecoverable_count_bucket: bucket,
+          blocked_by_policy: (!isLegacyEnabled() && !cp.hasCompletedFullScan)
         })
       }).then(function (r) { return r.json(); });
     });
@@ -4387,7 +4460,9 @@
     touchLegacyActivity: touchLegacyActivity,
     getLegacyLifecycleStatus: getLegacyLifecycleStatus,
     canPurgeLegacySessions: canPurgeLegacySessions,
+    purgeLegacySessions: purgeLegacySessions,
     reportMigrationStatus: reportMigrationStatus,
-    legacyEnabled: function () { return LEGACY_ENABLED; },
+    legacyEnabled: function () { return isLegacyEnabled(); },
+    isOlmPurged: function () { return olmPurged; },
   };
 })();

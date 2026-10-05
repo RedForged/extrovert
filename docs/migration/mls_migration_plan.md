@@ -204,28 +204,27 @@ Extrovert **does not use a server-side DS leaf**. The server never participates 
         │
         │ (First successful MLS session registered)
         ▼
-  [CoexistenceAndMigrating] ◄────────────────────────────────┐
-        │                                                    │
-        │ (Migration worker reaches server tip;              │ Legacy message
-        │  hasCompletedFullScan = true)                      │ received or sent
-        ▼                                                    │ (resets t_lastLegacyActivity)
-  [MigrationComplete]                                        │
-        │                                                    │
-        │ (Local vault secured under Kd;                     │
-        │  enter background retention window)                │
-        ▼                                                    │
-  [RetentionWindow] ─────────────────────────────────────────┘
+  [CoexistenceAndMigrating]
         │
-        │ Gate 1: now - max(t_firstMLS, t_lastLegacyActivity) >= 180 days
-        │  AND
-        │ Gate 2: hasCompletedFullScan === true
+        │ (Migration worker reaches server tip:
+        │  res.has_more === false -> hasCompletedFullScan = true)
         ▼
-  [PurgeEligible]
+  [RetentionWindow] ◄────────────────────────────────────────┐
+        │                                                    │
+        │                                                    │ Inbound/outbound legacy traffic
+        │ Gate 1: now - max(t_firstMLS, t_lastLegacy) >= 180d│ resets t_lastLegacyActivity;
+        │  AND                                               │ extends clock, stays in RetentionWindow
+        │ Gate 2: hasCompletedFullScan === true              │ (or reverts PurgeEligible -> RetentionWindow)
+        ▼                                                    │
+  [PurgeEligible] ───────────────────────────────────────────┘
         │
         │ (Automated background cleanup or user clicks "Purge Legacy Sessions Now")
         ▼
   [OlmPurged (MLS-Only Vault)]
 ```
+- **Terminal State Behavior (`OlmPurged`):**
+  - In `OlmPurged`, inbound messages with `proto: 'olm'` or `proto: 'megolm'` are undecryptable.
+  - The client displays `[Legacy message — encryption retired]` and records a telemetry event. No attempt is made to reload `olm.js` or reconstruct legacy sessions.
 - **User-Visible Signal:**
   - Status banner in Settings > Security > Encryption:
     `"Legacy Encryption (Olm/Megolm): Archived. Complete session retirement scheduled in X days."`
@@ -260,28 +259,52 @@ Extrovert **does not use a server-side DS leaf**. The server never participates 
   - Preserves full auditability, timeline chronology, and regulatory compliance.
 
 ### 7.6 Server-Side Sunset Sequence & Privacy-Preserving Telemetry
-- **Decoupled Client/Server Decommissioning:**
-  - Client-side code operates under a per-device model; clients purge when eligible.
-  - Server-side legacy endpoints (`POST /chats/:id/messages` accepting `proto: 'olm'`, Megolm session claims, `room_group_sessions` tables) MUST remain operational until the fleet has transitioned.
-- **Traffic Sunset Criteria (Criterion 2):**
-  - Server records daily rolling message counts by protocol (`proto: 'mls'`, `proto: 'olm'`, `proto: 'megolm'`).
-  - Sunset clock triggers when legacy traffic registers 0 messages for 30 consecutive days.
-- **Hard Server-Side Cutoff Date (Phase 6):**
-  - Exactly 365 days post-migration launch (180 days nominal retention + 185 days offline grace window), the server enforces a hard cutoff:
-    1. Incoming `proto: 'olm'` and `proto: 'megolm'` submissions return `410 Gone` (`UpgradeRequired`).
+- **Independence of the Two Clocks:**
+  - The per-device 180-day retention clock and the server-global 365-day cutoff are independent. A device is purge-eligible based on its own `ClockOrigin`; the server rejects new legacy traffic based on `MLS_MIGRATION_START_DATE`.
+  - *Worst-case device schedule:* 365 days (server cutoff stops clock resets) + 180 days (retention window) = **545 days** before final local purge.
+- **Server-Side Hard Cutoff Date (Phase 6):**
+  - Exactly 365 days post-migration launch (`MLS_MIGRATION_START_DATE` env var, falling back to database `mls_devices` creation timestamp):
+    1. Incoming `proto: 'olm'` and `proto: 'megolm'` submissions are rejected with `410 Gone` (`{ error: "Protocol deprecated: MLS upgrade required" }`).
     2. Legacy session claim and prekey endpoints are retired.
-    3. Server-side legacy tables and handlers are dropped in Phase 6.
-- **Privacy-Preserving Migration Telemetry (`POST /mls/migration/status`):**
-  - Clients periodically report progress on an opt-in basis to inform admin readiness:
+- **Indefinite Legacy Row Retention:**
+  - Historical rows in `messages` and `room_messages` with `proto IN ('olm', 'megolm', 'rsa')` are **never deleted from the database**.
+  - Late or returning offline devices can still invoke `GET /mls/migration/messages` to pre-decrypt their history into their local vault using their retained device keys. Storage growth is strictly zero after Day 365.
+- **Config Transport (`legacyE2eeEnabled`):**
+  - Web clients receive the flag via SSR injection in `src/views/partials/header.ejs`: `<script>window.ExtrovertConfig = window.ExtrovertConfig || {}; window.ExtrovertConfig.legacyE2eeEnabled = <%= serverLegacyEnabled %>;</script>`.
+  - Native/programmatic clients query `GET /mls/config` on startup.
+- **Operator Safety & Audit for `MLS_FORCE_SUNSET`:**
+  - Forcing legacy deactivation when criteria are not met requires both `MLS_FORCE_SUNSET=true` AND `MLS_FORCE_SUNSET_ACK="I_ACCEPT_DATA_LOSS"`.
+  - Server logs at `CRITICAL`, records an audit event in `mls_sunset_audit` table, and exposes `"force_sunset_active": true` in `GET /mls/migration/fleet-summary`.
+- **Multi-Criteria Fleet Telemetry (`GET /mls/migration/fleet-summary`):**
+  - Returns explicit sub-criteria to eliminate operator footguns:
     ```json
     {
-      "has_completed_full_scan": true,
-      "total_migrated": 1450,
-      "unrecoverable_count_bucket": "0"
+      "traffic_sunset": {
+        "consecutive_zero_legacy_days": 32,
+        "required_days": 30,
+        "ready": true
+      },
+      "fleet_migration": {
+        "total_users": 100,
+        "migrated_users": 50,
+        "fleet_coverage_pct": 50,
+        "required_coverage_pct": 100,
+        "ready": false
+      },
+      "time_window": {
+        "migration_start_date": "2026-10-05T00:00:00.000Z",
+        "sunset_cutoff_date": "2027-10-05T00:00:00.000Z",
+        "days_elapsed": 200,
+        "days_required": 180,
+        "ready": true
+      },
+      "all_criteria_met": false,
+      "force_sunset_active": false
     }
     ```
-  - `unrecoverable_count_bucket` uses coarse buckets (`"0"`, `"1-10"`, `"11-100"`, `"100+"`) to prevent deanonymizing user session health or device history.
-  - Device IDs are omitted; reports are recorded per-user or aggregated anonymously to compute fleet readiness: `"X% of active users have completed vault migration"`.
+  - `all_criteria_met` requires `traffic_sunset.ready && fleet_migration.ready && time_window.ready`.
+- **Privacy-Preserving Telemetry (`POST /mls/migration/status`):**
+  - Clients report coarse buckets (`"0"`, `"1-10"`, `"11-100"`, `"100+"`) and aggregated totals. Device IDs are omitted; reports are stored per-user.
 
 ---
 

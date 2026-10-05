@@ -755,9 +755,23 @@ try { db.exec(`
     has_completed_full_scan     INTEGER NOT NULL DEFAULT 0,
     total_migrated              INTEGER NOT NULL DEFAULT 0,
     unrecoverable_bucket        TEXT NOT NULL DEFAULT '0',
+    blocked_by_policy           INTEGER NOT NULL DEFAULT 0,
     reported_at                 INTEGER NOT NULL
   );
 `); } catch {}
+try { db.exec(`ALTER TABLE mls_migration_telemetry ADD COLUMN blocked_by_policy INTEGER NOT NULL DEFAULT 0;`); } catch {}
+
+try { db.exec(`
+  CREATE TABLE IF NOT EXISTS mls_sunset_audit (
+    id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+    event                       TEXT NOT NULL,
+    timestamp                   INTEGER NOT NULL,
+    coverage_pct                REAL NOT NULL,
+    acknowledged_by             TEXT NOT NULL,
+    operator_ip                 TEXT
+  );
+`); } catch {}
+try { db.exec(`ALTER TABLE mls_sunset_audit ADD COLUMN operator_ip TEXT;`); } catch {}
 // Fix stale referred_by links for users whose referrer no longer has a referral code.
 db.prepare(`UPDATE users SET referred_by = NULL WHERE referred_by IS NOT NULL AND referred_by IN (SELECT id FROM users WHERE referral_code IS NULL)`).run();
 // Ensure avatar paths have /uploads/ prefix for template rendering.
@@ -2318,18 +2332,32 @@ function getLegacyTrafficSunsetStatus() {
   };
 }
 
-function recordMigrationTelemetry(userId, hasCompletedFullScan, totalMigrated, unrecoverableBucket) {
+function recordMigrationTelemetry(userId, hasCompletedFullScan, totalMigrated, unrecoverableBucket, blockedByPolicy) {
   const allowed = ['0', '1-10', '11-100', '100+'];
   const bucket = allowed.includes(unrecoverableBucket) ? unrecoverableBucket : '0';
   db.prepare(`
-    INSERT INTO mls_migration_telemetry (user_id, has_completed_full_scan, total_migrated, unrecoverable_bucket, reported_at)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO mls_migration_telemetry (user_id, has_completed_full_scan, total_migrated, unrecoverable_bucket, blocked_by_policy, reported_at)
+    VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id) DO UPDATE SET
       has_completed_full_scan = excluded.has_completed_full_scan,
       total_migrated = excluded.total_migrated,
       unrecoverable_bucket = excluded.unrecoverable_bucket,
+      blocked_by_policy = excluded.blocked_by_policy,
       reported_at = excluded.reported_at
-  `).run(userId, hasCompletedFullScan ? 1 : 0, totalMigrated || 0, bucket, Date.now());
+  `).run(userId, hasCompletedFullScan ? 1 : 0, totalMigrated || 0, bucket, blockedByPolicy ? 1 : 0, Date.now());
+}
+
+let lastAuditTs = 0;
+function recordSunsetAudit(event, coveragePct, acknowledgedBy, operatorIp) {
+  const now = Date.now();
+  if (now - lastAuditTs < 5000) return;
+  lastAuditTs = now;
+  try {
+    db.prepare(`
+      INSERT INTO mls_sunset_audit (event, timestamp, coverage_pct, acknowledged_by, operator_ip)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(event, now, coveragePct || 0, acknowledgedBy || 'SYSTEM', operatorIp || '127.0.0.1');
+  } catch (_) {}
 }
 
 function getFleetMigrationSummary() {
@@ -2341,6 +2369,11 @@ function getFleetMigrationSummary() {
   `).get();
   const migratedUsers = migratedUsersRow ? migratedUsersRow.migrated : 0;
 
+  const blockedUsersRow = db.prepare(`
+    SELECT COUNT(*) AS blocked FROM mls_migration_telemetry WHERE blocked_by_policy = 1
+  `).get();
+  const blockedUsers = blockedUsersRow ? blockedUsersRow.blocked : 0;
+
   const pct = totalUsers > 0 ? Math.round((migratedUsers / totalUsers) * 100) : 0;
 
   const buckets = db.prepare(`
@@ -2349,12 +2382,66 @@ function getFleetMigrationSummary() {
     GROUP BY unrecoverable_bucket
   `).all();
 
+  // 1. Traffic Sunset Sub-Criterion (30 consecutive zero legacy days)
+  const sunsetStatus = getLegacyTrafficSunsetStatus();
+  const trafficReady = Boolean(sunsetStatus.sunset_eligible);
+
+  // 2. Fleet Migration Sub-Criterion (100% active users migrated)
+  const fleetReady = (totalUsers > 0 && migratedUsers >= totalUsers);
+
+  // 3. Time Window Sub-Criterion (180 days elapsed since migration launch)
+  const launchDateStr = process.env.MLS_MIGRATION_START_DATE || '2026-10-05T00:00:00.000Z';
+  const launchTs = new Date(launchDateStr).getTime();
+  const cutoffDateStr = process.env.MLS_SUNSET_DATE || new Date(launchTs + (365 * 86400 * 1000)).toISOString();
+  const elapsedDays = Math.max(0, Math.floor((Date.now() - launchTs) / (86400 * 1000)));
+  const timeReady = (elapsedDays >= 180);
+
+  // Force Sunset override check (requires both flag and explicit acknowledgment)
+  const forceSunset = (process.env.MLS_FORCE_SUNSET === 'true' && process.env.MLS_FORCE_SUNSET_ACK === 'I_ACCEPT_DATA_LOSS');
+
+  const allCriteriaMet = (trafficReady && fleetReady && timeReady) || forceSunset;
+
   return {
-    total_users: totalUsers,
-    migrated_users: migratedUsers,
-    fleet_coverage_pct: pct,
-    buckets: buckets
+    traffic_sunset: {
+      consecutive_zero_legacy_days: sunsetStatus.consecutive_zero_legacy_days,
+      required_days: 30,
+      ready: trafficReady
+    },
+    fleet_migration: {
+      total_users: totalUsers,
+      migrated_users: migratedUsers,
+      blocked_users: blockedUsers,
+      fleet_coverage_pct: pct,
+      required_coverage_pct: 100,
+      ready: fleetReady,
+      buckets: buckets
+    },
+    time_window: {
+      migration_start_date: launchDateStr,
+      sunset_cutoff_date: cutoffDateStr,
+      days_elapsed: elapsedDays,
+      days_required: 180,
+      ready: timeReady
+    },
+    all_criteria_met: allCriteriaMet,
+    force_sunset_active: forceSunset
   };
+}
+
+function isLegacyE2eeEnabled(operatorIp) {
+  if (process.env.E2EE_LEGACY_ENABLED === 'false') {
+    const summary = getFleetMigrationSummary();
+    if (summary.force_sunset_active) {
+      recordSunsetAudit('force_sunset_engaged', summary.fleet_migration.fleet_coverage_pct, process.env.MLS_FORCE_SUNSET_ACK, operatorIp);
+      return false;
+    }
+    if (!summary.all_criteria_met) {
+      // Safety guard: criteria not met and not force sunset acknowledged -> keep legacy enabled
+      return true;
+    }
+    return false;
+  }
+  return true;
 }
 
 // ---------- two-factor authentication (TOTP / recovery codes) ----------
@@ -3574,4 +3661,5 @@ module.exports = {
   getHistoricalDmMessagesForMigration, getHistoricalRoomMessagesForMigration,
   recordMessageTraffic, getLegacyTrafficSunsetStatus,
   recordMigrationTelemetry, getFleetMigrationSummary,
+  recordSunsetAudit, isLegacyE2eeEnabled,
 };

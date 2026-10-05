@@ -102,6 +102,38 @@ global.indexedDB = {
                   if (tx.oncomplete) tx.oncomplete();
                 });
                 return r;
+              },
+              clear: function () {
+                const r = {};
+                setImmediate(function () {
+                  map.clear();
+                  if (r.onsuccess) r.onsuccess({ target: r });
+                  if (tx.oncomplete) tx.oncomplete();
+                });
+                return r;
+              },
+              openCursor: function () {
+                const r = {};
+                const keys = Array.from(map.keys());
+                let idx = 0;
+                function advance() {
+                  if (idx >= keys.length) {
+                    r.result = null;
+                    if (r.onsuccess) r.onsuccess({ target: r });
+                    if (tx.oncomplete) tx.oncomplete();
+                    return;
+                  }
+                  const k = keys[idx++];
+                  r.result = {
+                    key: k,
+                    value: map.get(k),
+                    delete: function () { map.delete(k); },
+                    continue: function () { setImmediate(advance); }
+                  };
+                  if (r.onsuccess) r.onsuccess({ target: r });
+                }
+                setImmediate(advance);
+                return r;
               }
             };
           }
@@ -169,12 +201,12 @@ async function run() {
 
   // Verify disabling flag skips Olm
   window.ExtrovertConfig = { legacyE2eeEnabled: false };
-  // Reload script in sub-context or test helper
-  const disabledInit = await (function () {
-    const LEGACY_ENABLED = false;
-    if (!LEGACY_ENABLED) return Promise.resolve(false);
-  })();
+  assert.strictEqual(window.ExtrovertE2EE.legacyEnabled(), false);
+  const disabledInit = await window.ExtrovertE2EE.initOlm();
   assert.strictEqual(disabledInit, false, 'initOlm must resolve false immediately when legacy flag is false');
+  // Restore default enabled
+  window.ExtrovertConfig = { legacyE2eeEnabled: true };
+  assert.strictEqual(window.ExtrovertE2EE.legacyEnabled(), true);
   console.log('   [OK] Feature flag legacyEnabled validated (default true; kill-switch functional)');
 
   // -------------------------------------------------------------
@@ -243,6 +275,22 @@ async function run() {
   assert.strictEqual(status.purgeEligible, true, 'Device meeting both time anchor and migration scan is PurgeEligible');
   console.log('   [OK] State 4: PurgeEligible verified (Gate 1 time + Gate 2 migration complete)');
 
+  // Case G: Purge Legacy Sessions -> Terminal State OlmPurged!
+  await window.ExtrovertE2EE.purgeLegacySessions();
+  status = await window.ExtrovertE2EE.getLegacyLifecycleStatus();
+  assert.strictEqual(status.state, 'OlmPurged', 'Must transition to terminal OlmPurged state after purge');
+  assert.ok(status.olmPurgedAt > 0, 'olmPurgedAt must be recorded in secure store');
+  assert.strictEqual(window.ExtrovertE2EE.isOlmPurged(), true);
+
+  // Terminal state behavior: inbound legacy messages return placeholder and never reload WASM
+  const olmPlaceholder = await window.ExtrovertE2EE.decryptDm({ body: '{"v":1,"ciphertext":"abc"}' }, false, '2', 'testkey');
+  assert.strictEqual(olmPlaceholder, '[Legacy message — encryption retired]', 'In OlmPurged, legacy DM decrypt must return retired placeholder');
+  const megolmPlaceholder = await window.ExtrovertE2EE.decryptRoomMessage('room-1', '2', 'ciphertext-xyz', 'group-sess-1');
+  assert.strictEqual(megolmPlaceholder, '[Legacy message — encryption retired]', 'In OlmPurged, legacy room decrypt must return retired placeholder');
+  const olmInitRet = await window.ExtrovertE2EE.initOlm();
+  assert.strictEqual(olmInitRet, false, 'In OlmPurged, initOlm must not attempt to reload WASM');
+  console.log('   [OK] State 5: Terminal OlmPurged verified (undecryptable legacy shows "[Legacy message — encryption retired]")');
+
   // -------------------------------------------------------------
   // Test 3: Privacy-Preserving Migration Telemetry
   // -------------------------------------------------------------
@@ -267,7 +315,8 @@ async function run() {
     body: JSON.stringify({
       has_completed_full_scan: true,
       total_migrated: 250,
-      unrecoverable_count_bucket: '1-10'
+      unrecoverable_count_bucket: '1-10',
+      blocked_by_policy: false
     })
   });
   assert.strictEqual(goodRes.status, 200, 'Valid bucket telemetry must be accepted with 200');
@@ -310,15 +359,98 @@ async function run() {
   assert.strictEqual(sunsetCheck.sunset_eligible, true, 'Criterion 2 must be satisfied after 30 days zero legacy');
   console.log(`   [OK] Traffic Sunset Criteria: ${sunsetCheck.consecutive_zero_legacy_days} consecutive zero-legacy days verified (sunset_eligible: true)`);
 
-  // Verify GET /mls/migration/fleet-summary endpoint
+  // -------------------------------------------------------------
+  // Test 5: Multi-Criteria Fleet Telemetry & Sunset Gating
+  // -------------------------------------------------------------
+  console.log('\n6. Testing Multi-Criteria Fleet Telemetry & Config Transport...');
+
+  // Verify GET /mls/config endpoint
+  const cfgRes = await fetch(baseUrl + '/mls/config');
+  const cfgJson = await cfgRes.json();
+  assert.strictEqual(cfgJson.ok, true);
+  assert.strictEqual(cfgJson.legacy_e2ee_enabled, true, 'Legacy E2EE enabled by default');
+  assert.ok(cfgJson.migration_start_date, 'migration_start_date must be provided');
+  assert.ok(cfgJson.sunset_cutoff_date, 'sunset_cutoff_date must be provided');
+  assert.ok(cfgJson.days_remaining_to_cutoff > 0, 'days_remaining_to_cutoff must be positive');
+  console.log(`   [OK] GET /mls/config transport verified (legacy_e2ee_enabled=${cfgJson.legacy_e2ee_enabled}, ${cfgJson.days_remaining_to_cutoff} days remaining)`);
+
+  // Verify GET /mls/migration/fleet-summary sub-criteria structure
   const fleetRes = await fetch(baseUrl + '/mls/migration/fleet-summary', {
     headers: { 'Authorization': 'Bearer ' + btok }
   });
   const fleetJson = await fleetRes.json();
   assert.strictEqual(fleetJson.ok, true);
-  assert.ok(fleetJson.fleet_summary.fleet_coverage_pct > 0, 'Fleet coverage percentage must be calculated');
-  assert.strictEqual(fleetJson.sunset_status.sunset_eligible, true, 'Sunset status reflected in admin summary');
-  console.log(`   [OK] Fleet Migration Summary: ${fleetJson.fleet_summary.fleet_coverage_pct}% fleet coverage, sunset_eligible=${fleetJson.sunset_status.sunset_eligible}`);
+  assert.strictEqual(fleetJson.traffic_sunset.ready, true, 'Traffic sunset sub-criterion is ready');
+  assert.strictEqual(fleetJson.fleet_migration.ready, false, 'Fleet migration sub-criterion not ready (<100% users)');
+  assert.strictEqual(fleetJson.all_criteria_met, false, 'all_criteria_met MUST be false when fleet coverage is incomplete');
+  assert.strictEqual(fleetJson.force_sunset_active, false, 'force_sunset_active is false');
+  console.log(`   [OK] Fleet Migration Summary sub-criteria verified: traffic_ready=${fleetJson.traffic_sunset.ready}, fleet_ready=${fleetJson.fleet_migration.ready}, all_criteria_met=${fleetJson.all_criteria_met}`);
+
+  // -------------------------------------------------------------
+  // Test 6: Operator Safety Guard & Audit for MLS_FORCE_SUNSET
+  // -------------------------------------------------------------
+  console.log('\n7. Testing Operator Safety & Audit for MLS_FORCE_SUNSET...');
+
+  process.env.E2EE_LEGACY_ENABLED = 'false';
+  process.env.MLS_FORCE_SUNSET = 'true';
+  // Without MLS_FORCE_SUNSET_ACK, safety guard must prevent sunset!
+  delete process.env.MLS_FORCE_SUNSET_ACK;
+  assert.strictEqual(db.isLegacyE2eeEnabled(), true, 'Safety Guard: without MLS_FORCE_SUNSET_ACK="I_ACCEPT_DATA_LOSS", legacy MUST remain enabled!');
+
+  // With MLS_FORCE_SUNSET_ACK, force sunset engages and records audit
+  process.env.MLS_FORCE_SUNSET_ACK = 'I_ACCEPT_DATA_LOSS';
+  assert.strictEqual(db.isLegacyE2eeEnabled(), false, 'Force Sunset engages when explicit ACK is provided');
+
+  const auditEntry = db.db.prepare(`SELECT * FROM mls_sunset_audit WHERE event = 'force_sunset_engaged'`).get();
+  assert.ok(auditEntry, 'Audit record MUST be inserted into mls_sunset_audit');
+  assert.strictEqual(auditEntry.acknowledged_by, 'I_ACCEPT_DATA_LOSS');
+  console.log('   [OK] Loud and Audited: MLS_FORCE_SUNSET requires ACK and inserts DB audit record');
+
+  // Verify fleet summary reflects force_sunset_active: true
+  const forceFleetRes = await fetch(baseUrl + '/mls/migration/fleet-summary', {
+    headers: { 'Authorization': 'Bearer ' + btok }
+  });
+  const forceFleetJson = await forceFleetRes.json();
+  assert.strictEqual(forceFleetJson.force_sunset_active, true, 'force_sunset_active reflected in fleet summary');
+  assert.strictEqual(forceFleetJson.all_criteria_met, true, 'all_criteria_met overridden to true when force_sunset_active');
+  console.log('   [OK] Force sunset visible in GET /mls/migration/fleet-summary (force_sunset_active: true)');
+
+  // Reset env vars
+  delete process.env.E2EE_LEGACY_ENABLED;
+  delete process.env.MLS_FORCE_SUNSET;
+  delete process.env.MLS_FORCE_SUNSET_ACK;
+
+  // -------------------------------------------------------------
+  // Test 7: Layer 2 Client Defense (BlockedByServerPolicy)
+  // -------------------------------------------------------------
+  console.log('\n8. Testing Layer 2 Client Defense & Blocked Telemetry...');
+
+  // Simulate client where legacy is disabled before full scan
+  window.ExtrovertConfig = { legacyE2eeEnabled: false };
+  // Reset checkpoint to unmigrated
+  secureStore.delete('olm_purged_at');
+  await window.ExtrovertE2EE.saveMigrationCheckpoint({
+    dmCursor: 0,
+    roomCursor: 0,
+    totalMigrated: 0,
+    failedCount: 0,
+    hasCompletedFullScan: false,
+    done: false
+  });
+
+  const blockedStatus = await window.ExtrovertE2EE.getLegacyLifecycleStatus();
+  assert.strictEqual(blockedStatus.state, 'BlockedByServerPolicy', 'Client must enter BlockedByServerPolicy state');
+
+  // startHistoricalMigration must reject with BLOCKED_BY_POLICY
+  let blockedErr = null;
+  try {
+    await window.ExtrovertE2EE.startHistoricalMigration();
+  } catch (err) {
+    blockedErr = err;
+  }
+  assert.ok(blockedErr, 'startHistoricalMigration must reject when blocked by server policy');
+  assert.strictEqual(blockedErr.code, 'BLOCKED_BY_POLICY');
+  console.log('   [OK] Layer 2 defense: client detects BlockedByServerPolicy and raises actionable BLOCKED_BY_POLICY error');
 
   server.close();
   try { fs.unlinkSync(tmpDb); } catch (_) {}
