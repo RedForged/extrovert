@@ -391,12 +391,33 @@
     }).catch(function () { return groupState; });
   }
 
+  function restoreClientConfig(st) {
+    if (st && !st.clientConfig) {
+      var mls = root.MLS;
+      st.clientConfig = {
+        keyRetentionConfig: mls.defaultKeyRetentionConfig,
+        lifetimeConfig: mls.defaultLifetimeConfig,
+        keyPackageEqualityConfig: mls.defaultKeyPackageEqualityConfig,
+        paddingConfig: mls.defaultPaddingConfig,
+        authService: mls.defaultAuthenticationService,
+      };
+    }
+    return st;
+  }
+
   // --- Group State Persistence ---
   function saveGroupState(groupId, state) {
-    var serialized = JSON.stringify(state);
-    return encryptWithKd(serialized).then(function (enc) {
-      return idbSet(STORE_MLS_GROUPS, groupId, enc);
-    });
+    if (!state) return Promise.resolve();
+    try {
+      var mls = root.MLS;
+      var encoded = mls.encodeGroupState(state);
+      return encryptWithKd(encoded).then(function (enc) {
+        return idbSet(STORE_MLS_GROUPS, groupId, enc);
+      });
+    } catch (err) {
+      console.error('Failed to encode and save MLS group state for', groupId, err);
+      return Promise.reject(err);
+    }
   }
 
   function loadGroupState(groupId) {
@@ -404,12 +425,17 @@
     return idbGet(STORE_MLS_GROUPS, groupId).then(function (enc) {
       if (!enc) return null;
       return decryptWithKd(enc).then(function (bytes) {
-        var str = new TextDecoder().decode(bytes);
-        var parsed = JSON.parse(str);
-        activeGroups[groupId] = parsed;
-        return parsed;
+        var mls = root.MLS;
+        var decoded = mls.decodeGroupState(bytes, 0);
+        if (!decoded || !decoded[0]) return null;
+        var state = restoreClientConfig(decoded[0]);
+        activeGroups[groupId] = state;
+        return state;
       });
-    }).catch(function () { return null; });
+    }).catch(function (err) {
+      console.warn('Failed to load/decode MLS group state for', groupId, err);
+      return null;
+    });
   }
 
   // --- DM Group Initialization & Message Encryption ---
@@ -601,7 +627,8 @@
 
     return loadGroupState(gid).then(function (existing) {
       if (existing) {
-        return catchUpCommits(gid, existing, existing.epoch || 0).then(function (finalState) {
+        var ep = existing.groupContext ? Number(existing.groupContext.epoch) : 0;
+        return catchUpCommits(gid, existing, ep).then(function (finalState) {
           activeGroups[gid] = finalState;
           return saveGroupState(gid, finalState).then(function () { return finalState; });
         });
@@ -754,7 +781,7 @@
           return csrfFetch('/mls/groups/' + encodeURIComponent(gid) + '/commit', {
             method: 'POST',
             body: JSON.stringify({
-              current_epoch: groupState.epoch,
+              current_epoch: Number(groupState.groupContext.epoch),
               commit_message: uint8ToB64(commitEnc),
               welcomes: [{
                 user_id: parseInt(targetUserId, 10),
@@ -770,7 +797,7 @@
             })
           }).then(function (r) { return r.json(); }).then(function (commitApiRes) {
             if (commitApiRes.error === 'EpochConflict') {
-              return catchUpCommits(gid, groupState, groupState.epoch).then(function (updatedState) {
+              return catchUpCommits(gid, groupState, Number(groupState.groupContext.epoch)).then(function (updatedState) {
                 activeGroups[gid] = updatedState;
                 return addMemberToRoomGroup(roomId, targetUserId);
               });
