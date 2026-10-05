@@ -503,6 +503,7 @@ router.get('/config', (req, res) => {
   const launchDateStr = process.env.MLS_MIGRATION_START_DATE || '2026-10-05T00:00:00.000Z';
   const launchTs = new Date(launchDateStr).getTime();
   const tier = parseInt(process.env.MLS_MIGRATION_TIER, 10) || 1;
+  const forceRevert = (process.env.MLS_MIGRATION_TIER_FORCE_REVERT === 'true' || process.env.MLS_MIGRATION_TIER_OVERRIDE_STICKY === 'false');
   const retentionDays = (tier === 2) ? 365 : 180;
   const cutoffDays = (tier === 2) ? 545 : 365;
   const defaultCutoffTs = launchTs + (cutoffDays * 86400 * 1000);
@@ -514,6 +515,7 @@ router.get('/config', (req, res) => {
   res.json({
     ok: true,
     migration_tier: tier,
+    force_tier_revert: forceRevert,
     legacy_retention_days: retentionDays,
     server_cutoff_days: cutoffDays,
     legacy_e2ee_enabled: legacyEnabled,

@@ -532,6 +532,49 @@ async function run() {
   assert.strictEqual(window.ExtrovertE2EE.isRecoveryPollArmed(), false, 'OlmPurged client must never arm recovery poll');
   console.log('   [OK] OlmPurged clients never arm recovery poll timer');
 
+  // -------------------------------------------------------------
+  // Test 12: Rolling 7-Day Failure Telemetry & pct_users_with_any_failures_7d
+  // -------------------------------------------------------------
+  console.log('\n13. Testing Rolling 7-Day Failure Telemetry in Fleet Summary...');
+  // User 1 reported 0 failures; let's record user 2 with failures
+  db.recordMigrationTelemetry(2, true, 50, '1-10', false);
+  const summaryRes = await fetch(baseUrl + '/mls/migration/fleet-summary', {
+    headers: { 'Authorization': 'Bearer ' + btok }
+  });
+  const summaryJson = await summaryRes.json();
+  assert.ok(typeof summaryJson.fleet_migration.pct_users_with_any_failures_7d === 'number', 'Must expose pct_users_with_any_failures_7d');
+  assert.ok(typeof summaryJson.fleet_migration.reporters_7d === 'number', 'Must expose reporters_7d');
+  assert.strictEqual(summaryJson.fleet_migration.reporters_7d, 2, '2 users reported in last 7 days');
+  assert.strictEqual(summaryJson.fleet_migration.failures_7d, 1, '1 user reported failures in last 7 days');
+  assert.strictEqual(summaryJson.fleet_migration.pct_users_with_any_failures_7d, 50, '50% of 7-day reporters have failures');
+  console.log(`   [OK] Rolling 7-day failure telemetry verified: reporters=${summaryJson.fleet_migration.reporters_7d}, failures=${summaryJson.fleet_migration.failures_7d}, pct=${summaryJson.fleet_migration.pct_users_with_any_failures_7d}%`);
+
+  // -------------------------------------------------------------
+  // Test 13: Sticky Tier 2 Retention & Force Revert Override
+  // -------------------------------------------------------------
+  console.log('\n14. Testing Sticky Tier 2 Retention & Force Revert Override...');
+  delete secureStore.get('olm_purged_at'); // un-purge for lifecycle check
+  
+  // Set Tier 2 on server
+  process.env.MLS_MIGRATION_TIER = '2';
+  delete process.env.MLS_MIGRATION_TIER_FORCE_REVERT;
+  await window.ExtrovertE2EE.checkRecoveryConfig();
+  assert.strictEqual(window.ExtrovertConfig.legacyRetentionDays, 365, 'Client learns 365-day retention from Tier 2');
+
+  // Server reverts to Tier 1 without force_tier_revert -> Sticky defense MUST ignore downgrade!
+  process.env.MLS_MIGRATION_TIER = '1';
+  await window.ExtrovertE2EE.checkRecoveryConfig();
+  assert.strictEqual(window.ExtrovertConfig.legacyRetentionDays, 365, 'Sticky Defense: Client MUST keep 365-day retention when downgrade lacks force revert');
+
+  // Server reverts to Tier 1 WITH force_tier_revert -> Reversion MUST be accepted!
+  process.env.MLS_MIGRATION_TIER_FORCE_REVERT = 'true';
+  await window.ExtrovertE2EE.checkRecoveryConfig();
+  assert.strictEqual(window.ExtrovertConfig.legacyRetentionDays, 180, 'Force Revert: Client resets to 180-day retention when force_tier_revert is true');
+  console.log('   [OK] Sticky Tier 2 retention preserved across unforced downgrade; explicit force revert resets to 180 days');
+
+  delete process.env.MLS_MIGRATION_TIER;
+  delete process.env.MLS_MIGRATION_TIER_FORCE_REVERT;
+
   // Clean up
   server.close();
   try { fs.unlinkSync(tmpDb); } catch (_) {}

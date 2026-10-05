@@ -338,12 +338,12 @@ To prevent single-metric boundary fragility, empirical evaluation of pre-decrypt
 | Tier | Criteria (All Must Satisfy) | Operational Sunset Action |
 |---|---|---|
 | **Tier 1 (Hold Schedule)** | $F_m \le 3.0\%$ AND $F_s \le 10.0\%$ AND $F_c \le 15.0\%$ | **Standard Schedule Holds:** 180-day client retention clock / 365-day server cutoff / 545-day offline device bound remain intact. Zero extensions needed. |
-| **Tier 2 (Extend Archive)** | $F_m \le 7.0\%$ AND $F_s \le 25.0\%$ AND $F_c \le 35.0\%$ | **Extend Read-Only Archive:** Extend client-side legacy retention window to 12 months (365 days from device `ClockOrigin`); defer server-side hard cutoff from 365 days to 545 days (18 months); retain legacy decryptor client-side. |
+| **Tier 2 (Extend Archive)** | $F_m \le 7.0\%$ AND $F_s \le 25.0\%$ AND $F_c \le 35.0\%$ | **Extend Read-Only Archive:** Triggered when rolling 7-day fleet failure telemetry (`pct_users_with_any_failures_7d` via `GET /mls/migration/fleet-summary`) exceeds 10.0%. Operators set `MLS_MIGRATION_TIER=2`. Client retention extends to 12 months (365 days) and server cutoff defers to 545 days. Sticky on clients; reversible only via explicit `MLS_MIGRATION_TIER_FORCE_REVERT=true`. |
 | **Tier 3 (Redesign UX)** | Exceeds any Tier 2 threshold ($F_m > 7.0\%$ OR $F_s > 25.0\%$ OR $F_c > 35.0\%$) | **Migration UX Redesign:** Halt automatic background purge; implement per-session user prompts and selective opt-in historical export for chatty sessions. |
 
 #### Vault Storage Scaling & Deflate Compression Model:
 - **Pinned Baseline (Uncompressed Encrypted Footprint):** ~260–265 B/msg. At 100,000 messages, total IndexedDB footprint is ~25.27 MB (~2.46% of iOS Safari 1 GB prompt-free origin quota). Zero compression is required to satisfy mobile browser limits.
-- **Pre-Encryption Batch Deflate Optimization:** Compressing conversation message JSON arrays via deflate prior to deviceKey AES-256-GCM encryption reduces storage footprint to ~19 B/msg (13.8× reduction), reducing 100,000 messages to ~1.81 MB (< 0.4% of iOS Safari quota).
+- **Pre-Encryption Batch Deflate Optimization:** Compressing conversation message JSON arrays via deflate prior to deviceKey AES-256-GCM encryption yields ~19 B/msg (13.8× reduction on synthetic corpus; 3–6× real-world conversational chat entropy yielding ~45–90 B/msg or ~4.5–9.0 MB for 100,000 messages, well below 1% of mobile quota).
 
 ---
 

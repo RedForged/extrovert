@@ -494,10 +494,14 @@ const server = app.listen(PORT, HOST, () => {
   }
 
   const migrationTier = parseInt(process.env.MLS_MIGRATION_TIER, 10) || 1;
+  const forceRevert = (process.env.MLS_MIGRATION_TIER_FORCE_REVERT === 'true' || process.env.MLS_MIGRATION_TIER_OVERRIDE_STICKY === 'false');
   if (migrationTier === 2) {
     console.warn('[WARNING] [MLS Migration]: Operator configured MLS_MIGRATION_TIER=2: Extended 12-month archive retention engaged (365d client retention / 545d server cutoff).');
   } else if (migrationTier === 3) {
     console.warn('[WARNING] [MLS Migration]: Operator configured MLS_MIGRATION_TIER=3: Per-session migration opt-in mode active.');
+  }
+  if (forceRevert) {
+    console.warn('[WARNING] [MLS Migration]: Operator configured MLS_MIGRATION_TIER_FORCE_REVERT=true: Forcing client retention reset to Tier 1 (180 days). Risk of premature legacy key purge.');
   }
 });
 

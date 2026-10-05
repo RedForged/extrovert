@@ -2452,6 +2452,29 @@ function getFleetMigrationSummary() {
     GROUP BY unrecoverable_bucket
   `).all();
 
+  const now = Date.now();
+  const rolling7dTs = now - (7 * 86400 * 1000);
+  const failureStats = db.prepare(`
+    SELECT
+      COUNT(*) AS total_reporters,
+      SUM(CASE WHEN unrecoverable_bucket != '0' THEN 1 ELSE 0 END) AS reporters_with_failures,
+      SUM(CASE WHEN reported_at >= ? THEN 1 ELSE 0 END) AS reporters_7d,
+      SUM(CASE WHEN reported_at >= ? AND unrecoverable_bucket != '0' THEN 1 ELSE 0 END) AS failures_7d
+    FROM mls_migration_telemetry
+  `).get(rolling7dTs, rolling7dTs);
+
+  const totalReporters = failureStats ? (failureStats.total_reporters || 0) : 0;
+  const reportersWithFailures = failureStats ? (failureStats.reporters_with_failures || 0) : 0;
+  const reporters7d = failureStats ? (failureStats.reporters_7d || 0) : 0;
+  const failures7d = failureStats ? (failureStats.failures_7d || 0) : 0;
+
+  const pctUsersWithAnyFailuresAllTime = totalReporters > 0
+    ? Math.round((reportersWithFailures / totalReporters) * 10000) / 100
+    : 0;
+  const pctUsersWithAnyFailures7d = reporters7d > 0
+    ? Math.round((failures7d / reporters7d) * 10000) / 100
+    : 0;
+
   // 1. Traffic Sunset Sub-Criterion (30 consecutive zero legacy days)
   const sunsetStatus = getLegacyTrafficSunsetStatus();
   const trafficReady = Boolean(sunsetStatus.sunset_eligible);
@@ -2488,7 +2511,13 @@ function getFleetMigrationSummary() {
       registered_users_coverage_pct: registeredCoveragePct,
       blocked_users: blockedUsers,
       ready: fleetReady,
-      buckets: buckets
+      buckets: buckets,
+      pct_users_with_any_failures_7d: pctUsersWithAnyFailures7d,
+      pct_users_with_any_failures_all_time: pctUsersWithAnyFailuresAllTime,
+      reporters_7d: reporters7d,
+      failures_7d: failures7d,
+      reporters_total: totalReporters,
+      failures_total: reportersWithFailures
     },
     time_window: {
       migration_start_date: launchDateStr,

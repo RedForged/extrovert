@@ -148,8 +148,8 @@ To prevent ambiguous "auto-transitions" that modify data-retention schedules wit
 
 ### Specification
 1. **Trigger Definition:**
-   - Fleet telemetry from `GET /mls/migration/fleet-summary` is monitored continuously.
-   - If production metrics exceed Tier 1 thresholds ($F_m > 3.0\%$, $F_s > 10.0\%$, or $F_c > 15.0\%$) sustained over a 7-day observation window, operators initiate Tier 2 transition.
+   - Fleet telemetry from `GET /mls/migration/fleet-summary` monitors rolling reports. Because client telemetry ([`src/routes/mls.js`](file:///home/axoisaxo/extrovert/src/routes/mls.js)) reports privacy-preserving defect buckets (`0`, `1-10`, `11-100`, `100+`), `fleet-summary` exposes `pct_users_with_any_failures_7d` (the fraction of users reporting within the rolling 7-day window who experienced any unrecoverable messages).
+   - If rolling 7-day failure metrics (`pct_users_with_any_failures_7d > 10.0%`, mapping directly to the $\le 10.0\%$ session-failure gate $F_s$) exceed Tier 1 thresholds over the last 7 days of reports, operators engage Tier 2.
 2. **Execution & Configuration Flag:**
    - The operator updates server environment configuration:
      ```bash
@@ -164,14 +164,20 @@ To prevent ambiguous "auto-transitions" that modify data-retention schedules wit
      {
        "ok": true,
        "migration_tier": 2,
+       "force_tier_revert": false,
        "legacy_retention_days": 365,
        "server_cutoff_days": 545,
        "legacy_e2ee_enabled": true
      }
      ```
-3. **Stickiness & Monotonicity:**
-   - **Tier 2 is sticky once engaged.** When a client queries `/mls/config` and reads `legacy_retention_days: 365`, it persists this value in IndexedDB `STORE_SECURE`.
-   - The client retention window cannot be silently retracted from users once granted. Even if the server configuration were temporarily reset to Tier 1, clients that already observed Tier 2 retain the 365-day archive window to prevent unexpected premature key deletion.
+3. **Stickiness, Monotonicity & Documented Operator Escape Hatch:**
+   - **Tier 2 is sticky once engaged.** When a client queries `/mls/config` and reads `legacy_retention_days: 365`, it persists this value in IndexedDB `STORE_SECURE`. An accidental unforced server downgrade (e.g. typing `MLS_MIGRATION_TIER=1`) is rejected by clients as a no-op to prevent premature legacy key deletion.
+   - **Documented Escape Hatch (`MLS_MIGRATION_TIER_FORCE_REVERT`):** If an operator intentionally reverts Tier 2 (e.g. fixing a telemetry reporting misinterpretation or correcting an accidental configuration), setting:
+     ```bash
+     MLS_MIGRATION_TIER=1
+     MLS_MIGRATION_TIER_FORCE_REVERT=true  # or MLS_MIGRATION_TIER_OVERRIDE_STICKY=false
+     ```
+     instructs the server to log a loud startup warning and return `force_tier_revert: true` in `/mls/config`. Clients observing this explicit operator override command reset their retention window back to 180 days in `STORE_SECURE`.
 4. **User Communication & Experience:**
    - Background retention extensions are non-intrusive: no disruptive modal dialogues or alarmist banners.
    - The application settings panel (*Settings > Security & Privacy*) displays an informational status badge:
@@ -184,21 +190,21 @@ To prevent ambiguous "auto-transitions" that modify data-retention schedules wit
 ### Pinned Baseline Footprint vs Batch Optimization
 To resolve any ambiguity regarding per-record vs stream compression:
 
-1. **Current Production Implementation (Uncompressed Encrypted Storage):**
+1. **Current Production Implementation (Uncompressed Encrypted Storage — Pinned Baseline):**
    - Pre-decrypted messages are persisted locally in IndexedDB `STORE_SECURE_MESSAGES` (`securemsgs` store in `extrovert-e2ee`), wrapped in AES-256-GCM under `deviceKey`.
    - **Measured On-Disk Footprint:** **~260–265 bytes / message**.
    - **100,000 Messages Projection:** **25.27 MB**.
    - **Mobile Quota Assessment:** Uses only **2.46% of iOS Safari's 1 GB prompt-free origin quota** (and $< 0.1\%$ of Android Chrome disk pool). **Zero compression is required to safely hold 100k messages without triggering browser storage prompts.**
 2. **Pre-Encryption Deflate Optimization (Conversation Batch):**
-   - Passing conversation message JSON arrays through `CompressionStream('deflate')` / `zlib.deflateRawSync` prior to AES-GCM envelope encryption yields **~19 bytes / message** (**13.8× compression ratio**).
-   - **100,000 Messages Projection:** **1.81 MB** (< 0.4% of iOS Safari 1 GB quota).
-   - Available as a non-breaking optimization if ultra-constrained storage environments are encountered in future native ports.
+   - Passing conversation message JSON arrays through `CompressionStream('deflate')` / `zlib.deflateRawSync` prior to AES-GCM envelope encryption yields **~19 bytes / message** (**13.8× compression ratio**) on the synthetic benchmark.
+   - **Corpus-Specific Redundancy Caveat:** The 13.8× compression ratio reflects the synthetic corpus's structural phrase redundancy. Real-world conversational chat text with high lexical diversity is expected to compress at **3–6×**, yielding **~45–90 B/message** (**~4.5–9.0 MB for 100,000 messages**). Even under conservative 3× real-world compression, 100k messages consumes $< 1.0\%$ of iOS Safari's 1 GB quota.
+   - Batch deflate is maintained as a documented, non-breaking optimization for future native client storage.
 
-| Environment | Quota Ceiling | 100k Uncompressed Vault (Pinned Baseline) | 100k Batch Deflate Vault (Optional) | Headroom Assessment |
+| Environment | Quota Ceiling | 100k Uncompressed Vault (Pinned Baseline) | 100k Real-World Compressed (3–6×) | Headroom Assessment |
 |---|---|---|---|---|
-| **iOS Safari** (WebKit) | 1,024 MB (1 GB origin quota) | 25.27 MB (2.46%) | 1.81 MB (0.18%) | **> 97.5% Prompt-Free Headroom** |
-| **Android Chrome** (Blink) | 60% of free disk pool (10–50 GB) | 25.27 MB (< 0.1%) | 1.81 MB (< 0.01%) | **Virtually Unlimited** |
-| **Tauri Native** (Desktop) | Local disk (SQLite) | 25.27 MB | 1.81 MB | **Zero quota limitations** |
+| **iOS Safari** (WebKit) | 1,024 MB (1 GB origin quota) | 25.27 MB (2.46%) | ~4.5–9.0 MB (0.4–0.9%) | **> 97.5% Prompt-Free Headroom** |
+| **Android Chrome** (Blink) | 60% of free disk pool (10–50 GB) | 25.27 MB (< 0.1%) | ~4.5–9.0 MB (< 0.02%) | **Virtually Unlimited** |
+| **Tauri Native** (Desktop) | Local disk (SQLite) | 25.27 MB | ~4.5–9.0 MB | **Zero quota limitations** |
 
 ---
 
@@ -224,8 +230,8 @@ Tier 3:  Exceeds Tier 2 thresholds                               --> Redesign Mi
   - $F_c = 23.62\% \le 35.0\%$ (Pass)
   - **Verdict:** **TIER 2 (ARCHIVE EXTENSION TRIGGERED)**. Demonstrates that under worst-case session loss and mid-thread room joins without key forwarding, the system degrades gracefully into Tier 2.
 
-### Final Conclusion
-> *"Under realistic assumptions, the sunset schedule holds. Under conservative assumptions, the system degrades gracefully into Tier 2 with extended archive retention. Production measurement will determine which tier applies and when the schedule activates."*
+### Final Conclusion & Synthesis
+> *"Under realistic assumptions, small-session losses keep the fleet in Tier 1. If key loss concentrates in large sessions (P95+), the fleet enters Tier 2. Under conservative assumptions, the fleet is in Tier 2 and the extended 12-month archive is active. Production measurement determines which regime applies."*
 
 ---
 

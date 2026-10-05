@@ -4156,8 +4156,30 @@
     }).then(function (cfg) {
       if (cfg && typeof window !== 'undefined') {
         window.ExtrovertConfig = window.ExtrovertConfig || {};
-        if (cfg.legacy_retention_days) window.ExtrovertConfig.legacyRetentionDays = cfg.legacy_retention_days;
-        if (cfg.migration_tier) window.ExtrovertConfig.migrationTier = cfg.migration_tier;
+        var incomingTier = cfg.migration_tier || 1;
+        var incomingDays = cfg.legacy_retention_days || 180;
+        var currentDays = window.ExtrovertConfig.legacyRetentionDays || 180;
+        var forceRevert = Boolean(cfg.force_tier_revert);
+
+        if (incomingDays > currentDays) {
+          // Tier upgrade (e.g. 180 -> 365)
+          window.ExtrovertConfig.legacyRetentionDays = incomingDays;
+          window.ExtrovertConfig.migrationTier = incomingTier;
+          idbSet(STORE_SECURE, 'legacy_retention_days', incomingDays).catch(function () {});
+          idbSet(STORE_SECURE, 'migration_tier', incomingTier).catch(function () {});
+        } else if (incomingDays < currentDays) {
+          if (forceRevert) {
+            // Operator explicit escape hatch: revert allowed
+            console.warn('[MLS Migration]: Operator explicit force revert received. Resetting legacy retention window to ' + incomingDays + ' days.');
+            window.ExtrovertConfig.legacyRetentionDays = incomingDays;
+            window.ExtrovertConfig.migrationTier = incomingTier;
+            idbSet(STORE_SECURE, 'legacy_retention_days', incomingDays).catch(function () {});
+            idbSet(STORE_SECURE, 'migration_tier', incomingTier).catch(function () {});
+          } else {
+            // Sticky defense: ignore downgrade without explicit override
+            console.warn('[MLS Migration]: Preserving sticky extended retention (' + currentDays + ' days); ignoring unforced tier downgrade to ' + incomingDays + ' days.');
+          }
+        }
       }
       if (cfg && cfg.legacy_e2ee_enabled === true) {
         if (typeof window !== 'undefined') {
@@ -4403,18 +4425,24 @@
       getMigrationCheckpoint(),
       idbGet(STORE_SECURE, 'last_legacy_activity_at'),
       idbGet(STORE_SECURE, 'first_mls_session_at'),
-      idbGet(STORE_SECURE, 'olm_purged_at')
+      idbGet(STORE_SECURE, 'olm_purged_at'),
+      idbGet(STORE_SECURE, 'legacy_retention_days')
     ]).then(function (res) {
       var cp = res[0] || {};
       var lastLegacy = Number(res[1]) || 0;
       var firstMls = Number(res[2]) || 0;
       var purgedAt = Number(res[3]) || 0;
+      var storedRetentionDays = Number(res[4]) || 0;
       if (purgedAt) olmPurged = true;
       var now = Date.now();
       var anchor = Math.max(firstMls, lastLegacy);
-      var retentionDays = (typeof window !== 'undefined' && window.ExtrovertConfig && window.ExtrovertConfig.legacyRetentionDays)
+      var configRetentionDays = (typeof window !== 'undefined' && window.ExtrovertConfig && window.ExtrovertConfig.legacyRetentionDays)
         ? window.ExtrovertConfig.legacyRetentionDays
         : 180;
+      var retentionDays = storedRetentionDays || configRetentionDays || 180;
+      if (typeof window !== 'undefined' && window.ExtrovertConfig) {
+        window.ExtrovertConfig.legacyRetentionDays = retentionDays;
+      }
       var RETENTION_MS = retentionDays * 86400 * 1000;
       var elapsed = anchor > 0 ? (now - anchor) : 0;
       var timeEligible = (anchor > 0 && elapsed >= RETENTION_MS);
