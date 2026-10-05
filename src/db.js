@@ -1143,6 +1143,11 @@ function getConversations(userId) {
         CASE WHEN from_id = ? THEN to_id ELSE from_id END AS other_id
       FROM messages
       WHERE from_id = ? OR to_id = ?
+      UNION
+      SELECT f1.followee_id AS other_id
+      FROM follows f1
+      JOIN follows f2 ON f1.follower_id = f2.followee_id AND f1.followee_id = f2.follower_id
+      WHERE f1.follower_id = ?
     ),
     lasts AS (
       SELECT m.id AS last_id, m.from_id, m.to_id, m.body, m.proto, m.sender_ciphertext,
@@ -1165,8 +1170,8 @@ function getConversations(userId) {
     JOIN users u ON u.id = p.other_id
     LEFT JOIN lasts l ON l.rn = 1
       AND ((l.from_id = ? AND l.to_id = p.other_id) OR (l.from_id = p.other_id AND l.to_id = ?))
-    ORDER BY l.created_at DESC
-  `).all(userId, userId, userId, userId, userId, userId, userId, userId, userId);
+    ORDER BY COALESCE(l.created_at, 0) DESC, u.display_name COLLATE NOCASE ASC
+  `).all(userId, userId, userId, userId, userId, userId, userId, userId, userId, userId);
 }
 
 // Newest N messages (older history via id cursor). Fetching the OLDEST N used to
@@ -2215,11 +2220,6 @@ function deleteUser(userId) {
     db.prepare(`DELETE FROM user_public_keys WHERE user_id = ?`).run(userId);
     db.prepare(`DELETE FROM stickers WHERE user_id = ?`).run(userId);
     db.prepare(`DELETE FROM dm_security WHERE user_id = ? OR other_id = ?`).run(userId, userId);
-    db.prepare(`DELETE FROM olm_identity WHERE user_id = ?`).run(userId);
-    db.prepare(`DELETE FROM olm_prekeys WHERE user_id = ?`).run(userId);
-    db.prepare(`DELETE FROM olm_device_prekeys WHERE user_id = ?`).run(userId);
-    db.prepare(`DELETE FROM user_devices WHERE user_id = ?`).run(userId);
-    db.prepare(`DELETE FROM user_history_backup WHERE user_id = ?`).run(userId);
     db.prepare(`DELETE FROM media_attachments WHERE user_id = ?`).run(userId);
     db.prepare(`DELETE FROM edit_history WHERE edited_by = ?`).run(userId);
     db.prepare(`DELETE FROM push_subscriptions WHERE user_id = ?`).run(userId);
@@ -2242,11 +2242,6 @@ function deleteUser(userId) {
       db.prepare(`DELETE FROM room_channels WHERE room_id = ?`).run(rid);
       db.prepare(`DELETE FROM room_members WHERE room_id = ?`).run(rid);
       db.prepare(`DELETE FROM room_roles WHERE room_id = ?`).run(rid);
-      const gsIds = db.prepare(`SELECT id FROM room_group_sessions WHERE room_id = ?`).all(rid).map(r => r.id);
-      for (const gid of gsIds) {
-        db.prepare(`DELETE FROM room_group_session_keys WHERE session_id = ?`).run(gid);
-        db.prepare(`DELETE FROM room_group_sessions WHERE id = ?`).run(gid);
-      }
       db.prepare(`DELETE FROM reports WHERE room_id = ?`).run(rid);
       db.prepare(`DELETE FROM join_requests WHERE room_id = ?`).run(rid);
       db.prepare(`DELETE FROM rooms WHERE id = ?`).run(rid);
@@ -2255,8 +2250,6 @@ function deleteUser(userId) {
     db.prepare(`DELETE FROM room_members WHERE user_id = ?`).run(userId);
     db.prepare(`DELETE FROM room_messages WHERE user_id = ?`).run(userId);
     db.prepare(`DELETE FROM join_requests WHERE user_id = ?`).run(userId);
-    db.prepare(`DELETE FROM room_group_sessions WHERE sender_id = ?`).run(userId);
-    db.prepare(`DELETE FROM room_group_session_keys WHERE recipient_id = ?`).run(userId);
     // Reports involving this user (columns are NOT NULL — delete; the account is
     // gone so the moderation case is moot).
     db.prepare(`DELETE FROM reports WHERE reporter_id = ? OR reported_user_id = ?`).run(userId, userId);

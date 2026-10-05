@@ -24,7 +24,7 @@
              data-key-sender="<%= c.last_key_for_sender || '' %>" data-key-recipient="<%= c.last_key_for_recipient || '' %>"
              data-sender-ciphertext="<%= c.last_sender_ciphertext || '' %>"
              data-own="<%= c.last_from === currentUser.id ? '1' : '0' %>"
-             data-other-id="<%= c.id %>" data-curve="<%= c.sender_curve || '' %>"><%= lm.startsWith('/uploads/stickers/') ? 'Sticker' : '…' %></div>
+             data-other-id="<%= c.id %>" data-curve="<%= c.sender_curve || '' %>"><%= lm ? (lm.startsWith('/uploads/stickers/') ? 'Sticker' : '…') : 'Start a conversation' %></div>
         </div>
         <% if (c.unread > 0) { %><sup class="badge"><%= c.unread %></sup><% } %>
       </a>
