@@ -2516,7 +2516,9 @@ function getFleetMigrationSummary() {
       pct_users_with_any_failures_7d: pctActiveUsersWithFailures7d, // backwards-compatible alias
       pct_users_with_any_failures_all_time: pctUsersWithAnyFailuresAllTime,
       reporters_active_7d: reportersActive7d,
+      reporters_7d: reportersActive7d, // backwards-compatible alias for dashboards
       failures_active_7d: failuresActive7d,
+      failures_7d: failuresActive7d, // backwards-compatible alias for dashboards
       all_time_reporters: totalReporters,
       all_time_users_with_failures: reportersWithFailures
     },
