@@ -2458,21 +2458,21 @@ function getFleetMigrationSummary() {
     SELECT
       COUNT(*) AS total_reporters,
       SUM(CASE WHEN unrecoverable_bucket != '0' THEN 1 ELSE 0 END) AS reporters_with_failures,
-      SUM(CASE WHEN reported_at >= ? THEN 1 ELSE 0 END) AS reporters_7d,
-      SUM(CASE WHEN reported_at >= ? AND unrecoverable_bucket != '0' THEN 1 ELSE 0 END) AS failures_7d
+      SUM(CASE WHEN reported_at >= ? THEN 1 ELSE 0 END) AS reporters_active_7d,
+      SUM(CASE WHEN reported_at >= ? AND unrecoverable_bucket != '0' THEN 1 ELSE 0 END) AS failures_active_7d
     FROM mls_migration_telemetry
   `).get(rolling7dTs, rolling7dTs);
 
   const totalReporters = failureStats ? (failureStats.total_reporters || 0) : 0;
   const reportersWithFailures = failureStats ? (failureStats.reporters_with_failures || 0) : 0;
-  const reporters7d = failureStats ? (failureStats.reporters_7d || 0) : 0;
-  const failures7d = failureStats ? (failureStats.failures_7d || 0) : 0;
+  const reportersActive7d = failureStats ? (failureStats.reporters_active_7d || 0) : 0;
+  const failuresActive7d = failureStats ? (failureStats.failures_active_7d || 0) : 0;
 
   const pctUsersWithAnyFailuresAllTime = totalReporters > 0
     ? Math.round((reportersWithFailures / totalReporters) * 10000) / 100
     : 0;
-  const pctUsersWithAnyFailures7d = reporters7d > 0
-    ? Math.round((failures7d / reporters7d) * 10000) / 100
+  const pctActiveUsersWithFailures7d = reportersActive7d > 0
+    ? Math.round((failuresActive7d / reportersActive7d) * 10000) / 100
     : 0;
 
   // 1. Traffic Sunset Sub-Criterion (30 consecutive zero legacy days)
@@ -2512,12 +2512,13 @@ function getFleetMigrationSummary() {
       blocked_users: blockedUsers,
       ready: fleetReady,
       buckets: buckets,
-      pct_users_with_any_failures_7d: pctUsersWithAnyFailures7d,
+      pct_active_users_with_failures_7d: pctActiveUsersWithFailures7d,
+      pct_users_with_any_failures_7d: pctActiveUsersWithFailures7d, // backwards-compatible alias
       pct_users_with_any_failures_all_time: pctUsersWithAnyFailuresAllTime,
-      reporters_7d: reporters7d,
-      failures_7d: failures7d,
-      reporters_total: totalReporters,
-      failures_total: reportersWithFailures
+      reporters_active_7d: reportersActive7d,
+      failures_active_7d: failuresActive7d,
+      all_time_reporters: totalReporters,
+      all_time_users_with_failures: reportersWithFailures
     },
     time_window: {
       migration_start_date: launchDateStr,

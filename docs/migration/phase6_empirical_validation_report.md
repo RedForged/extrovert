@@ -147,9 +147,10 @@ To avoid false precision, the table below maps the resulting overall message fai
 To prevent ambiguous "auto-transitions" that modify data-retention schedules without operator awareness, the transition from Tier 1 to Tier 2 is implemented as an **explicit, operator-controlled, audit-logged procedure**:
 
 ### Specification
-1. **Trigger Definition:**
-   - Fleet telemetry from `GET /mls/migration/fleet-summary` monitors rolling reports. Because client telemetry ([`src/routes/mls.js`](file:///home/axoisaxo/extrovert/src/routes/mls.js)) reports privacy-preserving defect buckets (`0`, `1-10`, `11-100`, `100+`), `fleet-summary` exposes `pct_users_with_any_failures_7d` (the fraction of users reporting within the rolling 7-day window who experienced any unrecoverable messages).
-   - If rolling 7-day failure metrics (`pct_users_with_any_failures_7d > 10.0%`, mapping directly to the $\le 10.0\%$ session-failure gate $F_s$) exceed Tier 1 thresholds over the last 7 days of reports, operators engage Tier 2.
+1. **Trigger Definition & Active 7-Day Reporting Semantics:**
+   - Fleet telemetry from `GET /mls/migration/fleet-summary` monitors current state among active reporters. Because `mls_migration_telemetry` records one row per user (upserted on each status ping), `fleet-summary` exposes `pct_active_users_with_failures_7d` alongside sample counts `reporters_active_7d`, `failures_active_7d`, and `all_time_users_with_failures`.
+   - *Semantics Note:* This metric measures the current state of users whose most recent report was within 7 days. Users who stop reporting drop out of the metric after 7 days, even if their last report indicated failures. The metric approximates "fleet health among currently-active users" rather than an unbounded historical log.
+   - *Operational Trigger:* If the active 7-day failure rate exceeds Tier 1 thresholds (`pct_active_users_with_failures_7d > 10.0%`, mapping directly to the $\le 10.0\%$ session-failure gate $F_s$) over the active 7-day report sample, operators engage Tier 2.
 2. **Execution & Configuration Flag:**
    - The operator updates server environment configuration:
      ```bash
@@ -170,14 +171,17 @@ To prevent ambiguous "auto-transitions" that modify data-retention schedules wit
        "legacy_e2ee_enabled": true
      }
      ```
-3. **Stickiness, Monotonicity & Documented Operator Escape Hatch:**
+3. **Stickiness, Monotonicity & Single-Shot Operator Escape Hatch (30-Day Guard):**
    - **Tier 2 is sticky once engaged.** When a client queries `/mls/config` and reads `legacy_retention_days: 365`, it persists this value in IndexedDB `STORE_SECURE`. An accidental unforced server downgrade (e.g. typing `MLS_MIGRATION_TIER=1`) is rejected by clients as a no-op to prevent premature legacy key deletion.
    - **Documented Escape Hatch (`MLS_MIGRATION_TIER_FORCE_REVERT`):** If an operator intentionally reverts Tier 2 (e.g. fixing a telemetry reporting misinterpretation or correcting an accidental configuration), setting:
      ```bash
      MLS_MIGRATION_TIER=1
      MLS_MIGRATION_TIER_FORCE_REVERT=true  # or MLS_MIGRATION_TIER_OVERRIDE_STICKY=false
      ```
-     instructs the server to log a loud startup warning and return `force_tier_revert: true` in `/mls/config`. Clients observing this explicit operator override command reset their retention window back to 180 days in `STORE_SECURE`.
+     instructs the server to log a loud startup warning and return `force_tier_revert: true` in `/mls/config`.
+   - **Single-Shot 30-Day Guard:** To prevent a forgotten persistent server flag from indefinitely reverting returning users months later, the client operates in single-shot mode:
+     - Upon observing `force_tier_revert: true`, the client accepts the revert, updates `legacyRetentionDays = 180`, and records `last_tier_revert_at = now` in `STORE_SECURE`.
+     - The client ignores any further `force_tier_revert: true` directives for **30 days**, preventing a stuck configuration flag from permanently undermining legitimate future tier upgrades.
 4. **User Communication & Experience:**
    - Background retention extensions are non-intrusive: no disruptive modal dialogues or alarmist banners.
    - The application settings panel (*Settings > Security & Privacy*) displays an informational status badge:
@@ -232,6 +236,9 @@ Tier 3:  Exceeds Tier 2 thresholds                               --> Redesign Mi
 
 ### Final Conclusion & Synthesis
 > *"Under realistic assumptions, small-session losses keep the fleet in Tier 1. If key loss concentrates in large sessions (P95+), the fleet enters Tier 2. Under conservative assumptions, the fleet is in Tier 2 and the extended 12-month archive is active. Production measurement determines which regime applies."*
+>
+> **Closing Verdict:**
+> *"The migration is ready for production. Sunset schedule holds under realistic assumptions, degrades gracefully under conservative assumptions, and the transition between tiers is operator-controlled with an audited override path. Production telemetry will determine which tier applies."*
 
 ---
 

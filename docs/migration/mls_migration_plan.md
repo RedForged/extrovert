@@ -338,7 +338,7 @@ To prevent single-metric boundary fragility, empirical evaluation of pre-decrypt
 | Tier | Criteria (All Must Satisfy) | Operational Sunset Action |
 |---|---|---|
 | **Tier 1 (Hold Schedule)** | $F_m \le 3.0\%$ AND $F_s \le 10.0\%$ AND $F_c \le 15.0\%$ | **Standard Schedule Holds:** 180-day client retention clock / 365-day server cutoff / 545-day offline device bound remain intact. Zero extensions needed. |
-| **Tier 2 (Extend Archive)** | $F_m \le 7.0\%$ AND $F_s \le 25.0\%$ AND $F_c \le 35.0\%$ | **Extend Read-Only Archive:** Triggered when rolling 7-day fleet failure telemetry (`pct_users_with_any_failures_7d` via `GET /mls/migration/fleet-summary`) exceeds 10.0%. Operators set `MLS_MIGRATION_TIER=2`. Client retention extends to 12 months (365 days) and server cutoff defers to 545 days. Sticky on clients; reversible only via explicit `MLS_MIGRATION_TIER_FORCE_REVERT=true`. |
+| **Tier 2 (Extend Archive)** | $F_m \le 7.0\%$ AND $F_s \le 25.0\%$ AND $F_c \le 35.0\%$ | **Extend Read-Only Archive:** Triggered when active 7-day fleet failure telemetry (`pct_active_users_with_failures_7d` via `GET /mls/migration/fleet-summary`) exceeds 10.0%. Operators set `MLS_MIGRATION_TIER=2`. Client retention extends to 12 months (365 days) and server cutoff defers to 545 days. Sticky on clients; reversible only via explicit single-shot `MLS_MIGRATION_TIER_FORCE_REVERT=true` (guarded for 30 days). |
 | **Tier 3 (Redesign UX)** | Exceeds any Tier 2 threshold ($F_m > 7.0\%$ OR $F_s > 25.0\%$ OR $F_c > 35.0\%$) | **Migration UX Redesign:** Halt automatic background purge; implement per-session user prompts and selective opt-in historical export for chatty sessions. |
 
 #### Vault Storage Scaling & Deflate Compression Model:

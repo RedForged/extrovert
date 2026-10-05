@@ -4154,6 +4154,7 @@
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
     }).then(function (cfg) {
+      var processConfig = Promise.resolve();
       if (cfg && typeof window !== 'undefined') {
         window.ExtrovertConfig = window.ExtrovertConfig || {};
         var incomingTier = cfg.migration_tier || 1;
@@ -4165,23 +4166,37 @@
           // Tier upgrade (e.g. 180 -> 365)
           window.ExtrovertConfig.legacyRetentionDays = incomingDays;
           window.ExtrovertConfig.migrationTier = incomingTier;
-          idbSet(STORE_SECURE, 'legacy_retention_days', incomingDays).catch(function () {});
-          idbSet(STORE_SECURE, 'migration_tier', incomingTier).catch(function () {});
+          processConfig = Promise.all([
+            idbSet(STORE_SECURE, 'legacy_retention_days', incomingDays),
+            idbSet(STORE_SECURE, 'migration_tier', incomingTier)
+          ]);
         } else if (incomingDays < currentDays) {
           if (forceRevert) {
-            // Operator explicit escape hatch: revert allowed
-            console.warn('[MLS Migration]: Operator explicit force revert received. Resetting legacy retention window to ' + incomingDays + ' days.');
-            window.ExtrovertConfig.legacyRetentionDays = incomingDays;
-            window.ExtrovertConfig.migrationTier = incomingTier;
-            idbSet(STORE_SECURE, 'legacy_retention_days', incomingDays).catch(function () {});
-            idbSet(STORE_SECURE, 'migration_tier', incomingTier).catch(function () {});
+            processConfig = idbGet(STORE_SECURE, 'last_tier_revert_at').then(function (lastRevertVal) {
+              var now = Date.now();
+              var lastRevertAt = Number(lastRevertVal) || 0;
+              var REVERT_GUARD_MS = 30 * 86400 * 1000;
+              if (lastRevertAt > 0 && (now - lastRevertAt) < REVERT_GUARD_MS) {
+                console.warn('[MLS Migration]: Force tier revert already accepted within last 30 days; ignoring persistent server override flag.');
+                return;
+              }
+              console.warn('[MLS Migration]: Operator explicit force revert received. Resetting legacy retention window to ' + incomingDays + ' days (revert guard armed for 30 days).');
+              window.ExtrovertConfig.legacyRetentionDays = incomingDays;
+              window.ExtrovertConfig.migrationTier = incomingTier;
+              return Promise.all([
+                idbSet(STORE_SECURE, 'legacy_retention_days', incomingDays),
+                idbSet(STORE_SECURE, 'migration_tier', incomingTier),
+                idbSet(STORE_SECURE, 'last_tier_revert_at', now)
+              ]);
+            });
           } else {
             // Sticky defense: ignore downgrade without explicit override
             console.warn('[MLS Migration]: Preserving sticky extended retention (' + currentDays + ' days); ignoring unforced tier downgrade to ' + incomingDays + ' days.');
           }
         }
       }
-      if (cfg && cfg.legacy_e2ee_enabled === true) {
+      return processConfig.then(function () {
+        if (cfg && cfg.legacy_e2ee_enabled === true) {
         if (typeof window !== 'undefined') {
           window.ExtrovertConfig = window.ExtrovertConfig || {};
           window.ExtrovertConfig.legacyE2eeEnabled = true;
@@ -4199,7 +4214,8 @@
         armRecoveryPoll(currentPollIntervalMs);
         return cfg;
       }
-    }).catch(function (err) {
+    });
+  }).catch(function (err) {
       currentPollIntervalMs = Math.min(currentPollIntervalMs * 2, MAX_POLL_INTERVAL_MS);
       armRecoveryPoll(currentPollIntervalMs);
       throw err;

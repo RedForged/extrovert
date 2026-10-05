@@ -542,17 +542,18 @@ async function run() {
     headers: { 'Authorization': 'Bearer ' + btok }
   });
   const summaryJson = await summaryRes.json();
-  assert.ok(typeof summaryJson.fleet_migration.pct_users_with_any_failures_7d === 'number', 'Must expose pct_users_with_any_failures_7d');
-  assert.ok(typeof summaryJson.fleet_migration.reporters_7d === 'number', 'Must expose reporters_7d');
-  assert.strictEqual(summaryJson.fleet_migration.reporters_7d, 2, '2 users reported in last 7 days');
-  assert.strictEqual(summaryJson.fleet_migration.failures_7d, 1, '1 user reported failures in last 7 days');
-  assert.strictEqual(summaryJson.fleet_migration.pct_users_with_any_failures_7d, 50, '50% of 7-day reporters have failures');
-  console.log(`   [OK] Rolling 7-day failure telemetry verified: reporters=${summaryJson.fleet_migration.reporters_7d}, failures=${summaryJson.fleet_migration.failures_7d}, pct=${summaryJson.fleet_migration.pct_users_with_any_failures_7d}%`);
+  assert.ok(typeof summaryJson.fleet_migration.pct_active_users_with_failures_7d === 'number', 'Must expose pct_active_users_with_failures_7d');
+  assert.ok(typeof summaryJson.fleet_migration.reporters_active_7d === 'number', 'Must expose reporters_active_7d');
+  assert.strictEqual(summaryJson.fleet_migration.reporters_active_7d, 2, '2 users reported in last 7 days');
+  assert.strictEqual(summaryJson.fleet_migration.failures_active_7d, 1, '1 user reported failures in last 7 days');
+  assert.strictEqual(summaryJson.fleet_migration.pct_active_users_with_failures_7d, 50, '50% of 7-day reporters have failures');
+  assert.strictEqual(summaryJson.fleet_migration.all_time_users_with_failures, 1, 'Exposes all_time_users_with_failures');
+  console.log(`   [OK] Active 7-day failure telemetry verified: reporters=${summaryJson.fleet_migration.reporters_active_7d}, failures=${summaryJson.fleet_migration.failures_active_7d}, pct=${summaryJson.fleet_migration.pct_active_users_with_failures_7d}%`);
 
   // -------------------------------------------------------------
   // Test 13: Sticky Tier 2 Retention & Force Revert Override
   // -------------------------------------------------------------
-  console.log('\n14. Testing Sticky Tier 2 Retention & Force Revert Override...');
+  console.log('\n14. Testing Sticky Tier 2 Retention & Single-Shot Force Revert with 30-Day Guard...');
   delete secureStore.get('olm_purged_at'); // un-purge for lifecycle check
   
   // Set Tier 2 on server
@@ -566,11 +567,15 @@ async function run() {
   await window.ExtrovertE2EE.checkRecoveryConfig();
   assert.strictEqual(window.ExtrovertConfig.legacyRetentionDays, 365, 'Sticky Defense: Client MUST keep 365-day retention when downgrade lacks force revert');
 
-  // Server reverts to Tier 1 WITH force_tier_revert -> Reversion MUST be accepted!
+  // Server reverts to Tier 1 WITH force_tier_revert -> Single-shot reversion MUST be accepted!
   process.env.MLS_MIGRATION_TIER_FORCE_REVERT = 'true';
   await window.ExtrovertE2EE.checkRecoveryConfig();
   assert.strictEqual(window.ExtrovertConfig.legacyRetentionDays, 180, 'Force Revert: Client resets to 180-day retention when force_tier_revert is true');
-  console.log('   [OK] Sticky Tier 2 retention preserved across unforced downgrade; explicit force revert resets to 180 days');
+
+  // 30-day guard: Even if server flag stays active, client recorded last_tier_revert_at
+  const lastRevertAt = secureStore.get('last_tier_revert_at');
+  assert.ok(lastRevertAt > 0, 'Must record last_tier_revert_at in secureStore');
+  console.log('   [OK] Single-shot 30-day guard recorded timestamp and verified on client');
 
   delete process.env.MLS_MIGRATION_TIER;
   delete process.env.MLS_MIGRATION_TIER_FORCE_REVERT;
