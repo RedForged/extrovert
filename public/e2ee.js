@@ -4154,6 +4154,11 @@
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
     }).then(function (cfg) {
+      if (cfg && typeof window !== 'undefined') {
+        window.ExtrovertConfig = window.ExtrovertConfig || {};
+        if (cfg.legacy_retention_days) window.ExtrovertConfig.legacyRetentionDays = cfg.legacy_retention_days;
+        if (cfg.migration_tier) window.ExtrovertConfig.migrationTier = cfg.migration_tier;
+      }
       if (cfg && cfg.legacy_e2ee_enabled === true) {
         if (typeof window !== 'undefined') {
           window.ExtrovertConfig = window.ExtrovertConfig || {};
@@ -4407,7 +4412,10 @@
       if (purgedAt) olmPurged = true;
       var now = Date.now();
       var anchor = Math.max(firstMls, lastLegacy);
-      var RETENTION_MS = 180 * 86400 * 1000;
+      var retentionDays = (typeof window !== 'undefined' && window.ExtrovertConfig && window.ExtrovertConfig.legacyRetentionDays)
+        ? window.ExtrovertConfig.legacyRetentionDays
+        : 180;
+      var RETENTION_MS = retentionDays * 86400 * 1000;
       var elapsed = anchor > 0 ? (now - anchor) : 0;
       var timeEligible = (anchor > 0 && elapsed >= RETENTION_MS);
       var scanEligible = (cp.hasCompletedFullScan === true);

@@ -492,6 +492,13 @@ const server = app.listen(PORT, HOST, () => {
       console.warn('[WARNING] [MLS Sunset]: MLS_FORCE_SUNSET=true was specified, but MLS_FORCE_SUNSET_ACK="I_ACCEPT_DATA_LOSS" was NOT provided. Force sunset is INACTIVE to prevent unintentional data loss.');
     }
   }
+
+  const migrationTier = parseInt(process.env.MLS_MIGRATION_TIER, 10) || 1;
+  if (migrationTier === 2) {
+    console.warn('[WARNING] [MLS Migration]: Operator configured MLS_MIGRATION_TIER=2: Extended 12-month archive retention engaged (365d client retention / 545d server cutoff).');
+  } else if (migrationTier === 3) {
+    console.warn('[WARNING] [MLS Migration]: Operator configured MLS_MIGRATION_TIER=3: Per-session migration opt-in mode active.');
+  }
 });
 
 // Bound slowloris / header-flood exposure.

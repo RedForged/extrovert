@@ -342,8 +342,8 @@ To prevent single-metric boundary fragility, empirical evaluation of pre-decrypt
 | **Tier 3 (Redesign UX)** | Exceeds any Tier 2 threshold ($F_m > 7.0\%$ OR $F_s > 25.0\%$ OR $F_c > 35.0\%$) | **Migration UX Redesign:** Halt automatic background purge; implement per-session user prompts and selective opt-in historical export for chatty sessions. |
 
 #### Vault Storage Scaling & Deflate Compression Model:
-- **Uncompressed Encrypted Footprint:** 264 B/msg. At 100k messages, total IndexedDB footprint is ~25.18 MB (~2.5% of iOS Safari 1 GB prompt-free origin quota).
-- **Pre-Encryption Deflate Compression:** Compressing message payloads before deviceKey AES-256-GCM encryption reduces storage footprint by 1.3× (per-record) to 5–8× (batch/stream), shrinking 100k messages to ~3.6–19 MB and guaranteeing decades of chat history remain safely within mobile quotas.
+- **Pinned Baseline (Uncompressed Encrypted Footprint):** ~260–265 B/msg. At 100,000 messages, total IndexedDB footprint is ~25.27 MB (~2.46% of iOS Safari 1 GB prompt-free origin quota). Zero compression is required to satisfy mobile browser limits.
+- **Pre-Encryption Batch Deflate Optimization:** Compressing conversation message JSON arrays via deflate prior to deviceKey AES-256-GCM encryption reduces storage footprint to ~19 B/msg (13.8× reduction), reducing 100,000 messages to ~1.81 MB (< 0.4% of iOS Safari quota).
 
 ---
 
@@ -425,16 +425,16 @@ CREATE TABLE IF NOT EXISTS mls_credential_backups (
    - Blocked clients query `/mls/config` with exponential backoff (15m -> 30m -> 60m cap).
    - `@matrix-org/olm`, `olm.js`, and `olm.wasm` are retained throughout the 180-day coexistence window to ensure unmigrated and offline devices never lose message history.
 4. **Phase 6 (Empirical Validation & Dual-Profile Benchmark):** [✅ PASSED]
-   - Executed against realistic synthetic corpus comparing **Profile A (Realistic Baseline)** vs **Profile B (Conservative Stress Test)** (~20,200 messages total across heavy-tailed session sizes 6–1,002 msgs):
+   - Executed against realistic synthetic corpus comparing **Profile A (Realistic Baseline)** vs **Profile B (Conservative Stress Test)** (~18,345 messages total across heavy-tailed session sizes 6–898 msgs):
      * **Profile A (Realistic Baseline, 3.3% device-restore rate):**
-       - **The Three Numbers:** Total Message Failure Rate **0.21%** (20 / 9,613), Session Failure Rate **5.00%** (3 / 60), Coverage-Weighted Failure Rate **9.02%**.
-       - **Throughput:** 614 messages/second across 97 batches.
+       - **The Three Numbers:** Total Message Failure Rate **0.31%** (29 / 9,370), Session Failure Rate **5.00%** (3 / 60), Coverage-Weighted Failure Rate **8.40%** (787 / 9,370).
+       - **Throughput:** 682 messages/second across 94 batches.
        - **Tier Gate (§7.7):** **Tier 1 Pass** ($F_m \le 3.0\%$, $F_s \le 10.0\%$, $F_c \le 15.0\%$). Standard sunset schedule holds.
-     * **Profile B (Conservative Stress Test, 10–14% injected failure rate):**
-       - **The Three Numbers:** Total Message Failure Rate **1.80%** (191 / 10,592), Session Failure Rate **20.69%** (12 / 58), Coverage-Weighted Failure Rate **26.32%**.
-       - **Throughput:** 546 messages/second across 106 batches.
+     * **Profile B (Conservative Stress Test, 10–14% injected failure rate, Backlog Window model):**
+       - **The Three Numbers:** Total Message Failure Rate **3.94%** (354 / 8,975), Session Failure Rate **20.69%** (12 / 58), Coverage-Weighted Failure Rate **23.62%** (2,120 / 8,975).
+       - **Throughput:** 676 messages/second across 90 batches.
        - **Tier Gate (§7.7):** **Tier 2** ($F_m \le 7.0\%$, $F_s \le 25.0\%$, $F_c \le 35.0\%$). Operational action: extend read-only archive to 12 months.
-   - **Vault Storage & Compression:** Measured 263 B/msg uncompressed. Deflate compression yields 199 B/msg (chunk-level) to ~35 B/msg (stream-level), projecting 100k messages at **3.6–19 MB** (well below iOS Safari 1 GB prompt-free limit).
+   - **Vault Storage & Compression:** Measured 265 B/msg uncompressed (25.27 MB at 100k messages). Pre-encryption batch deflate yields ~19 B/msg (1.81 MB at 100k messages), both comfortably under the iOS Safari 1 GB prompt-free limit.
    - **Full Report:** [phase6_empirical_validation_report.md](file:///home/axoisaxo/extrovert/docs/migration/phase6_empirical_validation_report.md).
 5. **Phase 7 (Server Sunset & Legacy Code Removal):**
    - Scheduled after Day 365 or after all three sunset criteria are met (100% active device migration coverage, 30 consecutive days of zero legacy traffic, 180+ days elapsed since migration launch):
