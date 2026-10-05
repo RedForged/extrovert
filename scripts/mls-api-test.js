@@ -78,10 +78,24 @@ async function run() {
     console.log('   [OK] Active devices listed\n');
 
     // 4. Batch Upload KeyPackages
-    console.log('3. Testing POST /mls/keypackages (batch upload)...');
+    console.log('3. Testing POST /mls/keypackages (validation & batch upload)...');
+    // Verify rejection when keypackage_ref is missing
+    const badUpload = await req('/mls/keypackages', {
+      token: btok,
+      method: 'POST',
+      body: { device_id: 'bob_desktop', keypackages: [{ data: 'kp_invalid', ciphersuite: 1 }] }
+    });
+    assert.strictEqual(badUpload.status, 400);
+    assert.ok(badUpload.json.error.includes('keypackage_ref'), 'Must reject missing keypackage_ref');
+
     const packages = [];
     for (let i = 0; i < 20; i++) {
-      packages.push({ data: 'kp_bob_pkg_' + i, ciphersuite: 1 });
+      const hexSuffix = (i < 10 ? '0' + i : String(i));
+      packages.push({
+        data: 'kp_bob_pkg_' + i,
+        ciphersuite: 1,
+        keypackage_ref: 'b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0' + hexSuffix
+      });
     }
     const uploadRes = await req('/mls/keypackages', {
       token: btok,
@@ -90,7 +104,7 @@ async function run() {
     });
     assert.strictEqual(uploadRes.status, 200);
     assert.strictEqual(uploadRes.json.saved, 20);
-    console.log('   [OK] Batch KeyPackages uploaded\n');
+    console.log('   [OK] Batch KeyPackages uploaded with valid keypackage_ref (and missing ref rejected with 400)\n');
 
     // 5. KeyPackage Status
     console.log('4. Testing GET /mls/keypackages/status...');

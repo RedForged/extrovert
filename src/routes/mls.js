@@ -115,6 +115,17 @@ router.post('/keypackages', requireAuth, (req, res) => {
     return res.status(403).json({ error: 'Device not registered or revoked' });
   }
 
+  for (let i = 0; i < keypackages.length; i++) {
+    const p = keypackages[i];
+    const ref = p && (p.keypackage_ref || p.ref);
+    if (!ref || typeof ref !== 'string' || !/^[0-9a-fA-F]{64}$/.test(ref)) {
+      return res.status(400).json({
+        error: 'Each keypackage must include a valid 64-character hex keypackage_ref',
+        index: i
+      });
+    }
+  }
+
   try {
     const count = saveMlsKeyPackages(user.id, device_id, keypackages);
     res.json({ ok: true, saved: count });
@@ -199,7 +210,7 @@ router.post('/groups/:groupId/proposals', requireAuth, (req, res) => {
   const groupId = req.params.groupId;
   const { epoch, proposal_ref, sender_leaf, proposal_type, proposal_data, device_id } = req.body || {};
 
-  if (!groupId || epoch === undefined || !proposal_ref || sender_leaf === undefined || !proposal_type || !proposal_data) {
+  if (!groupId || epoch === undefined || !proposal_data) {
     return res.status(400).json({ error: 'Missing required proposal fields' });
   }
 
@@ -212,8 +223,12 @@ router.post('/groups/:groupId/proposals', requireAuth, (req, res) => {
     if (!isRoomMember(roomId, user.id)) return res.status(403).json({ error: 'Not a room member' });
   }
 
-  saveMlsProposal(groupId, epoch, proposal_ref, sender_leaf, proposal_type, proposal_data);
-  res.status(201).json({ ok: true });
+  const pRef = proposal_ref || require('crypto').createHash('sha256').update(String(proposal_data)).digest('hex');
+  const pType = typeof proposal_type === 'number' ? proposal_type : (proposal_type === 'remove' ? 3 : (proposal_type === 'update' ? 2 : 1));
+  const sLeaf = Number(sender_leaf) || 0;
+
+  saveMlsProposal(groupId, epoch, pRef, sLeaf, pType, proposal_data);
+  res.status(201).json({ ok: true, proposal_ref: pRef });
 });
 
 router.get('/groups/:groupId/proposals', requireAuth, (req, res) => {

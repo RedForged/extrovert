@@ -154,6 +154,8 @@ async function run() {
       const cred = { credentialType: 'basic', identity: new TextEncoder().encode(String(mu.id)) };
       userCredentials[mu.name] = cred;
       const kp = await mls.generateKeyPackage(cred, mls.defaultCapabilities(), mls.defaultLifetime, [], impl);
+      const ref = await mls.makeKeyPackageRef(kp.publicPackage, impl.hash);
+      const refHex = uint8ToHex(ref);
       userKeyPackages[mu.name] = kp;
       const encKp = mls.encodeMlsMessage({
         keyPackage: kp.publicPackage,
@@ -169,7 +171,8 @@ async function run() {
           device_id: mu.devId,
           keypackages: [{
             data: uint8ToB64(encKp),
-            ciphersuite: 1
+            ciphersuite: 1,
+            keypackage_ref: refHex
           }]
         })
       });
@@ -528,6 +531,141 @@ async function run() {
     assert.strictEqual(conflictJson.error, 'EpochConflict');
     assert.strictEqual(conflictJson.server_epoch, 2);
     console.log('   [OK] CAS epoch conflict detected: rejected stale commit with 409 EpochConflict');
+
+    // 9. Member Removal / Admin Kick Test (Alice removes Dave at leaf 2)
+    console.log('\n9. Testing Admin Kick / Member Removal (Alice removes Dave)...');
+    const removeDaveProposal = { proposalType: 'remove', remove: { removed: 2 } };
+    const kickCommitRes = await mls.createCommit(
+      { state: aliceRoomState, cipherSuite: impl },
+      { extraProposals: [removeDaveProposal] }
+    );
+    aliceRoomState = kickCommitRes.newState;
+    const kickCommitEnc = mls.encodeMlsMessage(kickCommitRes.commit);
+
+    const kickCommitPost = await fetch(`${base}/mls/groups/${roomGroupId}/commit`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        current_epoch: 2,
+        commit_message: uint8ToB64(kickCommitEnc),
+        welcomes: [],
+        members_removed: [{ user_id: daveId, device_id: 'dev_dave_desk' }],
+        idempotency_key: `kick_dave_${Date.now()}`
+      })
+    }).then(r => r.json());
+    assert.strictEqual(kickCommitPost.ok, true, 'Kick commit must be accepted by server');
+    assert.strictEqual(kickCommitPost.new_epoch, 3, 'Epoch must advance to 3 on member kick');
+    console.log('   [OK] Admin kick commit accepted on server at epoch 3');
+
+    // Charlie fetches commit since epoch 2 and catches up
+    const charlieCommitsRes = await fetch(`${base}/mls/groups/${roomGroupId}/commits?since=2`, {
+      headers: { 'Authorization': `Bearer ${tokens.charlie}` }
+    }).then(r => r.json());
+    assert.strictEqual(charlieCommitsRes.commits.length, 1);
+    const decKickCommit = mls.decodeMlsMessage(b64ToUint8(charlieCommitsRes.commits[0].commit_data), 0)[0];
+    const charlieCatchup = await mls.processPrivateMessage(charlieRoomState, decKickCommit.privateMessage, mls.emptyPskIndex, impl);
+    charlieRoomState = charlieCatchup.newState;
+    assert.strictEqual(Number(charlieRoomState.groupContext.epoch), 3);
+    console.log('   [OK] Remaining member Charlie processed kick commit and advanced to epoch 3');
+
+    // Alice sends post-kick message at epoch 3
+    const postKickText = 'Security Notice: Dave has been removed from this room.';
+    const postKickAppRes = await mls.createApplicationMessage(aliceRoomState, new TextEncoder().encode(postKickText), impl);
+    aliceRoomState = postKickAppRes.newState;
+    const postKickCipherB64 = uint8ToB64(mls.encodeMlsMessage({
+      privateMessage: postKickAppRes.privateMessage,
+      wireformat: 'mls_private_message',
+      version: 'mls10'
+    }));
+
+    // Post to room
+    await fetch(`${base}/api/v1/rooms/${room2Id}/channels/${channel2.id}/messages`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body: postKickCipherB64, proto: 'mls', group_id: roomGroupId })
+    });
+
+    // Charlie decrypts successfully
+    const decMsg3ByCharlie = mls.decodeMlsMessage(b64ToUint8(postKickCipherB64), 0)[0];
+    const res3ByCharlie = await mls.processPrivateMessage(charlieRoomState, decMsg3ByCharlie.privateMessage, mls.emptyPskIndex, impl);
+    charlieRoomState = res3ByCharlie.newState;
+    assert.strictEqual(new TextDecoder().decode(res3ByCharlie.message), postKickText);
+    console.log(`   [OK] Remaining member Charlie decrypted post-kick message: "${postKickText}"`);
+
+    // Kicked user Dave attempts to decrypt post-kick message (must fail)
+    let daveDecrypted = false;
+    try {
+      await mls.processPrivateMessage(daveRoomState, decMsg3ByCharlie.privateMessage, mls.emptyPskIndex, impl);
+      daveDecrypted = true;
+    } catch (_) {
+      // Expected cryptographic failure
+    }
+    assert.strictEqual(daveDecrypted, false, 'Kicked user Dave must NOT be able to decrypt post-kick message');
+    console.log('   [OK] Cryptographic forward secrecy verified: Kicked user Dave CANNOT decrypt epoch 3 message');
+
+    // 10. Voluntary Leave Test (Eve leaves Room 2)
+    console.log('\n10. Testing Voluntary Leave (Eve leaves Room 2)...');
+    // Eve is leaf index 3 in the group tree. Eve generates self-remove proposal
+    const removeEveProposal = { proposalType: 'remove', remove: { removed: 3 } };
+    const propRes = await mls.createProposal(eveRoomState, false, removeEveProposal, impl);
+    const encProp = mls.encodeMlsMessage(propRes.message);
+
+    const propPost = await fetch(`${base}/mls/groups/${roomGroupId}/proposals`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${tokens.eve}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        epoch: 3,
+        proposal_type: 'remove',
+        proposal_data: uint8ToB64(encProp)
+      })
+    }).then(r => r.json());
+    assert.strictEqual(propPost.ok, true, 'Eve self-remove proposal must be accepted by server');
+    console.log('   [OK] Eve posted self-remove proposal to delivery service at epoch 3');
+
+    // Alice commits Eve's remove proposal
+    const leaveCommitRes = await mls.createCommit(
+      { state: aliceRoomState, cipherSuite: impl },
+      { extraProposals: [removeEveProposal] }
+    );
+    aliceRoomState = leaveCommitRes.newState;
+    const leaveCommitEnc = mls.encodeMlsMessage(leaveCommitRes.commit);
+
+    const leavePost = await fetch(`${base}/mls/groups/${roomGroupId}/commit`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        current_epoch: 3,
+        commit_message: uint8ToB64(leaveCommitEnc),
+        welcomes: [],
+        members_removed: [{ user_id: eveId, device_id: 'dev_eve_desk' }],
+        idempotency_key: `leave_eve_${Date.now()}`
+      })
+    }).then(r => r.json());
+    assert.strictEqual(leavePost.ok, true, 'Voluntary leave commit must be accepted by server');
+    assert.strictEqual(leavePost.new_epoch, 4, 'Epoch must advance to 4 on voluntary leave');
+    console.log('   [OK] Remaining peer committed voluntary leave: epoch advanced to 4');
+
+    // Alice sends post-leave message at epoch 4
+    const postLeaveText = 'Eve has voluntarily left Room 2. Only Alice and Charlie remain.';
+    const postLeaveAppRes = await mls.createApplicationMessage(aliceRoomState, new TextEncoder().encode(postLeaveText), impl);
+    aliceRoomState = postLeaveAppRes.newState;
+    const postLeaveCipherB64 = uint8ToB64(mls.encodeMlsMessage({
+      privateMessage: postLeaveAppRes.privateMessage,
+      wireformat: 'mls_private_message',
+      version: 'mls10'
+    }));
+
+    // Former member Eve attempts to decrypt post-leave message (must fail)
+    let eveDecrypted = false;
+    try {
+      const decMsg4ByEve = mls.decodeMlsMessage(b64ToUint8(postLeaveCipherB64), 0)[0];
+      await mls.processPrivateMessage(eveRoomState, decMsg4ByEve.privateMessage, mls.emptyPskIndex, impl);
+      eveDecrypted = true;
+    } catch (_) {
+      // Expected cryptographic failure
+    }
+    assert.strictEqual(eveDecrypted, false, 'Former member Eve must NOT be able to decrypt post-leave message');
+    console.log('   [OK] Forward secrecy verified: Former member Eve CANNOT decrypt epoch 4 message');
 
     console.log('\n=== All Dual-Stack Room Integration Tests PASSED 100%! ===\n');
 

@@ -146,7 +146,7 @@ async function run() {
       headers: { 'Authorization': `Bearer ${tokenCharlie}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         device_id: charlieDevId,
-        keypackages: [{ data: uint8ToB64(charlieKpEnc), ciphersuite: 1 }]
+        keypackages: [{ data: uint8ToB64(charlieKpEnc), ciphersuite: 1, keypackage_ref: charlieKpRef }]
       })
     });
     console.log('   [OK] Alice and Charlie registered MLS devices. Bob left as legacy-only.');

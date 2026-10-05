@@ -143,6 +143,7 @@ CREATE TABLE mls_keypackages (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   device_id       TEXT NOT NULL,
+  keypackage_ref  TEXT,
   keypackage_data TEXT NOT NULL,
   ciphersuite     INTEGER NOT NULL DEFAULT 1,
   not_before      INTEGER NOT NULL,
@@ -151,22 +152,40 @@ CREATE TABLE mls_keypackages (
   consumed_at     INTEGER DEFAULT NULL
 );
 CREATE INDEX idx_mls_kp_available ON mls_keypackages(user_id, not_before, not_after, consumed_at);
+CREATE UNIQUE INDEX idx_mls_kp_unique ON mls_keypackages(device_id, keypackage_ref);
 ```
 
-### Two-Phase Claim Protocol:
-1. **Fetch Available:** `GET /mls/keypackages/:userId` returns candidate KeyPackages with database IDs, **without consuming them**.
-2. **Atomic Consume:** `POST /mls/keypackages/consume` accepts `{ "keypackage_ids": [101, 104] }`. Only packages incorporated into an issued commit are consumed.
-3. **Replenishment:** Client maintains a pool of 20 packages and uploads 15 when status reports `< 5` remaining.
+### Two-Phase Claim Protocol & RFC 9420 RefHash:
+1. **KeyPackageRef Requirement:** Every uploaded KeyPackage must include a valid 64-character hex `keypackage_ref` computed via RFC 9420 `RefHash("MLS 1.0 KeyPackage Reference", KeyPackage)`. Re-publishing identical packages is idempotently deduplicated via `idx_mls_kp_unique`.
+2. **Fetch Available:** `GET /mls/keypackages/:userId` returns candidate KeyPackages with database IDs, **without consuming them**.
+3. **Atomic Consume:** `POST /mls/keypackages/consume` accepts `{ "keypackage_ids": [101, 104] }`. Only packages incorporated into an issued commit are consumed.
+4. **Replenishment:** Client maintains a pool of 20 packages and uploads 15 when status reports `< 5` remaining.
 
 ---
 
 ## 7. Group Lifecycle & Moderation (Zero Server Leaf)
 
-### Client-Moderated Kicks & Removals
+### Client-Moderated Kicks & Removals (RFC 9420 Conformance)
 Extrovert **does not use a server-side DS leaf**. The server never participates in the ratchet tree and holds zero group secrets:
-1. **Room Kicks/Bans:** When a moderator kicks a user, the moderator's client submits a `RemoveProposal(target_leaf)` commit to advance the epoch.
-2. **Voluntary Leaves:** The leaving client commits a `RemoveProposal(self)` before exiting.
+1. **Admin / Moderator Kick:** When a moderator kicks a user, the moderator's client submits a `RemoveProposal(target_leaf)` commit to advance the epoch from $E$ to $E+1$. The kicked member is evicted from the tree; any subsequent messages at epoch $E+1$ cannot be decrypted by the kicked user.
+2. **Voluntary Leave (RFC 9420 Section 7.4):** RFC 9420 mandates that a committer *cannot* commit a Remove proposal removing themselves. Therefore, for voluntary leave:
+   - The departing client publishes a standalone `RemoveProposal(self)` to `POST /mls/groups/:id/proposals`.
+   - The remaining active peer (or room committer) incorporates this proposal into their next commit to advance the epoch and blank the departed leaf.
+   - The departing client immediately wipes their local group state and purges group keys from IndexedDB (`STORE_MLS_GROUPS`).
 3. **Deactivated Accounts:** The server flags the user as deactivated in the database; active group members' clients automatically fold a `RemoveProposal` into their next commit upon sync.
+
+### 7.1 Room MLS Capability Cache & Invalidation
+- **Cache Key:** Keyed per room and participant set: `room:<roomId>:<sorted_other_user_ids>`.
+- **Invalidation Triggers:**
+  1. *Roster Changes:* Adding, kicking, or leaving members immediately changes the participant set, bypassing stale cache.
+  2. *Explicit Busting:* `ExtrovertMLS.invalidateRoomMlsSupport(roomId)` purges all matching cache entries upon member add/kick/leave events.
+  3. *TTL Expiry:* 60-second background TTL ensures eventual consistency when an existing member registers their first MLS device out-of-band.
+
+### 7.2 Dual-Stack Transition Window & Key Retention
+- **Megolm State Retention:** Active `InboundGroupSession`s (`groupInbound` / `STORE_OLM`) and Olm 1:1 sessions are permanently retained in IndexedDB.
+- **Zero Key Purge on Upgrade:** Upgrading a room or DM conversation to MLS does *not* delete or purge legacy Megolm session keys.
+- **Protocol Dispatch:** Messages tagged with `proto: 'mls'` route to the MLS ratchet engine; legacy or untagged messages route to Megolm/Olm.
+- **In-Flight Resiliency:** Any delayed, interleaved, or replayed Megolm messages arriving during or after the upgrade window are transparently decrypted without message loss. Megolm keys are retained until the offline Phase 4 pre-decryption vault migration pass is verified.
 
 ---
 

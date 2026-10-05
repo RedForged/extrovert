@@ -86,8 +86,9 @@ async function run() {
     for (let i = 0; i < 20; i++) {
       const kp = await mls.generateKeyPackage(aliceCred, mls.defaultCapabilities(), mls.defaultLifetime, [], impl);
       aliceKps.push(kp);
+      const ref = await mls.makeKeyPackageRef(kp.publicPackage, impl.hash);
       const enc = mls.encodeMlsMessage({ keyPackage: kp.publicPackage, wireformat: 'mls_key_package', version: 'mls10' });
-      alicePkgs.push({ data: Buffer.from(enc).toString('base64'), ciphersuite: 1 });
+      alicePkgs.push({ data: Buffer.from(enc).toString('base64'), ciphersuite: 1, keypackage_ref: Buffer.from(ref).toString('hex') });
     }
     await req('/mls/keypackages', { token: atok, method: 'POST', body: { device_id: 'alice1', keypackages: alicePkgs } });
     console.log('   [OK] Alice initialized\n');
@@ -106,8 +107,9 @@ async function run() {
     for (let i = 0; i < 20; i++) {
       const kp = await mls.generateKeyPackage(bob1Cred, mls.defaultCapabilities(), mls.defaultLifetime, [], impl);
       bob1Kps.push(kp);
+      const ref = await mls.makeKeyPackageRef(kp.publicPackage, impl.hash);
       const enc = mls.encodeMlsMessage({ keyPackage: kp.publicPackage, wireformat: 'mls_key_package', version: 'mls10' });
-      bob1Pkgs.push({ data: Buffer.from(enc).toString('base64'), ciphersuite: 1 });
+      bob1Pkgs.push({ data: Buffer.from(enc).toString('base64'), ciphersuite: 1, keypackage_ref: Buffer.from(ref).toString('hex') });
     }
     await req('/mls/keypackages', { token: btok1, method: 'POST', body: { device_id: 'bob1', keypackages: bob1Pkgs } });
     console.log('   [OK] Bob Device 1 initialized\n');
@@ -217,11 +219,12 @@ async function run() {
     });
 
     const bob2Kp = await mls.generateKeyPackage(bob2Cred, mls.defaultCapabilities(), mls.defaultLifetime, [], impl);
+    const bob2Ref = await mls.makeKeyPackageRef(bob2Kp.publicPackage, impl.hash);
     const bob2KpWire = mls.encodeMlsMessage({ keyPackage: bob2Kp.publicPackage, wireformat: 'mls_key_package', version: 'mls10' });
     await req('/mls/keypackages', {
       token: btok2,
       method: 'POST',
-      body: { device_id: 'bob2', keypackages: [{ data: Buffer.from(bob2KpWire).toString('base64'), ciphersuite: 1 }] }
+      body: { device_id: 'bob2', keypackages: [{ data: Buffer.from(bob2KpWire).toString('base64'), ciphersuite: 1, keypackage_ref: Buffer.from(bob2Ref).toString('hex') }] }
     });
 
     // Bob Laptop adds Bob Mobile to the group via AddProposal + Commit

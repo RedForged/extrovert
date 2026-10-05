@@ -247,7 +247,8 @@
             }).then(function () {
               pkgs.push({
                 data: uint8ToB64(encoded),
-                ciphersuite: 1
+                ciphersuite: 1,
+                keypackage_ref: refHex
               });
             });
           });
@@ -369,16 +370,24 @@
       return r.json();
     }).then(function (res) {
       if (!res || !Array.isArray(res.commits) || !res.commits.length) return groupState;
-      var cur = groupState;
-      for (var i = 0; i < res.commits.length; i++) {
-        var cBytes = b64ToUint8(res.commits[i].commit_data);
-        var decCommit = mls.decodeMlsMessage(cBytes, 0)[0];
-        if (decCommit) {
-          var syncRes = mls.processMessage(decCommit, cur, mls.emptyPskIndex, function () {}, ciphersuiteImpl);
-          if (syncRes && syncRes.newState) cur = syncRes.newState;
-        }
-      }
-      return cur;
+      var chain = Promise.resolve(groupState);
+      res.commits.forEach(function (cRec) {
+        chain = chain.then(function (cur) {
+          var cBytes = b64ToUint8(cRec.commit_data);
+          var decCommit = mls.decodeMlsMessage(cBytes, 0)[0];
+          if (!decCommit) return cur;
+          if (decCommit.wireformat === 'mls_private_message') {
+            return mls.processPrivateMessage(cur, decCommit.privateMessage, mls.emptyPskIndex, ciphersuiteImpl).then(function (r) {
+              return r && r.newState ? r.newState : cur;
+            }).catch(function () { return cur; });
+          } else {
+            return mls.processMessage(decCommit, cur, mls.emptyPskIndex, function () {}, ciphersuiteImpl).then(function (r) {
+              return r && r.newState ? r.newState : cur;
+            }).catch(function () { return cur; });
+          }
+        });
+      });
+      return chain;
     }).catch(function () { return groupState; });
   }
 
@@ -536,6 +545,15 @@
 
   function getRoomGroupId(roomId) {
     return 'room:' + String(roomId);
+  }
+
+  function invalidateRoomMlsSupport(roomId) {
+    var gid = getRoomGroupId(roomId);
+    Object.keys(roomMlsSupportCache).forEach(function (k) {
+      if (k.indexOf(gid) === 0) {
+        delete roomMlsSupportCache[k];
+      }
+    });
   }
 
   function checkRoomMlsSupport(roomId, memberUserIds) {
@@ -766,6 +784,130 @@
     });
   }
 
+  function removeMemberFromRoomGroup(roomId, targetUserId) {
+    var mls = root.MLS;
+    var gid = getRoomGroupId(roomId);
+
+    return ensureRoomGroup(roomId).then(function (groupState) {
+      var targetLeafIndex = -1;
+      var targetDeviceId = null;
+      var uidStr = String(targetUserId);
+
+      if (Array.isArray(groupState.ratchetTree)) {
+        for (var i = 0; i < groupState.ratchetTree.length; i += 2) {
+          var node = groupState.ratchetTree[i];
+          if (node && node.nodeType === 'leaf' && node.leaf && node.leaf.credential) {
+            var ident = new TextDecoder().decode(node.leaf.credential.identity);
+            if (ident === uidStr || ident.indexOf('user:' + uidStr + ':') === 0 || ident.indexOf(uidStr) !== -1) {
+              targetLeafIndex = i / 2;
+              var devMatch = ident.match(/dev:([a-zA-Z0-9_-]+)/);
+              if (devMatch) targetDeviceId = devMatch[1];
+              break;
+            }
+          }
+        }
+      }
+
+      if (targetLeafIndex === -1) {
+        throw new Error('Member not found in MLS group tree');
+      }
+
+      var removeProposal = {
+        proposalType: 'remove',
+        remove: { removed: targetLeafIndex }
+      };
+
+      return mls.createCommit(
+        { state: groupState, cipherSuite: ciphersuiteImpl },
+        { extraProposals: [removeProposal] }
+      ).then(function (commitRes) {
+        var commitEnc = mls.encodeMlsMessage(commitRes.commit);
+
+        return csrfFetch('/mls/groups/' + encodeURIComponent(gid) + '/commit', {
+          method: 'POST',
+          body: JSON.stringify({
+            current_epoch: Number(groupState.groupContext.epoch),
+            commit_message: uint8ToB64(commitEnc),
+            welcomes: [],
+            members_added: [],
+            members_removed: [{
+              user_id: parseInt(targetUserId, 10),
+              device_id: targetDeviceId || ''
+            }],
+            idempotency_key: 'rm_' + gid + '_' + targetUserId + '_' + Date.now()
+          })
+        }).then(function (r) { return r.json(); }).then(function (commitApiRes) {
+          if (commitApiRes.error === 'EpochConflict') {
+            return catchUpCommits(gid, groupState, Number(groupState.groupContext.epoch)).then(function (updatedState) {
+              activeGroups[gid] = updatedState;
+              return removeMemberFromRoomGroup(roomId, targetUserId);
+            });
+          }
+          activeGroups[gid] = commitRes.newState;
+          return saveGroupState(gid, commitRes.newState).then(function () {
+            invalidateRoomMlsSupport(roomId);
+            return commitRes.newState;
+          });
+        });
+      });
+    });
+  }
+
+  function leaveRoomGroup(roomId) {
+    var mls = root.MLS;
+    var gid = getRoomGroupId(roomId);
+    var myId = currentUserId();
+
+    return ensureRoomGroup(roomId).then(function (groupState) {
+      var myLeafIndex = -1;
+      var uidStr = String(myId);
+      if (Array.isArray(groupState.ratchetTree)) {
+        for (var i = 0; i < groupState.ratchetTree.length; i += 2) {
+          var node = groupState.ratchetTree[i];
+          if (node && node.nodeType === 'leaf' && node.leaf && node.leaf.credential) {
+            var ident = new TextDecoder().decode(node.leaf.credential.identity);
+            if (ident === uidStr || ident.indexOf('user:' + uidStr + ':') === 0 || ident.indexOf(uidStr) !== -1) {
+              myLeafIndex = i / 2;
+              break;
+            }
+          }
+        }
+      }
+
+      if (myLeafIndex === -1) {
+        delete activeGroups[gid];
+        invalidateRoomMlsSupport(roomId);
+        return idbDelete(STORE_MLS_GROUPS, gid);
+      }
+
+      var selfRemoveProposal = {
+        proposalType: 'remove',
+        remove: { removed: myLeafIndex }
+      };
+
+      return mls.createProposal(groupState, false, selfRemoveProposal, ciphersuiteImpl).then(function (propRes) {
+        var encProp = mls.encodeMlsMessage(propRes.message);
+
+        return csrfFetch('/mls/groups/' + encodeURIComponent(gid) + '/proposals', {
+          method: 'POST',
+          body: JSON.stringify({
+            epoch: Number(groupState.groupContext.epoch),
+            proposal_type: 'remove',
+            proposal_data: uint8ToB64(encProp)
+          })
+        }).then(function () {
+          delete activeGroups[gid];
+          invalidateRoomMlsSupport(roomId);
+          return idbDelete(STORE_MLS_GROUPS, gid);
+        });
+      });
+    }).catch(function () {
+      delete activeGroups[gid];
+      invalidateRoomMlsSupport(roomId);
+      return idbDelete(STORE_MLS_GROUPS, gid);
+    });
+  }
+
   function encryptRoomMessage(roomId, plaintext, memberUserIds) {
     var mls = root.MLS;
     var gid = getRoomGroupId(roomId);
@@ -823,6 +965,9 @@
     checkRoomMlsSupport: checkRoomMlsSupport,
     ensureRoomGroup: ensureRoomGroup,
     addMemberToRoomGroup: addMemberToRoomGroup,
+    removeMemberFromRoomGroup: removeMemberFromRoomGroup,
+    leaveRoomGroup: leaveRoomGroup,
+    invalidateRoomMlsSupport: invalidateRoomMlsSupport,
     encryptRoomMessage: encryptRoomMessage,
     decryptRoomMessage: decryptRoomMessage,
     pollWelcomes: pollAndProcessWelcomes,

@@ -640,6 +640,7 @@ try { db.exec(`
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     device_id       TEXT NOT NULL,
+    keypackage_ref  TEXT,
     keypackage_data TEXT NOT NULL,
     ciphersuite     INTEGER NOT NULL DEFAULT 1,
     not_before      INTEGER NOT NULL DEFAULT 0,
@@ -648,7 +649,9 @@ try { db.exec(`
     consumed_at     INTEGER DEFAULT NULL
   );
 `); } catch {}
+try { db.exec(`ALTER TABLE mls_keypackages ADD COLUMN keypackage_ref TEXT`); } catch {}
 try { db.exec(`CREATE INDEX IF NOT EXISTS idx_mls_kp_available ON mls_keypackages(user_id, not_before, not_after, consumed_at)`); } catch {}
+try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mls_kp_unique ON mls_keypackages(device_id, keypackage_ref)`); } catch {}
 
 try { db.exec(`
   CREATE TABLE IF NOT EXISTS mls_groups (
@@ -1767,20 +1770,25 @@ function saveMlsKeyPackages(userId, deviceId, packages) {
   const cleanDev = String(deviceId).trim();
   if (!Array.isArray(packages) || !packages.length) return 0;
   const insert = db.prepare(`
-    INSERT INTO mls_keypackages (user_id, device_id, keypackage_data, ciphersuite, not_before, not_after, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT OR IGNORE INTO mls_keypackages (user_id, device_id, keypackage_ref, keypackage_data, ciphersuite, not_before, not_after, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
   db.exec('BEGIN IMMEDIATE');
   try {
+    let savedCount = 0;
     for (const p of packages) {
       const data = typeof p === 'string' ? p : (p && (p.data || p.keypackage_data));
+      const ref = (p && (p.keypackage_ref || p.ref)) ? String(p.keypackage_ref || p.ref).trim().toLowerCase() : null;
       const cs = (p && p.ciphersuite) || 1;
       const notBefore = (p && Number(p.not_before)) || 0;
       const notAfter = (p && Number(p.not_after)) || Math.floor((now + 90 * 86400000) / 1000);
-      if (data) insert.run(userId, cleanDev, String(data), cs, notBefore, notAfter, now);
+      if (data) {
+        const res = insert.run(userId, cleanDev, ref, String(data), cs, notBefore, notAfter, now);
+        if (res.changes > 0) savedCount++;
+      }
     }
     db.exec('COMMIT');
-    return packages.length;
+    return savedCount;
   } catch (err) {
     db.exec('ROLLBACK');
     throw err;
@@ -1793,7 +1801,7 @@ function getMlsKeyPackagesForUser(userId) {
   const nowSec = Math.floor(Date.now() / 1000);
   for (const dev of devices) {
     const kp = db.prepare(`
-      SELECT id, device_id, keypackage_data, ciphersuite, not_before, not_after
+      SELECT id, device_id, keypackage_ref, keypackage_data, ciphersuite, not_before, not_after
       FROM mls_keypackages
       WHERE user_id = ? AND device_id = ? AND consumed_at IS NULL AND (? BETWEEN not_before AND not_after)
       ORDER BY id ASC LIMIT 1
@@ -1826,7 +1834,7 @@ function claimMlsKeyPackage(userId, deviceId) {
       WHERE user_id = ? AND device_id = ? AND consumed_at IS NULL AND (? BETWEEN not_before AND not_after)
       ORDER BY id ASC LIMIT 1
     )
-    RETURNING id, device_id, keypackage_data, ciphersuite
+    RETURNING id, device_id, keypackage_ref, keypackage_data, ciphersuite
   `).get(now, userId, String(deviceId), nowSec) || null;
 }
 
@@ -1839,6 +1847,7 @@ function claimUserMlsKeyPackages(userId) {
       result.push({
         device_id: dev.device_id,
         device_name: dev.device_name,
+        keypackage_ref: kp.keypackage_ref,
         keypackage_data: kp.keypackage_data,
         ciphersuite: kp.ciphersuite
       });

@@ -58,10 +58,19 @@ async function run() {
 
   const packagesDev1 = [];
   for (let i = 0; i < 20; i++) {
-    packagesDev1.push({ data: 'kp_dev1_' + i, ciphersuite: 1 });
+    const hexSuffix = (i < 10 ? '0' + i : String(i));
+    packagesDev1.push({
+      data: 'kp_dev1_' + i,
+      ciphersuite: 1,
+      keypackage_ref: 'a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0' + hexSuffix
+    });
   }
   const uploaded = db.saveMlsKeyPackages(u2.id, 'bob_laptop', packagesDev1);
   assert.strictEqual(uploaded, 20);
+
+  // Duplicate publish test: Re-uploading same keypackages should be ignored due to idx_mls_kp_unique
+  const duplicateUpload = db.saveMlsKeyPackages(u2.id, 'bob_laptop', packagesDev1);
+  assert.strictEqual(duplicateUpload, 0, 'Duplicate KeyPackages must be ignored by unique index');
 
   const statusBefore = db.getMlsKeyPackageStatus(u2.id, 'bob_laptop');
   assert.strictEqual(statusBefore, 20);
@@ -71,17 +80,22 @@ async function run() {
   const claimed1 = db.claimMlsKeyPackage(u2.id, 'bob_laptop');
   assert.ok(claimed1, 'Must claim a keypackage');
   assert.strictEqual(claimed1.keypackage_data, 'kp_dev1_0');
+  assert.ok(claimed1.keypackage_ref, 'Claimed package must include keypackage_ref');
 
   const statusAfter1 = db.getMlsKeyPackageStatus(u2.id, 'bob_laptop');
   assert.strictEqual(statusAfter1, 19, 'Pool count must decrement by 1');
 
   // Claim across user's devices
-  db.saveMlsKeyPackages(u2.id, 'bob_phone', [{ data: 'kp_phone_1', ciphersuite: 1 }]);
+  db.saveMlsKeyPackages(u2.id, 'bob_phone', [{
+    data: 'kp_phone_1',
+    ciphersuite: 1,
+    keypackage_ref: 'c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c001'
+  }]);
   const userClaim = db.claimUserMlsKeyPackages(u2.id);
   assert.strictEqual(userClaim.length, 2, 'Should claim 1 for bob_laptop and 1 for bob_phone');
   assert.strictEqual(userClaim[0].device_id, 'bob_laptop');
   assert.strictEqual(userClaim[1].device_id, 'bob_phone');
-  console.log('   [OK] KeyPackage pool and single-use claiming verified\n');
+  console.log('   [OK] KeyPackage pool, keypackage_ref deduplication, and single-use claiming verified\n');
 
   // 4. Atomic Group Init & CAS Epoch Advancement
   console.log('4. Testing Atomic Group Init & CAS Commit Sequencer...');
