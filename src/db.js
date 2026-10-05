@@ -767,11 +767,19 @@ try { db.exec(`
     event                       TEXT NOT NULL,
     timestamp                   INTEGER NOT NULL,
     coverage_pct                REAL NOT NULL,
+    required_coverage_pct       REAL NOT NULL DEFAULT 99,
+    operator_name               TEXT NOT NULL DEFAULT 'unattributed',
+    migration_start_date        TEXT NOT NULL DEFAULT '',
+    sunset_cutoff_date          TEXT NOT NULL DEFAULT '',
     acknowledged_by             TEXT NOT NULL,
     operator_ip                 TEXT
   );
 `); } catch {}
 try { db.exec(`ALTER TABLE mls_sunset_audit ADD COLUMN operator_ip TEXT;`); } catch {}
+try { db.exec(`ALTER TABLE mls_sunset_audit ADD COLUMN required_coverage_pct REAL NOT NULL DEFAULT 99;`); } catch {}
+try { db.exec(`ALTER TABLE mls_sunset_audit ADD COLUMN operator_name TEXT NOT NULL DEFAULT 'unattributed';`); } catch {}
+try { db.exec(`ALTER TABLE mls_sunset_audit ADD COLUMN migration_start_date TEXT NOT NULL DEFAULT '';`); } catch {}
+try { db.exec(`ALTER TABLE mls_sunset_audit ADD COLUMN sunset_cutoff_date TEXT NOT NULL DEFAULT '';`); } catch {}
 // Fix stale referred_by links for users whose referrer no longer has a referral code.
 db.prepare(`UPDATE users SET referred_by = NULL WHERE referred_by IS NOT NULL AND referred_by IN (SELECT id FROM users WHERE referral_code IS NULL)`).run();
 // Ensure avatar paths have /uploads/ prefix for template rendering.
@@ -2348,15 +2356,26 @@ function recordMigrationTelemetry(userId, hasCompletedFullScan, totalMigrated, u
 }
 
 let lastAuditTs = 0;
-function recordSunsetAudit(event, coveragePct, acknowledgedBy, operatorIp) {
+function recordSunsetAudit(event, coveragePct, requiredCoveragePct, operatorName, migrationStartDate, sunsetCutoffDate, acknowledgedBy, operatorIp) {
   const now = Date.now();
   if (now - lastAuditTs < 5000) return;
   lastAuditTs = now;
   try {
     db.prepare(`
-      INSERT INTO mls_sunset_audit (event, timestamp, coverage_pct, acknowledged_by, operator_ip)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(event, now, coveragePct || 0, acknowledgedBy || 'SYSTEM', operatorIp || '127.0.0.1');
+      INSERT INTO mls_sunset_audit (
+        event, timestamp, coverage_pct, required_coverage_pct, operator_name, migration_start_date, sunset_cutoff_date, acknowledged_by, operator_ip
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      event,
+      now,
+      coveragePct != null ? coveragePct : 0,
+      requiredCoveragePct != null ? requiredCoveragePct : 99,
+      operatorName || 'unattributed',
+      migrationStartDate || '',
+      sunsetCutoffDate || '',
+      acknowledgedBy || 'SYSTEM',
+      operatorIp || '127.0.0.1'
+    );
   } catch (_) {}
 }
 
@@ -2364,17 +2383,68 @@ function getFleetMigrationSummary() {
   const totalUsersRow = db.prepare(`SELECT COUNT(*) AS total FROM users`).get();
   const totalUsers = totalUsersRow ? totalUsersRow.total : 0;
 
-  const migratedUsersRow = db.prepare(`
-    SELECT COUNT(*) AS migrated FROM mls_migration_telemetry WHERE has_completed_full_scan = 1
-  `).get();
-  const migratedUsers = migratedUsersRow ? migratedUsersRow.migrated : 0;
+  const thirtyDaysAgo = Date.now() - (30 * 86400 * 1000);
+
+  // Active users in last 30 days (sent or received in messages or room_messages)
+  const activeUserRows = db.prepare(`
+    SELECT DISTINCT user_id FROM (
+      SELECT from_id AS user_id FROM messages WHERE created_at > ?
+      UNION
+      SELECT to_id AS user_id FROM messages WHERE created_at > ?
+      UNION
+      SELECT user_id FROM room_messages WHERE created_at > ?
+    )
+  `).all(thirtyDaysAgo, thirtyDaysAgo, thirtyDaysAgo);
+  const activeUserIds = new Set(activeUserRows.map(r => r.user_id));
+  const activeUsersTotal = activeUserIds.size;
+
+  // Migrated signal: (1) hasCompletedFullScan reported via telemetry
+  const telemetryScanRows = db.prepare(`
+    SELECT user_id FROM mls_migration_telemetry WHERE has_completed_full_scan = 1
+  `).all();
+  const scanMigratedSet = new Set(telemetryScanRows.map(r => r.user_id));
+
+  // (2) Server-side negative heuristic: has registered MLS devices AND 0 legacy messages in last 30d
+  const mlsDeviceUsers = db.prepare(`SELECT DISTINCT user_id FROM mls_devices`).all();
+  const mlsDeviceUserSet = new Set(mlsDeviceUsers.map(r => r.user_id));
+
+  const legacyActiveUsers = db.prepare(`
+    SELECT DISTINCT user_id FROM (
+      SELECT from_id AS user_id FROM messages WHERE proto IN ('olm', 'megolm', 'rsa') AND created_at > ?
+      UNION
+      SELECT to_id AS user_id FROM messages WHERE proto IN ('olm', 'megolm', 'rsa') AND created_at > ?
+      UNION
+      SELECT user_id FROM room_messages WHERE proto IN ('olm', 'megolm') AND created_at > ?
+    )
+  `).all(thirtyDaysAgo, thirtyDaysAgo, thirtyDaysAgo);
+  const legacyActiveSet = new Set(legacyActiveUsers.map(r => r.user_id));
+
+  function isUserMigrated(uid) {
+    return scanMigratedSet.has(uid) || (mlsDeviceUserSet.has(uid) && !legacyActiveSet.has(uid));
+  }
+
+  // Count active migrated users
+  let activeMigratedCount = 0;
+  for (const uid of activeUserIds) {
+    if (isUserMigrated(uid)) activeMigratedCount++;
+  }
+
+  // Count registered migrated users
+  const allUserRows = db.prepare(`SELECT id FROM users`).all();
+  let registeredMigratedCount = 0;
+  for (const u of allUserRows) {
+    if (isUserMigrated(u.id)) registeredMigratedCount++;
+  }
+
+  const registeredCoveragePct = totalUsers > 0 ? Math.round((registeredMigratedCount / totalUsers) * 100) : 0;
+  const activeCoveragePct = activeUsersTotal > 0
+    ? Math.round((activeMigratedCount / activeUsersTotal) * 100)
+    : (totalUsers > 0 ? registeredCoveragePct : 100);
 
   const blockedUsersRow = db.prepare(`
     SELECT COUNT(*) AS blocked FROM mls_migration_telemetry WHERE blocked_by_policy = 1
   `).get();
   const blockedUsers = blockedUsersRow ? blockedUsersRow.blocked : 0;
-
-  const pct = totalUsers > 0 ? Math.round((migratedUsers / totalUsers) * 100) : 0;
 
   const buckets = db.prepare(`
     SELECT unrecoverable_bucket, COUNT(*) AS count
@@ -2386,8 +2456,9 @@ function getFleetMigrationSummary() {
   const sunsetStatus = getLegacyTrafficSunsetStatus();
   const trafficReady = Boolean(sunsetStatus.sunset_eligible);
 
-  // 2. Fleet Migration Sub-Criterion (100% active users migrated)
-  const fleetReady = (totalUsers > 0 && migratedUsers >= totalUsers);
+  // 2. Fleet Migration Sub-Criterion (Configurable active users threshold, default 99%)
+  const requiredCoveragePct = parseInt(process.env.MLS_REQUIRED_COVERAGE_PCT, 10) || 99;
+  const fleetReady = (activeCoveragePct >= requiredCoveragePct);
 
   // 3. Time Window Sub-Criterion (180 days elapsed since migration launch)
   const launchDateStr = process.env.MLS_MIGRATION_START_DATE || '2026-10-05T00:00:00.000Z';
@@ -2408,11 +2479,14 @@ function getFleetMigrationSummary() {
       ready: trafficReady
     },
     fleet_migration: {
-      total_users: totalUsers,
-      migrated_users: migratedUsers,
+      active_users_30d: activeUsersTotal,
+      migrated_active_users: activeMigratedCount,
+      active_users_coverage_pct: activeCoveragePct,
+      required_coverage_pct: requiredCoveragePct,
+      registered_users_total: totalUsers,
+      registered_users_migrated: registeredMigratedCount,
+      registered_users_coverage_pct: registeredCoveragePct,
       blocked_users: blockedUsers,
-      fleet_coverage_pct: pct,
-      required_coverage_pct: 100,
       ready: fleetReady,
       buckets: buckets
     },
@@ -2432,7 +2506,17 @@ function isLegacyE2eeEnabled(operatorIp) {
   if (process.env.E2EE_LEGACY_ENABLED === 'false') {
     const summary = getFleetMigrationSummary();
     if (summary.force_sunset_active) {
-      recordSunsetAudit('force_sunset_engaged', summary.fleet_migration.fleet_coverage_pct, process.env.MLS_FORCE_SUNSET_ACK, operatorIp);
+      const opName = process.env.MLS_FORCE_SUNSET_OPERATOR || 'unattributed';
+      recordSunsetAudit(
+        'force_sunset_engaged',
+        summary.fleet_migration.active_users_coverage_pct,
+        summary.fleet_migration.required_coverage_pct,
+        opName,
+        summary.time_window.migration_start_date,
+        summary.time_window.sunset_cutoff_date,
+        process.env.MLS_FORCE_SUNSET_ACK,
+        operatorIp
+      );
       return false;
     }
     if (!summary.all_criteria_met) {

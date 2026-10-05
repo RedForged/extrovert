@@ -1912,8 +1912,19 @@
     });
   }
 
+  function maybeReportPurgedLegacyTelemetry() {
+    var today = new Date().toISOString().slice(0, 10);
+    return idbGet(STORE_SECURE, 'last_purged_telemetry_day').then(function (lastDay) {
+      if (lastDay === today) return;
+      return idbSet(STORE_SECURE, 'last_purged_telemetry_day', today).then(function () {
+        return reportMigrationStatus();
+      }).catch(function () {});
+    });
+  }
+
   function decryptOlm(msg, isOwn, otherIdStr, theirCurve25519) {
     if (olmPurged) {
+      maybeReportPurgedLegacyTelemetry();
       return Promise.resolve('[Legacy message — encryption retired]');
     }
     if (isOwn) {
@@ -2204,6 +2215,13 @@
           if (opts.onReady) opts.onReady();
           return true;
         });
+      }).then(function (res) {
+        idbGet(STORE_SECURE, 'blocked_by_server_policy').then(function (blocked) {
+          if (blocked && !olmPurged) {
+            armRecoveryPoll();
+          }
+        }).catch(function () {});
+        return res;
       });
     });
   }
@@ -2516,6 +2534,7 @@
 
   function decryptRoomMessage(roomId, senderId, ciphertext, groupSessionId) {
     if (olmPurged) {
+      maybeReportPurgedLegacyTelemetry();
       return Promise.resolve('[Legacy message — encryption retired]');
     }
     var lockKey = 'groupIn:' + roomId + ':' + senderId + ':' + groupSessionId;
@@ -4109,42 +4128,109 @@
     ? function (cb) { return window.requestIdleCallback(cb, { timeout: 5000 }); }
     : function (cb) { return setTimeout(cb, 20); };
 
+  var recoveryTimer = null;
+  var currentPollIntervalMs = 15 * 60 * 1000;
+  var MAX_POLL_INTERVAL_MS = 60 * 60 * 1000;
+
+  function armRecoveryPoll(intervalMs) {
+    if (recoveryTimer) clearTimeout(recoveryTimer);
+    var delay = intervalMs || currentPollIntervalMs;
+    recoveryTimer = setTimeout(function () {
+      recoveryTimer = null;
+      checkRecoveryConfig();
+    }, delay);
+  }
+
+  function clearRecoveryPoll() {
+    if (recoveryTimer) {
+      clearTimeout(recoveryTimer);
+      recoveryTimer = null;
+    }
+    currentPollIntervalMs = 15 * 60 * 1000;
+  }
+
+  function checkRecoveryConfig() {
+    return csrfFetch('/mls/config').then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(function (cfg) {
+      if (cfg && cfg.legacy_e2ee_enabled === true) {
+        if (typeof window !== 'undefined') {
+          window.ExtrovertConfig = window.ExtrovertConfig || {};
+          window.ExtrovertConfig.legacyE2eeEnabled = true;
+        }
+        clearRecoveryPoll();
+        return idbDelete(STORE_SECURE, 'blocked_by_server_policy').then(function () {
+          scheduleIdle(function () {
+            startHistoricalMigration().catch(function () {});
+          });
+          return cfg;
+        });
+      } else {
+        var baseline = (cfg && cfg.config_poll_interval_seconds) ? (cfg.config_poll_interval_seconds * 1000) : (15 * 60 * 1000);
+        currentPollIntervalMs = baseline;
+        armRecoveryPoll(currentPollIntervalMs);
+        return cfg;
+      }
+    }).catch(function (err) {
+      currentPollIntervalMs = Math.min(currentPollIntervalMs * 2, MAX_POLL_INTERVAL_MS);
+      armRecoveryPoll(currentPollIntervalMs);
+      throw err;
+    });
+  }
+
   function startHistoricalMigration(options) {
     options = options || {};
-    return getMigrationCheckpoint().then(function (cp) {
-      if (!isLegacyEnabled() && !cp.hasCompletedFullScan) {
-        var err = new Error('Legacy migration blocked: server has deactivated legacy E2EE before full scan completed.');
-        err.code = 'BLOCKED_BY_POLICY';
-        err.blockedByPolicy = true;
-        return Promise.reject(err);
-      }
-      if (migrationRunning && !options.force) {
-        return Promise.resolve({ running: true });
-      }
-      migrationRunning = true;
-
-      function step() {
-        return runMigrationBatch(options).then(function (batchResult) {
-          if (batchResult.done) {
-            migrationRunning = false;
-            return batchResult;
-          }
-          if (options.singleBatch) {
-            migrationRunning = false;
-            return batchResult;
-          }
-          return new Promise(function (resolve, reject) {
-            scheduleIdle(function () {
-              step().then(resolve, reject);
-            });
-          });
-        }).catch(function (err) {
-          migrationRunning = false;
-          throw err;
+    return getLegacyLifecycleStatus().then(function (status) {
+      if (status.state === 'OlmPurged' || status.state === 'RetentionWindow' || status.state === 'PurgeEligible') {
+        clearRecoveryPoll();
+        return idbDelete(STORE_SECURE, 'blocked_by_server_policy').then(function () {
+          return { done: true, state: status.state };
         });
       }
 
-      return step();
+      return getMigrationCheckpoint().then(function (cp) {
+        if (!isLegacyEnabled() && !cp.hasCompletedFullScan) {
+          return idbSet(STORE_SECURE, 'blocked_by_server_policy', true).then(function () {
+            armRecoveryPoll();
+            var err = new Error('Legacy migration blocked: server has deactivated legacy E2EE before full scan completed.');
+            err.code = 'BLOCKED_BY_POLICY';
+            err.blockedByPolicy = true;
+            return Promise.reject(err);
+          });
+        }
+
+        clearRecoveryPoll();
+        return idbDelete(STORE_SECURE, 'blocked_by_server_policy').then(function () {
+          if (migrationRunning && !options.force) {
+            return Promise.resolve({ running: true });
+          }
+          migrationRunning = true;
+
+          function step() {
+            return runMigrationBatch(options).then(function (batchResult) {
+              if (batchResult.done) {
+                migrationRunning = false;
+                return batchResult;
+              }
+              if (options.singleBatch) {
+                migrationRunning = false;
+                return batchResult;
+              }
+              return new Promise(function (resolve, reject) {
+                scheduleIdle(function () {
+                  step().then(resolve, reject);
+                });
+              });
+            }).catch(function (err) {
+              migrationRunning = false;
+              throw err;
+            });
+          }
+
+          return step();
+        });
+      });
     });
   }
 
@@ -4464,5 +4550,10 @@
     reportMigrationStatus: reportMigrationStatus,
     legacyEnabled: function () { return isLegacyEnabled(); },
     isOlmPurged: function () { return olmPurged; },
+    checkRecoveryConfig: checkRecoveryConfig,
+    getRecoveryPollIntervalMs: function () { return currentPollIntervalMs; },
+    isRecoveryPollArmed: function () { return recoveryTimer !== null; },
+    armRecoveryPoll: armRecoveryPoll,
+    clearRecoveryPoll: clearRecoveryPoll,
   };
 })();

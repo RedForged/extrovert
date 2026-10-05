@@ -393,6 +393,7 @@ async function run() {
 
   process.env.E2EE_LEGACY_ENABLED = 'false';
   process.env.MLS_FORCE_SUNSET = 'true';
+  process.env.MLS_FORCE_SUNSET_OPERATOR = 'ops-oncall@extrovert.eu';
   // Without MLS_FORCE_SUNSET_ACK, safety guard must prevent sunset!
   delete process.env.MLS_FORCE_SUNSET_ACK;
   assert.strictEqual(db.isLegacyE2eeEnabled(), true, 'Safety Guard: without MLS_FORCE_SUNSET_ACK="I_ACCEPT_DATA_LOSS", legacy MUST remain enabled!');
@@ -404,7 +405,11 @@ async function run() {
   const auditEntry = db.db.prepare(`SELECT * FROM mls_sunset_audit WHERE event = 'force_sunset_engaged'`).get();
   assert.ok(auditEntry, 'Audit record MUST be inserted into mls_sunset_audit');
   assert.strictEqual(auditEntry.acknowledged_by, 'I_ACCEPT_DATA_LOSS');
-  console.log('   [OK] Loud and Audited: MLS_FORCE_SUNSET requires ACK and inserts DB audit record');
+  assert.strictEqual(auditEntry.operator_name, 'ops-oncall@extrovert.eu');
+  assert.ok(auditEntry.migration_start_date.length > 0, 'Must record resolved migration_start_date');
+  assert.ok(auditEntry.sunset_cutoff_date.length > 0, 'Must record resolved sunset_cutoff_date');
+  assert.strictEqual(auditEntry.required_coverage_pct, 99, 'Must record required_coverage_pct');
+  console.log('   [OK] Loud and Audited: MLS_FORCE_SUNSET records operator attribution and resolved dates');
 
   // Verify fleet summary reflects force_sunset_active: true
   const forceFleetRes = await fetch(baseUrl + '/mls/migration/fleet-summary', {
@@ -419,15 +424,37 @@ async function run() {
   delete process.env.E2EE_LEGACY_ENABLED;
   delete process.env.MLS_FORCE_SUNSET;
   delete process.env.MLS_FORCE_SUNSET_ACK;
+  delete process.env.MLS_FORCE_SUNSET_OPERATOR;
 
   // -------------------------------------------------------------
-  // Test 7: Layer 2 Client Defense (BlockedByServerPolicy)
+  // Test 7: Precision Active Denominator & Negative Heuristic (Criterion 1)
   // -------------------------------------------------------------
-  console.log('\n8. Testing Layer 2 Client Defense & Blocked Telemetry...');
+  console.log('\n8. Testing Precision Active Denominator & Negative Heuristic...');
+
+  // User 1 (Alice) has sent/received messages in 30d -> counted in active_users_30d
+  const initialFleet = db.getFleetMigrationSummary();
+  assert.ok(initialFleet.fleet_migration.active_users_30d > 0, 'active_users_30d must count users with 30d message activity');
+  assert.ok(initialFleet.fleet_migration.required_coverage_pct >= 99);
+
+  // Add Charlie: register MLS device
+  const charlieId = db.createUser({ username: 'charlie_p5_active', passwordHash: 'pw_test', displayName: 'Charlie' });
+  db.registerMlsDevice(charlieId, 'charlie_dev_1', 'Charlie Phone', 'test_cred_charlie');
+  // Charlie sends legacy message -> NOT migrated despite having MLS device!
+  db.sendMessage(charlieId, aliceId, 'Charlie legacy message', null, null, 'olm', null);
+
+  const fleetWithLegacyCharlie = db.getFleetMigrationSummary();
+  // Charlie had legacy traffic in last 30d, so negative condition fails
+  const charlieIsMigrated = (fleetWithLegacyCharlie.fleet_migration.migrated_active_users > initialFleet.fleet_migration.migrated_active_users);
+  assert.strictEqual(charlieIsMigrated, false, 'Negative condition: User with MLS device receiving/sending legacy traffic MUST NOT be counted as migrated');
+  console.log('   [OK] Negative heuristic: user with MLS device and active legacy traffic is not marked migrated');
+
+  // -------------------------------------------------------------
+  // Test 8: Layer 2 Client Defense & Recovery Path
+  // -------------------------------------------------------------
+  console.log('\n9. Testing Layer 2 Client Defense & Recovery Path...');
 
   // Simulate client where legacy is disabled before full scan
   window.ExtrovertConfig = { legacyE2eeEnabled: false };
-  // Reset checkpoint to unmigrated
   secureStore.delete('olm_purged_at');
   await window.ExtrovertE2EE.saveMigrationCheckpoint({
     dmCursor: 0,
@@ -441,7 +468,7 @@ async function run() {
   const blockedStatus = await window.ExtrovertE2EE.getLegacyLifecycleStatus();
   assert.strictEqual(blockedStatus.state, 'BlockedByServerPolicy', 'Client must enter BlockedByServerPolicy state');
 
-  // startHistoricalMigration must reject with BLOCKED_BY_POLICY
+  // startHistoricalMigration must reject with BLOCKED_BY_POLICY and arm recovery timer
   let blockedErr = null;
   try {
     await window.ExtrovertE2EE.startHistoricalMigration();
@@ -450,8 +477,62 @@ async function run() {
   }
   assert.ok(blockedErr, 'startHistoricalMigration must reject when blocked by server policy');
   assert.strictEqual(blockedErr.code, 'BLOCKED_BY_POLICY');
-  console.log('   [OK] Layer 2 defense: client detects BlockedByServerPolicy and raises actionable BLOCKED_BY_POLICY error');
+  assert.strictEqual(window.ExtrovertE2EE.isRecoveryPollArmed(), true, 'Recovery poll timer must be armed when blocked');
+  assert.strictEqual(window.ExtrovertE2EE.getRecoveryPollIntervalMs(), 15 * 60 * 1000, 'Initial poll interval must be 15 minutes');
+  console.log('   [OK] Layer 2 defense: client detects BlockedByServerPolicy and arms 15-minute recovery timer');
 
+  // -------------------------------------------------------------
+  // Test 9: Exponential Backoff on Poll Failure
+  // -------------------------------------------------------------
+  console.log('\n10. Testing Exponential Backoff on Poll Failure...');
+  // Force fetch failure by intercepting global.fetch temporarily
+  const origFetch = global.fetch;
+  global.fetch = function () {
+    return Promise.reject(new Error('Simulated network/server outage'));
+  };
+
+  // Attempt 1 fails -> backs off to 30 min
+  try { await window.ExtrovertE2EE.checkRecoveryConfig(); } catch (_) {}
+  assert.strictEqual(window.ExtrovertE2EE.getRecoveryPollIntervalMs(), 30 * 60 * 1000, 'Backoff attempt 1 must double to 30 minutes');
+
+  // Attempt 2 fails -> backs off to 60 min (cap)
+  try { await window.ExtrovertE2EE.checkRecoveryConfig(); } catch (_) {}
+  assert.strictEqual(window.ExtrovertE2EE.getRecoveryPollIntervalMs(), 60 * 60 * 1000, 'Backoff attempt 2 must cap at 60 minutes');
+
+  // Attempt 3 fails -> remains capped at 60 min
+  try { await window.ExtrovertE2EE.checkRecoveryConfig(); } catch (_) {}
+  assert.strictEqual(window.ExtrovertE2EE.getRecoveryPollIntervalMs(), 60 * 60 * 1000, 'Backoff attempt 3 must remain at 60 minutes');
+  console.log('   [OK] Exponential backoff verified: 15m -> 30m -> 60m cap on network/server failure');
+
+  // Restore working fetch
+  global.fetch = origFetch;
+
+  // -------------------------------------------------------------
+  // Test 10: Client Recovery on Server Re-enable
+  // -------------------------------------------------------------
+  console.log('\n11. Testing Client Recovery on Server Re-enable...');
+  // Server re-enables legacy
+  delete process.env.E2EE_LEGACY_ENABLED;
+  await window.ExtrovertE2EE.checkRecoveryConfig();
+  assert.strictEqual(window.ExtrovertE2EE.legacyEnabled(), true, 'Client must observe legacy_e2ee_enabled: true and unblock');
+  assert.strictEqual(window.ExtrovertE2EE.isRecoveryPollArmed(), false, 'Recovery poll timer must be disarmed on recovery');
+  assert.strictEqual(window.ExtrovertE2EE.getRecoveryPollIntervalMs(), 15 * 60 * 1000, 'Poll interval must reset to 15 minutes');
+  console.log('   [OK] Client Recovery: client polls /mls/config, unblocks, disarms timer, and resets backoff');
+
+  // -------------------------------------------------------------
+  // Test 11: OlmPurged Client Never Arms Recovery Poll
+  // -------------------------------------------------------------
+  console.log('\n12. Testing OlmPurged Client Never Arms Recovery Timer...');
+  secureStore.set('olm_purged_at', Date.now());
+  const purgedStatus = await window.ExtrovertE2EE.getLegacyLifecycleStatus();
+  assert.strictEqual(purgedStatus.state, 'OlmPurged');
+
+  window.ExtrovertE2EE.clearRecoveryPoll();
+  await window.ExtrovertE2EE.startHistoricalMigration();
+  assert.strictEqual(window.ExtrovertE2EE.isRecoveryPollArmed(), false, 'OlmPurged client must never arm recovery poll');
+  console.log('   [OK] OlmPurged clients never arm recovery poll timer');
+
+  // Clean up
   server.close();
   try { fs.unlinkSync(tmpDb); } catch (_) {}
   try { fs.unlinkSync(tmpDb + '-wal'); } catch (_) {}

@@ -269,14 +269,32 @@ Extrovert **does not use a server-side DS leaf**. The server never participates 
 - **Indefinite Legacy Row Retention:**
   - Historical rows in `messages` and `room_messages` with `proto IN ('olm', 'megolm', 'rsa')` are **never deleted from the database**.
   - Late or returning offline devices can still invoke `GET /mls/migration/messages` to pre-decrypt their history into their local vault using their retained device keys. Storage growth is strictly zero after Day 365.
-- **Config Transport (`legacyE2eeEnabled`):**
+- **Config Transport (`legacyE2eeEnabled`) & Client Recovery Path:**
   - Web clients receive the flag via SSR injection in `src/views/partials/header.ejs`: `<script>window.ExtrovertConfig = window.ExtrovertConfig || {}; window.ExtrovertConfig.legacyE2eeEnabled = <%= serverLegacyEnabled %>;</script>`.
-  - Native/programmatic clients query `GET /mls/config` on startup.
+  - Native/programmatic clients query `GET /mls/config` on startup (returns `legacy_e2ee_enabled` and `config_poll_interval_seconds: 900`).
+  - *Recovery Path for Blocked Clients:* Clients in `BlockedByServerPolicy` re-check `GET /mls/config` periodically. On receiving `legacy_e2ee_enabled: true`, they exit the blocked state and resume migration on next idle.
+  - *Exponential Backoff:* Blocked poll starts at 15 minutes (or `config_poll_interval_seconds`). On network/server failure, it backs off to 30 min, then caps at 60 min. On success, it resets to the baseline interval.
+  - *Selective Arming:* Recovery polling is armed ONLY for clients in `BlockedByServerPolicy`. Clients in `OlmPurged`, `RetentionWindow`, or `PurgeEligible` never poll. The blocked state is persisted in secure storage so the recovery timer re-arms across tab reloads.
 - **Operator Safety & Audit for `MLS_FORCE_SUNSET`:**
   - Forcing legacy deactivation when criteria are not met requires both `MLS_FORCE_SUNSET=true` AND `MLS_FORCE_SUNSET_ACK="I_ACCEPT_DATA_LOSS"`.
-  - Server logs at `CRITICAL`, records an audit event in `mls_sunset_audit` table, and exposes `"force_sunset_active": true` in `GET /mls/migration/fleet-summary`.
+  - Server logs at `CRITICAL`, records an immutable audit event in `mls_sunset_audit`, and exposes `"force_sunset_active": true` in `GET /mls/migration/fleet-summary`.
+  - Audit records store: `{ event: 'force_sunset_engaged', timestamp, coverage_pct, required_coverage_pct, operator_name, migration_start_date, sunset_cutoff_date, acknowledged_by, operator_ip }`.
+  - Operator identity is read from `MLS_FORCE_SUNSET_OPERATOR` (default: `"unattributed"`). Dates are stored as resolved timestamps at engagement time (not raw env strings).
 - **Multi-Criteria Fleet Telemetry (`GET /mls/migration/fleet-summary`):**
-  - Returns explicit sub-criteria to eliminate operator footguns:
+  - **Active 30-Day Denominator:** `active_users_30d` counts distinct users with ≥1 message sent or received in `messages` OR `room_messages` in the last 30 days:
+    ```sql
+    SELECT COUNT(DISTINCT user_id) FROM (
+      SELECT from_id AS user_id FROM messages WHERE created_at > ?
+      UNION
+      SELECT to_id AS user_id FROM messages WHERE created_at > ?
+      UNION
+      SELECT user_id FROM room_messages WHERE created_at > ?
+    )
+    ```
+  - **Negative-Condition Migrated Heuristic:** An active user is counted as migrated if:
+    1. They reported `has_completed_full_scan = 1` via telemetry, **OR**
+    2. They have registered MLS devices **AND** zero messages with `proto IN ('olm', 'megolm')` sent or received in the last 30 days.
+  - **Metrics Shape:**
     ```json
     {
       "traffic_sunset": {
@@ -285,11 +303,14 @@ Extrovert **does not use a server-side DS leaf**. The server never participates 
         "ready": true
       },
       "fleet_migration": {
-        "total_users": 100,
-        "migrated_users": 50,
-        "fleet_coverage_pct": 50,
-        "required_coverage_pct": 100,
-        "ready": false
+        "active_users_30d": 100,
+        "migrated_active_users": 99,
+        "active_users_coverage_pct": 99,
+        "required_coverage_pct": 99,
+        "registered_users_total": 450,
+        "registered_users_migrated": 120,
+        "registered_users_coverage_pct": 27,
+        "ready": true
       },
       "time_window": {
         "migration_start_date": "2026-10-05T00:00:00.000Z",
@@ -298,13 +319,14 @@ Extrovert **does not use a server-side DS leaf**. The server never participates 
         "days_required": 180,
         "ready": true
       },
-      "all_criteria_met": false,
+      "all_criteria_met": true,
       "force_sunset_active": false
     }
     ```
-  - `all_criteria_met` requires `traffic_sunset.ready && fleet_migration.ready && time_window.ready`.
-- **Privacy-Preserving Telemetry (`POST /mls/migration/status`):**
-  - Clients report coarse buckets (`"0"`, `"1-10"`, `"11-100"`, `"100+"`) and aggregated totals. Device IDs are omitted; reports are stored per-user.
+  - `fleet_migration.ready` gates strictly on `active_users_coverage_pct >= required_coverage_pct` (default: 99%, configurable via `MLS_REQUIRED_COVERAGE_PCT`). `registered_users_coverage_pct` is informational.
+- **Privacy-Preserving Telemetry & Rate-Limiting:**
+  - `POST /mls/migration/status` accepts coarse buckets (`"0"`, `"1-10"`, `"11-100"`, `"100+"`) and aggregated totals. Device IDs are omitted.
+  - In `OlmPurged`, telemetry reporting for arrived legacy traffic is strictly rate-limited to **one event per `(user_id, day)`**. Scrolling past legacy history never generates repeated telemetry events.
 
 ---
 

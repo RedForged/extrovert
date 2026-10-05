@@ -499,16 +499,18 @@ router.get('/migration/fleet-summary', requireAuth, (req, res) => {
 
 // 17. Client MLS & Sunset Configuration Transport
 router.get('/config', (req, res) => {
-  const legacyEnabled = isLegacyE2eeEnabled();
+  const legacyEnabled = isLegacyE2eeEnabled(req.ip);
   const launchDateStr = process.env.MLS_MIGRATION_START_DATE || '2026-10-05T00:00:00.000Z';
   const launchTs = new Date(launchDateStr).getTime();
   const cutoffDateStr = process.env.MLS_SUNSET_DATE || new Date(launchTs + (365 * 86400 * 1000)).toISOString();
   const cutoffTs = new Date(cutoffDateStr).getTime();
   const daysRemaining = Math.max(0, Math.ceil((cutoffTs - Date.now()) / (86400 * 1000)));
+  const pollIntervalSeconds = parseInt(process.env.MLS_CONFIG_POLL_INTERVAL_SECONDS, 10) || 900;
 
   res.json({
     ok: true,
     legacy_e2ee_enabled: legacyEnabled,
+    config_poll_interval_seconds: pollIntervalSeconds,
     migration_start_date: launchDateStr,
     sunset_cutoff_date: cutoffDateStr,
     days_remaining_to_cutoff: daysRemaining

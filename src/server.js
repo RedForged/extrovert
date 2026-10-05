@@ -475,11 +475,18 @@ const server = app.listen(PORT, HOST, () => {
 
   if (process.env.MLS_FORCE_SUNSET === 'true') {
     if (process.env.MLS_FORCE_SUNSET_ACK === 'I_ACCEPT_DATA_LOSS') {
-      const summary = db.getFleetMigrationSummary ? db.getFleetMigrationSummary() : { fleet_migration: { fleet_coverage_pct: 0 } };
-      const pct = (summary.fleet_migration && summary.fleet_migration.fleet_coverage_pct) || 0;
-      console.error(`[CRITICAL] [MLS Sunset]: MLS_FORCE_SUNSET engaged with MLS_FORCE_SUNSET_ACK="I_ACCEPT_DATA_LOSS". Legacy Olm/Megolm E2EE is forcefully disabled. Fleet migration coverage at engagement: ${pct}%. Data loss may occur for unmigrated clients.`);
+      const summary = db.getFleetMigrationSummary ? db.getFleetMigrationSummary() : {
+        fleet_migration: { active_users_coverage_pct: 0, required_coverage_pct: 99 },
+        time_window: { migration_start_date: '2026-10-05T00:00:00.000Z', sunset_cutoff_date: '2027-10-05T00:00:00.000Z' }
+      };
+      const pct = (summary.fleet_migration && summary.fleet_migration.active_users_coverage_pct) || 0;
+      const reqPct = (summary.fleet_migration && summary.fleet_migration.required_coverage_pct) || 99;
+      const opName = process.env.MLS_FORCE_SUNSET_OPERATOR || 'unattributed';
+      const mStart = (summary.time_window && summary.time_window.migration_start_date) || '2026-10-05T00:00:00.000Z';
+      const mCutoff = (summary.time_window && summary.time_window.sunset_cutoff_date) || '2027-10-05T00:00:00.000Z';
+      console.error(`[CRITICAL] [MLS Sunset]: MLS_FORCE_SUNSET engaged by "${opName}" with MLS_FORCE_SUNSET_ACK="I_ACCEPT_DATA_LOSS". Legacy Olm/Megolm E2EE is forcefully disabled. Active fleet coverage at engagement: ${pct}% (required: ${reqPct}%). Data loss may occur for unmigrated clients.`);
       if (db.recordSunsetAudit) {
-        db.recordSunsetAudit('force_sunset_engaged', pct, 'OPERATOR_STARTUP', '127.0.0.1');
+        db.recordSunsetAudit('force_sunset_engaged', pct, reqPct, opName, mStart, mCutoff, 'OPERATOR_STARTUP', '127.0.0.1');
       }
     } else {
       console.warn('[WARNING] [MLS Sunset]: MLS_FORCE_SUNSET=true was specified, but MLS_FORCE_SUNSET_ACK="I_ACCEPT_DATA_LOSS" was NOT provided. Force sunset is INACTIVE to prevent unintentional data loss.');
