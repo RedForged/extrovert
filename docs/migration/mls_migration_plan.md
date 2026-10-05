@@ -403,10 +403,19 @@ CREATE TABLE IF NOT EXISTS mls_credential_backups (
 2. **Force-Upgrade on MLS Activation:** Conversations switch immediately to MLS once participants possess MLS-capable devices. Legacy devices display a refresh/update prompt and cannot send messages until upgraded.
 3. **Phase 5 (Decommissioning Preparation & Coexistence):**
    - Feature flag `E2EE_LEGACY_ENABLED` (default: `true`) acts as a non-destructive client-side kill switch.
-   - Client and server telemetry instrument fleet migration coverage and 30-day zero legacy traffic.
+   - Dual clocks: 180-day per-device retention clock (`ClockOrigin = max(t_firstMLS, t_lastLegacyActivity)`) vs 365-day server cutoff (`MLS_MIGRATION_START_DATE`), with 545-day worst-case bound for offline devices.
+   - Client and server telemetry instrument fleet migration coverage (`active_users_30d` denominator) and 30-day zero legacy traffic.
+   - Blocked clients query `/mls/config` with exponential backoff (15m -> 30m -> 60m cap).
    - `@matrix-org/olm`, `olm.js`, and `olm.wasm` are retained throughout the 180-day coexistence window to ensure unmigrated and offline devices never lose message history.
-4. **Phase 6 (Server Sunset & File Removal):**
-   - After Day 365 or after all three sunset criteria are met (100% active device migration coverage, 30 consecutive days of zero legacy traffic, 180+ days elapsed):
-     - Server enforces `410 Gone` on legacy message submission endpoints.
-     - `@matrix-org/olm`, `public/lib/olm.js`, and `public/lib/olm.wasm` are permanently removed.
-     - Legacy database tables and handlers are dropped.
+4. **Phase 6 (Empirical Validation & Realistic Benchmark):** [✅ PASSED]
+   - Executed against realistic synthetic corpus of 9,612 messages across 58 sessions (DMs vs Rooms split 40/60, heavy-tailed session sizes 5–1,200 msgs).
+   - **The Three Numbers:** Total Message Failure Rate **4.89%** (470 / 9,612), Session Failure Rate **20.69%** (12 / 58), Coverage-Weighted Failure Rate **25.67%** (2,467 / 9,612).
+   - **Throughput:** 606 messages/second across 97 batches.
+   - **Vault Storage Scaling:** Measured 264 bytes/message in IndexedDB `securemsgs`. Projected footprint at 100k messages is **25.18 MB** (2.5% of iOS Safari 1 GB prompt-free limit; <0.1% on Android Chrome).
+   - **Decision Gate (§5):** **Tier 1 Pass (≤ 5.0%)**. Sunset schedule holds without extension. Full report: [phase6_empirical_validation_report.md](file:///home/axoisaxo/extrovert/docs/migration/phase6_empirical_validation_report.md).
+5. **Phase 7 (Server Sunset & Legacy Code Removal):**
+   - Scheduled after Day 365 or after all three sunset criteria are met (100% active device migration coverage, 30 consecutive days of zero legacy traffic, 180+ days elapsed since migration launch):
+     - Server enforces `410 Gone` on legacy message submission endpoints (`/chats/:username`, `/rooms/:id/messages` with `proto != 'mls'`).
+     - Historical legacy rows in `messages` and `room_messages` remain stored indefinitely in SQLite for late offline device recovery.
+     - `@matrix-org/olm`, `public/lib/olm.js`, and `public/lib/olm.wasm` are permanently removed from client bundles.
+     - Legacy database tables and wrappers are dropped.

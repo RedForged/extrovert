@@ -40,7 +40,9 @@
     "test:mls": "node scripts/mls-conformance-test.js && node scripts/mls-db-test.js && node scripts/mls-api-test.js && node scripts/mls-e2e-chat-test.js && node scripts/mls-welcome-recovery-test.js && node scripts/mls-dualstack-dm-test.js && node scripts/mls-dualstack-room-test.js",
     "test:ietf": "node scripts/mls-ietf-vectors-test.js",
     "test:interop": "node scripts/mls-rs-interop-test.js",
-    "test:scale": "node scripts/mls-scale-benchmark.js"
+    "test:scale": "node scripts/mls-scale-benchmark.js",
+    "test:mls-phase5": "node scripts/mls-phase5-sunset-test.js",
+    "benchmark:mls-phase6": "node scripts/mls-phase6-benchmark.js"
   },
   "dependencies": {
     "@noble/ciphers": "^2.1.1",
