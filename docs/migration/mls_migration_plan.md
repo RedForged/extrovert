@@ -189,11 +189,47 @@ Extrovert **does not use a server-side DS leaf**. The server never participates 
 
 ### 7.3 Legacy Key Drop & Retention Timing Policy
 - **Coexistence Ratchet Semantics:** Legacy Olm/Megolm sessions remain operational for incoming messages during the coexistence window (they must advance ratchets to decrypt new ciphertext from peers who haven't yet migrated). No new Olm/Megolm sessions are initiated — all outgoing messages prefer MLS when the peer supports it.
-- **Clock Origin & Drop Schedule:** Exactly 180 days after the client's first successful MLS session, per device (aligned with Extrovert's 180-day stale device de-registration policy). After 180 days, existing Olm/Megolm sessions are purged from `STORE_OLM`, and any peer still communicating exclusively over Olm/Megolm becomes unreachable.
+- **Clock Origin & Dynamic Activity Anchor:**
+  - The 180-day retention clock is anchored to the *later* of the device's first successful MLS session or its last legacy activity:
+    $$\text{ClockOrigin} = \max(t_{\text{firstMLS}}, t_{\text{lastLegacyActivity}})$$
+  - $t_{\text{lastLegacyActivity}}$ is updated on every inbound or outbound `proto: 'olm'` or `proto: 'megolm'` encrypt/decrypt event (batched daily to minimize storage writes).
+  - This prevents premature session purges when legacy peers remain active in shared rooms or 1:1 threads.
+- **Unmigrated Safety Gate:**
+  - The day-180 purge is strictly conditional on the migration worker having completed at least one full pass (checkpoint `hasCompletedFullScan === true`).
+  - Devices that have never completed a migration pass retain legacy sessions indefinitely, with a user-visible `"Legacy sessions retained (unmigrated)"` status in Settings > Security.
+  - Pre-decryption dependency rule: `@matrix-org/olm`, `olm.js`, and `olm.wasm` MUST remain available on the client device until its local vault migration is verified complete. There is no global "remove Olm" moment; decommissioning is strictly local and per-device.
+- **Client Lifecycle State Machine:**
+```
+  [LegacyActive]
+        │
+        │ (First successful MLS session registered)
+        ▼
+  [CoexistenceAndMigrating] ◄────────────────────────────────┐
+        │                                                    │
+        │ (Migration worker reaches server tip;              │ Legacy message
+        │  hasCompletedFullScan = true)                      │ received or sent
+        ▼                                                    │ (resets t_lastLegacyActivity)
+  [MigrationComplete]                                        │
+        │                                                    │
+        │ (Local vault secured under Kd;                     │
+        │  enter background retention window)                │
+        ▼                                                    │
+  [RetentionWindow] ─────────────────────────────────────────┘
+        │
+        │ Gate 1: now - max(t_firstMLS, t_lastLegacyActivity) >= 180 days
+        │  AND
+        │ Gate 2: hasCompletedFullScan === true
+        ▼
+  [PurgeEligible]
+        │
+        │ (Automated background cleanup or user clicks "Purge Legacy Sessions Now")
+        ▼
+  [OlmPurged (MLS-Only Vault)]
+```
 - **User-Visible Signal:**
   - Status banner in Settings > Security > Encryption:
     `"Legacy Encryption (Olm/Megolm): Archived. Complete session retirement scheduled in X days."`
-  - Manual action button: `"Purge Legacy Sessions Now"`, allowing privacy-conscious users to immediately wipe Olm key material once their local pre-decryption migration pass completes.
+  - Manual action button: `"Purge Legacy Sessions Now"`, allowing privacy-conscious users to immediately wipe Olm key material once their local pre-decryption migration pass completes and `hasCompletedFullScan === true`.
 
 ### 7.4 Pre-Decryption Migration Worker & Fault Tolerance
 - **Trigger & Pacing:**
@@ -202,13 +238,14 @@ Extrovert **does not use a server-side DS leaf**. The server never participates 
 - **Monotonic Global Ordering:**
   - Messages are processed in global message-ID order. Because IDs are globally monotonic and per-session messages preserve their relative ordering, Olm/Megolm ratchets advance correctly without per-session coordination.
 - **Checkpoint Recovery:**
-  - Progress tracked in IndexedDB (`STORE_MLS_KEYS`, key `'migration:checkpoint'`) storing `{ lastScannedId, totalMigrated, failedCount, activeSessions }`.
-  - Resilient to unexpected browser termination: worker resumes from `lastScannedId` without reprocessing or duplicate encryption.
+  - Progress tracked in IndexedDB (`STORE_MLS_KEYS`, key `'migration:checkpoint'`) storing `{ dmCursor, roomCursor, totalMigrated, failedCount, hasCompletedFullScan, updatedAt }`.
+  - Resilient to unexpected browser termination: worker resumes from cursors without reprocessing or duplicate encryption.
 - **Failure Classification & Cascade Taxonomy:**
   - `SESSION_EXPIRED`: Session not found in `STORE_OLM`. Cascades across all messages in that session: labeled `"session expired prior to vault migration"`.
-  - `RATCHET_DESYNC`: Session present, but chain key advanced past message index or Olm skipped-key limit (>2000) exceeded. Cascades for messages prior to current ratchet position: labeled `"ratchet advanced past this message"`.
+  - `RATCHET_DESYNC`: Session present, but chain key advanced past message index or Olm skipped-key limit (>2000) exceeded. Cascades for messages prior to current ratchet position only: labeled `"ratchet advanced past this message"`.
   - `CORRUPT_PAYLOAD`: Single message ciphertext damaged or unparseable. **Does not cascade**: because Double Ratchet / Megolm ratchet state is not advanced on decryption errors, subsequent valid messages in the same session remain decryptable. Only the damaged message is labeled `"message ciphertext corrupted"`.
   - Failed messages are flagged with `unrecoverable: true` and their diagnostic label in the local plaintext vault (`STORE_SECURE_MESSAGES`), ensuring the migration loop never hangs or blocks the batch.
+  - *Empirical Note:* Real-world failure rate is a function of $\frac{\text{messages-in-degraded-sessions}}{\text{total-messages}}$, not $\frac{\text{sessions-failed}}{\text{total-sessions}}$. Synthetic benchmark indicates 1–3% is achievable if real-world distributions match assumptions; production validation pending.
 
 ### 7.5 Data Export Semantics (GDPR Article 20 / Portable Archive)
 - **Encryption by Default:**
@@ -221,6 +258,30 @@ Extrovert **does not use a server-side DS leaf**. The server never participates 
   - Messages flagged as unrecoverable export with a structured diagnostic placeholder:
     `"[Message unrecoverable: legacy session expired prior to vault migration]"`.
   - Preserves full auditability, timeline chronology, and regulatory compliance.
+
+### 7.6 Server-Side Sunset Sequence & Privacy-Preserving Telemetry
+- **Decoupled Client/Server Decommissioning:**
+  - Client-side code operates under a per-device model; clients purge when eligible.
+  - Server-side legacy endpoints (`POST /chats/:id/messages` accepting `proto: 'olm'`, Megolm session claims, `room_group_sessions` tables) MUST remain operational until the fleet has transitioned.
+- **Traffic Sunset Criteria (Criterion 2):**
+  - Server records daily rolling message counts by protocol (`proto: 'mls'`, `proto: 'olm'`, `proto: 'megolm'`).
+  - Sunset clock triggers when legacy traffic registers 0 messages for 30 consecutive days.
+- **Hard Server-Side Cutoff Date (Phase 6):**
+  - Exactly 365 days post-migration launch (180 days nominal retention + 185 days offline grace window), the server enforces a hard cutoff:
+    1. Incoming `proto: 'olm'` and `proto: 'megolm'` submissions return `410 Gone` (`UpgradeRequired`).
+    2. Legacy session claim and prekey endpoints are retired.
+    3. Server-side legacy tables and handlers are dropped in Phase 6.
+- **Privacy-Preserving Migration Telemetry (`POST /mls/migration/status`):**
+  - Clients periodically report progress on an opt-in basis to inform admin readiness:
+    ```json
+    {
+      "has_completed_full_scan": true,
+      "total_migrated": 1450,
+      "unrecoverable_count_bucket": "0"
+    }
+    ```
+  - `unrecoverable_count_bucket` uses coarse buckets (`"0"`, `"1-10"`, `"11-100"`, `"100+"`) to prevent deanonymizing user session health or device history.
+  - Device IDs are omitted; reports are recorded per-user or aggregated anonymously to compute fleet readiness: `"X% of active users have completed vault migration"`.
 
 ---
 
@@ -292,8 +353,15 @@ CREATE TABLE IF NOT EXISTS mls_credential_backups (
 
 ---
 
-## 9. Historical Message Migration & Olm Decommissioning
-
-1. **Pre-Decryption Pass:** Active clients execute an on-device migration pass iterating through existing Olm/Megolm messages, decrypting them via active sessions, and storing plaintext in IndexedDB `STORE_SECURE_MESSAGES` (encrypted under local `deviceKey`).
+## 9. Historical Message Migration & Phased Decommissioning
+1. **Pre-Decryption Pass (Phase 4):** Active clients execute an on-device migration pass iterating through existing Olm/Megolm messages monotonically, decrypting them via active sessions, and storing plaintext in IndexedDB `STORE_SECURE_MESSAGES` (encrypted under local `deviceKey`).
 2. **Force-Upgrade on MLS Activation:** Conversations switch immediately to MLS once participants possess MLS-capable devices. Legacy devices display a refresh/update prompt and cannot send messages until upgraded.
-3. **Decommissioning:** After the migration window, `@matrix-org/olm`, `olm.js`, and `olm.wasm` are permanently removed from the repository.
+3. **Phase 5 (Decommissioning Preparation & Coexistence):**
+   - Feature flag `E2EE_LEGACY_ENABLED` (default: `true`) acts as a non-destructive client-side kill switch.
+   - Client and server telemetry instrument fleet migration coverage and 30-day zero legacy traffic.
+   - `@matrix-org/olm`, `olm.js`, and `olm.wasm` are retained throughout the 180-day coexistence window to ensure unmigrated and offline devices never lose message history.
+4. **Phase 6 (Server Sunset & File Removal):**
+   - After Day 365 or after all three sunset criteria are met (100% active device migration coverage, 30 consecutive days of zero legacy traffic, 180+ days elapsed):
+     - Server enforces `410 Gone` on legacy message submission endpoints.
+     - `@matrix-org/olm`, `public/lib/olm.js`, and `public/lib/olm.wasm` are permanently removed.
+     - Legacy database tables and handlers are dropped.

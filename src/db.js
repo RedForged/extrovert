@@ -740,6 +740,24 @@ try { db.exec(`
     updated_at      INTEGER NOT NULL
   );
 `); } catch {}
+
+try { db.exec(`
+  CREATE TABLE IF NOT EXISTS mls_traffic_stats (
+    date            TEXT PRIMARY KEY,
+    proto_mls       INTEGER DEFAULT 0,
+    proto_legacy    INTEGER DEFAULT 0
+  );
+`); } catch {}
+
+try { db.exec(`
+  CREATE TABLE IF NOT EXISTS mls_migration_telemetry (
+    user_id                     INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    has_completed_full_scan     INTEGER NOT NULL DEFAULT 0,
+    total_migrated              INTEGER NOT NULL DEFAULT 0,
+    unrecoverable_bucket        TEXT NOT NULL DEFAULT '0',
+    reported_at                 INTEGER NOT NULL
+  );
+`); } catch {}
 // Fix stale referred_by links for users whose referrer no longer has a referral code.
 db.prepare(`UPDATE users SET referred_by = NULL WHERE referred_by IS NOT NULL AND referred_by IN (SELECT id FROM users WHERE referral_code IS NULL)`).run();
 // Ensure avatar paths have /uploads/ prefix for template rendering.
@@ -1246,9 +1264,11 @@ function areMutualFollowers(aId, bId) {
 
 // ---------- messages ----------
 function sendMessage(fromId, toId, body, keyForSender, keyForRecipient, proto, senderCiphertext, secure = false) {
+  const p = proto || 'rsa';
+  recordMessageTraffic(p);
   const res = db.prepare(
     `INSERT INTO messages (from_id, to_id, body, created_at, key_for_sender, key_for_recipient, proto, sender_ciphertext, secure) VALUES (?,?,?,?,?,?,?,?,?)`
-  ).run(fromId, toId, body, Date.now(), keyForSender || null, keyForRecipient || null, proto || 'rsa', senderCiphertext || null, secure ? 1 : 0);
+  ).run(fromId, toId, body, Date.now(), keyForSender || null, keyForRecipient || null, p, senderCiphertext || null, secure ? 1 : 0);
   return res.lastInsertRowid;
 }
 
@@ -2258,6 +2278,85 @@ function getHistoricalRoomMessagesForMigration(userId, afterId = 0, limit = 50) 
   `).all(userId, afterId, userId, limit);
 }
 
+function recordMessageTraffic(proto) {
+  if (!proto) return;
+  const isMls = (proto === 'mls');
+  const isLegacyE2ee = (proto === 'olm' || proto === 'megolm' || proto === 'rsa');
+  if (!isMls && !isLegacyE2ee) return;
+
+  const today = new Date().toISOString().slice(0, 10);
+  const col = isMls ? 'proto_mls' : 'proto_legacy';
+  db.prepare(`
+    INSERT INTO mls_traffic_stats (date, proto_mls, proto_legacy)
+    VALUES (?, ${isMls ? 1 : 0}, ${isLegacyE2ee ? 1 : 0})
+    ON CONFLICT(date) DO UPDATE SET ${col} = ${col} + 1
+  `).run(today);
+}
+
+function getLegacyTrafficSunsetStatus() {
+  const rows = db.prepare(`
+    SELECT date, proto_mls, proto_legacy
+    FROM mls_traffic_stats
+    ORDER BY date DESC
+    LIMIT 30
+  `).all();
+
+  let consecutiveZeroDays = 0;
+  for (const r of rows) {
+    if (r.proto_legacy === 0 && r.proto_mls > 0) {
+      consecutiveZeroDays++;
+    } else {
+      break;
+    }
+  }
+
+  return {
+    consecutive_zero_legacy_days: consecutiveZeroDays,
+    sunset_eligible: (consecutiveZeroDays >= 30),
+    recorded_days_count: rows.length,
+    recent_history: rows
+  };
+}
+
+function recordMigrationTelemetry(userId, hasCompletedFullScan, totalMigrated, unrecoverableBucket) {
+  const allowed = ['0', '1-10', '11-100', '100+'];
+  const bucket = allowed.includes(unrecoverableBucket) ? unrecoverableBucket : '0';
+  db.prepare(`
+    INSERT INTO mls_migration_telemetry (user_id, has_completed_full_scan, total_migrated, unrecoverable_bucket, reported_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(user_id) DO UPDATE SET
+      has_completed_full_scan = excluded.has_completed_full_scan,
+      total_migrated = excluded.total_migrated,
+      unrecoverable_bucket = excluded.unrecoverable_bucket,
+      reported_at = excluded.reported_at
+  `).run(userId, hasCompletedFullScan ? 1 : 0, totalMigrated || 0, bucket, Date.now());
+}
+
+function getFleetMigrationSummary() {
+  const totalUsersRow = db.prepare(`SELECT COUNT(*) AS total FROM users`).get();
+  const totalUsers = totalUsersRow ? totalUsersRow.total : 0;
+
+  const migratedUsersRow = db.prepare(`
+    SELECT COUNT(*) AS migrated FROM mls_migration_telemetry WHERE has_completed_full_scan = 1
+  `).get();
+  const migratedUsers = migratedUsersRow ? migratedUsersRow.migrated : 0;
+
+  const pct = totalUsers > 0 ? Math.round((migratedUsers / totalUsers) * 100) : 0;
+
+  const buckets = db.prepare(`
+    SELECT unrecoverable_bucket, COUNT(*) AS count
+    FROM mls_migration_telemetry
+    GROUP BY unrecoverable_bucket
+  `).all();
+
+  return {
+    total_users: totalUsers,
+    migrated_users: migratedUsers,
+    fleet_coverage_pct: pct,
+    buckets: buckets
+  };
+}
+
 // ---------- two-factor authentication (TOTP / recovery codes) ----------
 function setTotpSecret(userId, encryptedSecret) {
   db.prepare(`UPDATE users SET totp_secret = ? WHERE id = ?`).run(encryptedSecret || null, userId);
@@ -2651,7 +2750,9 @@ function getRoomMessages(channelId, beforeId) {
   return db.prepare(`SELECT m.id, m.body, m.proto, m.ciphertext, m.group_session_id, m.created_at, m.edited_at, u.id AS user_id, u.username, u.display_name, u.avatar FROM room_messages m INNER JOIN users u ON u.id = m.user_id WHERE m.channel_id = ? ORDER BY m.id DESC LIMIT 50`).all(channelId).reverse();
 }
 function sendRoomMessage(channelId, userId, body, proto, ciphertext, groupSessionId) {
-  return db.prepare(`INSERT INTO room_messages (channel_id, user_id, body, proto, ciphertext, group_session_id, created_at) VALUES (?,?,?,?,?,?,?)`).run(channelId, userId, body, proto || 'plain', ciphertext || null, groupSessionId || null, Date.now()).lastInsertRowid;
+  const p = proto || 'plain';
+  recordMessageTraffic(p);
+  return db.prepare(`INSERT INTO room_messages (channel_id, user_id, body, proto, ciphertext, group_session_id, created_at) VALUES (?,?,?,?,?,?,?)`).run(channelId, userId, body, p, ciphertext || null, groupSessionId || null, Date.now()).lastInsertRowid;
 }
 
 // ---------- Megolm room group sessions ----------
@@ -3471,4 +3572,6 @@ module.exports = {
   getMlsWelcomes, ackMlsWelcome,
   saveMlsBackup, getMlsBackup,
   getHistoricalDmMessagesForMigration, getHistoricalRoomMessagesForMigration,
+  recordMessageTraffic, getLegacyTrafficSunsetStatus,
+  recordMigrationTelemetry, getFleetMigrationSummary,
 };

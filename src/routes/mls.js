@@ -31,6 +31,9 @@ const {
   isRoomMember,
   getHistoricalDmMessagesForMigration,
   getHistoricalRoomMessagesForMigration,
+  recordMigrationTelemetry,
+  getFleetMigrationSummary,
+  getLegacyTrafficSunsetStatus,
 } = require('../db');
 const { bearerOrSession } = require('../bearer-auth');
 
@@ -455,6 +458,38 @@ router.get('/migration/messages', requireAuth, (req, res) => {
     next_dm_cursor: nextDmCursor,
     next_room_cursor: nextRoomCursor,
     has_more: hasMore
+  });
+});
+
+// 15. Migration Status Telemetry (Privacy-Preserving Bucket Reporting)
+router.post('/migration/status', requireAuth, (req, res) => {
+  const user = res.locals.currentUser;
+  const { has_completed_full_scan, total_migrated, unrecoverable_count_bucket } = req.body || {};
+
+  const allowedBuckets = ['0', '1-10', '11-100', '100+'];
+  if (!unrecoverable_count_bucket || !allowedBuckets.includes(unrecoverable_count_bucket)) {
+    return res.status(400).json({ error: 'unrecoverable_count_bucket must be one of: 0, 1-10, 11-100, 100+' });
+  }
+
+  recordMigrationTelemetry(
+    user.id,
+    Boolean(has_completed_full_scan),
+    parseInt(total_migrated, 10) || 0,
+    unrecoverable_count_bucket
+  );
+
+  res.json({ ok: true });
+});
+
+// 16. Fleet Migration Summary & Traffic Sunset Criteria Status
+router.get('/migration/fleet-summary', requireAuth, (req, res) => {
+  const fleetSummary = getFleetMigrationSummary();
+  const sunsetStatus = getLegacyTrafficSunsetStatus();
+
+  res.json({
+    ok: true,
+    fleet_summary: fleetSummary,
+    sunset_status: sunsetStatus
   });
 });
 

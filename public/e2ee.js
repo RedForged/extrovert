@@ -37,6 +37,9 @@
   // loads: { apiBase, bearerToken, olmWasmUrl }. In the web app this is
   // undefined and everything behaves exactly as before (same-origin + CSRF).
   var NATIVE_CFG = window.ExtrovertE2EEConfig || null;
+  // Phase 5 Feature Flag: Legacy E2EE (Olm/Megolm) enabled by default.
+  // When false, Olm crypto initialization is skipped and legacy UI is suppressed.
+  var LEGACY_ENABLED = (typeof window !== 'undefined' && window.ExtrovertConfig && window.ExtrovertConfig.legacyE2eeEnabled === false) ? false : true;
 
   // How often to poll for a peer's ratchet-reset request while an outbound
   // session is being reused (kept separate from the slower identity check).
@@ -416,6 +419,10 @@
 
   // ---- Olm ----
   function initOlm() {
+    if (!LEGACY_ENABLED) {
+      olmInitPromise = Promise.resolve(false);
+      return olmInitPromise;
+    }
     if (olmInitPromise) return olmInitPromise;
     if (typeof Olm !== 'undefined' && typeof Olm.Account === 'function') {
       try {
@@ -4052,6 +4059,7 @@
           cp.roomCursor = res.next_room_cursor || cp.roomCursor;
           if (!res.has_more) {
             cp.done = true;
+            cp.hasCompletedFullScan = true;
           }
           return saveMigrationCheckpoint(cp).then(function () {
             if (typeof options.onProgress === 'function') {
@@ -4253,6 +4261,80 @@
     });
   }
 
+  // ---- Phase 5: Decommissioning Preparation & Lifecycle Gate ----
+  var lastLegacyActivityTs = 0;
+  function touchLegacyActivity() {
+    var now = Date.now();
+    if (now - lastLegacyActivityTs < 600000) return Promise.resolve(lastLegacyActivityTs);
+    lastLegacyActivityTs = now;
+    return idbSet(STORE_SECURE, 'last_legacy_activity_at', now);
+  }
+
+  function getLegacyLifecycleStatus() {
+    return Promise.all([
+      getMigrationCheckpoint(),
+      idbGet(STORE_SECURE, 'last_legacy_activity_at'),
+      idbGet(STORE_SECURE, 'first_mls_session_at')
+    ]).then(function (res) {
+      var cp = res[0] || {};
+      var lastLegacy = Number(res[1]) || 0;
+      var firstMls = Number(res[2]) || 0;
+      var now = Date.now();
+      var anchor = Math.max(firstMls, lastLegacy);
+      var RETENTION_MS = 180 * 86400 * 1000;
+      var elapsed = anchor > 0 ? (now - anchor) : 0;
+      var timeEligible = (anchor > 0 && elapsed >= RETENTION_MS);
+      var scanEligible = (cp.hasCompletedFullScan === true);
+      var purgeEligible = timeEligible && scanEligible;
+
+      var state;
+      if (!firstMls) {
+        state = 'LegacyActive';
+      } else if (!cp.hasCompletedFullScan) {
+        state = 'CoexistenceAndMigrating';
+      } else if (!purgeEligible) {
+        state = 'RetentionWindow';
+      } else {
+        state = 'PurgeEligible';
+      }
+
+      return {
+        state: state,
+        firstMlsAt: firstMls,
+        lastLegacyAt: lastLegacy,
+        anchorAt: anchor,
+        elapsedMs: elapsed,
+        hasCompletedFullScan: !!cp.hasCompletedFullScan,
+        purgeEligible: purgeEligible
+      };
+    });
+  }
+
+  function canPurgeLegacySessions() {
+    return getLegacyLifecycleStatus().then(function (status) {
+      return status.purgeEligible;
+    });
+  }
+
+  function reportMigrationStatus() {
+    return getMigrationCheckpoint().then(function (cp) {
+      var unrec = cp.failedCount || 0;
+      var bucket = '0';
+      if (unrec > 100) bucket = '100+';
+      else if (unrec > 10) bucket = '11-100';
+      else if (unrec > 0) bucket = '1-10';
+
+      return csrfFetch('/mls/migration/status', {
+        method: 'POST',
+        body: JSON.stringify({
+          has_completed_full_scan: !!cp.hasCompletedFullScan,
+          total_migrated: cp.totalMigrated || 0,
+          unrecoverable_count_bucket: bucket
+        })
+      }).then(function (r) { return r.json(); });
+    });
+  }
+
   // Room pages (and any future consumer) drive Megolm through this global.
   window.ExtrovertE2EE = {
     ensureReady: ensureReady,
@@ -4301,5 +4383,11 @@
     saveGroupInbound: saveGroupInbound,
     getOrCreateDeviceKey: getOrCreateDeviceKey,
     createOlmAccount: createOlmAccount,
+    // ---- Phase 5 Lifecycle & Telemetry ----
+    touchLegacyActivity: touchLegacyActivity,
+    getLegacyLifecycleStatus: getLegacyLifecycleStatus,
+    canPurgeLegacySessions: canPurgeLegacySessions,
+    reportMigrationStatus: reportMigrationStatus,
+    legacyEnabled: function () { return LEGACY_ENABLED; },
   };
 })();
