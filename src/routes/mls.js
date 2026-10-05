@@ -484,6 +484,9 @@ router.post('/migration/status', requireAuth, (req, res) => {
 });
 
 // 16. Fleet Migration Summary & Multi-Criteria Status
+// Note: `pct_users_with_any_failures_7d`, `reporters_7d`, `failures_7d` are deprecated aliases
+// retained for backwards compatibility. They will be removed on 2027-04-01 or when no consumer
+// has queried the legacy names for 90 days, whichever is later.
 router.get('/migration/fleet-summary', requireAuth, (req, res) => {
   const fleetSummary = getFleetMigrationSummary();
 

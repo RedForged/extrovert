@@ -310,6 +310,11 @@ Extrovert **does not use a server-side DS leaf**. The server never participates 
         "registered_users_total": 450,
         "registered_users_migrated": 120,
         "registered_users_coverage_pct": 27,
+        "pct_active_users_with_failures_7d": 0.0,
+        "reporters_active_7d": 95,
+        "failures_active_7d": 0,
+        "all_time_reporters": 120,
+        "all_time_users_with_failures": 1,
         "ready": true
       },
       "time_window": {
@@ -324,6 +329,8 @@ Extrovert **does not use a server-side DS leaf**. The server never participates 
     }
     ```
   - `fleet_migration.ready` gates strictly on `active_users_coverage_pct >= required_coverage_pct` (default: 99%, configurable via `MLS_REQUIRED_COVERAGE_PCT`). `registered_users_coverage_pct` is informational.
+  - **Backwards-Compatibility & Deprecation Removal Date:**
+    `pct_users_with_any_failures_7d`, `reporters_7d`, and `failures_7d` are deprecated aliases retained for backwards compatibility. They will be removed on **2027-04-01** or when no consumer has queried the legacy names for 90 days, whichever is later.
 - **Privacy-Preserving Telemetry & Rate-Limiting:**
   - `POST /mls/migration/status` accepts coarse buckets (`"0"`, `"1-10"`, `"11-100"`, `"100+"`) and aggregated totals. Device IDs are omitted.
   - In `OlmPurged`, telemetry reporting for arrived legacy traffic is strictly rate-limited to **one event per `(user_id, day)`**. Scrolling past legacy history never generates repeated telemetry events.
