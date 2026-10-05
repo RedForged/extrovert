@@ -102,6 +102,33 @@ router.delete('/devices/:deviceId', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+const crypto = require('crypto');
+const MLS_KEY_PACKAGE_LABEL = Buffer.from('MLS 1.0 KeyPackage Reference', 'utf8');
+
+function computeMlsKeyPackageRef(wireBytes) {
+  if (!Buffer.isBuffer(wireBytes) || wireBytes.length < 5) {
+    const err = new Error('MalformedKeyPackageWire: payload too short');
+    err.code = 'MalformedKeyPackageWire';
+    throw err;
+  }
+  // Validate RFC 9420 MLSMessage framing: protocol_version = 0x0001 (mls10), wireformat = 0x0005 (mls_key_package)
+  if (wireBytes[0] !== 0x00 || wireBytes[1] !== 0x01 || wireBytes[2] !== 0x00 || wireBytes[3] !== 0x05) {
+    const err = new Error('MalformedKeyPackageWire: header must have protocol mls10 (0x0001) and wireformat mls_key_package (0x0005)');
+    err.code = 'MalformedKeyPackageWire';
+    throw err;
+  }
+  const innerKpBytes = wireBytes.slice(4);
+  const lenBuf = innerKpBytes.length < 64
+    ? Buffer.from([innerKpBytes.length])
+    : (innerKpBytes.length < 16384
+        ? Buffer.from([((innerKpBytes.length >> 8) & 0x3f) | 0x40, innerKpBytes.length & 0xff])
+        : Buffer.from([((innerKpBytes.length >> 24) & 0x3f) | 0x80, (innerKpBytes.length >> 16) & 0xff, (innerKpBytes.length >> 8) & 0xff, innerKpBytes.length & 0xff]));
+
+  return crypto.createHash('sha256')
+    .update(Buffer.concat([Buffer.from([MLS_KEY_PACKAGE_LABEL.length]), MLS_KEY_PACKAGE_LABEL, lenBuf, innerKpBytes]))
+    .digest('hex');
+}
+
 // 4. Upload Batch of KeyPackages
 router.post('/keypackages', requireAuth, (req, res) => {
   const user = res.locals.currentUser;
@@ -117,10 +144,42 @@ router.post('/keypackages', requireAuth, (req, res) => {
 
   for (let i = 0; i < keypackages.length; i++) {
     const p = keypackages[i];
+    const dataStr = typeof p === 'string' ? p : (p && (p.data || p.keypackage_data));
     const ref = p && (p.keypackage_ref || p.ref);
     if (!ref || typeof ref !== 'string' || !/^[0-9a-fA-F]{64}$/.test(ref)) {
       return res.status(400).json({
         error: 'Each keypackage must include a valid 64-character hex keypackage_ref',
+        index: i
+      });
+    }
+    if (!dataStr) {
+      return res.status(400).json({ error: 'Missing keypackage data', index: i });
+    }
+
+    let wireBytes;
+    try {
+      wireBytes = Buffer.from(dataStr, 'base64');
+    } catch {
+      return res.status(400).json({ error: 'Invalid base64 keypackage data', index: i });
+    }
+
+    let expectedRef;
+    try {
+      expectedRef = computeMlsKeyPackageRef(wireBytes);
+    } catch (wireErr) {
+      return res.status(400).json({
+        error: wireErr.message || 'MalformedKeyPackageWire',
+        code: wireErr.code || 'MalformedKeyPackageWire',
+        index: i
+      });
+    }
+
+    if (expectedRef !== ref.toLowerCase()) {
+      return res.status(400).json({
+        error: 'KeyPackageRefMismatch: provided keypackage_ref does not match RFC 9420 RefHash of wire bytes',
+        code: 'KeyPackageRefMismatch',
+        expected: expectedRef,
+        received: ref,
         index: i
       });
     }

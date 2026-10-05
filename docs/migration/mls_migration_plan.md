@@ -187,6 +187,41 @@ Extrovert **does not use a server-side DS leaf**. The server never participates 
 - **Protocol Dispatch:** Messages tagged with `proto: 'mls'` route to the MLS ratchet engine; legacy or untagged messages route to Megolm/Olm.
 - **In-Flight Resiliency:** Any delayed, interleaved, or replayed Megolm messages arriving during or after the upgrade window are transparently decrypted without message loss. Megolm keys are retained until the offline Phase 4 pre-decryption vault migration pass is verified.
 
+### 7.3 Legacy Key Drop & Retention Timing Policy
+- **Coexistence Ratchet Semantics:** Legacy Olm/Megolm sessions remain operational for incoming messages during the coexistence window (they must advance ratchets to decrypt new ciphertext from peers who haven't yet migrated). No new Olm/Megolm sessions are initiated — all outgoing messages prefer MLS when the peer supports it.
+- **Clock Origin & Drop Schedule:** Exactly 180 days after the client's first successful MLS session, per device (aligned with Extrovert's 180-day stale device de-registration policy). After 180 days, existing Olm/Megolm sessions are purged from `STORE_OLM`, and any peer still communicating exclusively over Olm/Megolm becomes unreachable.
+- **User-Visible Signal:**
+  - Status banner in Settings > Security > Encryption:
+    `"Legacy Encryption (Olm/Megolm): Archived. Complete session retirement scheduled in X days."`
+  - Manual action button: `"Purge Legacy Sessions Now"`, allowing privacy-conscious users to immediately wipe Olm key material once their local pre-decryption migration pass completes.
+
+### 7.4 Pre-Decryption Migration Worker & Fault Tolerance
+- **Trigger & Pacing:**
+  - Automatic background worker executed on idle (`requestIdleCallback` with 5s fallback timer) after MLS initialization.
+  - Processed in batches of 50 messages to avoid main thread stutter and IndexedDB lock contention.
+- **Monotonic Global Ordering:**
+  - Messages are processed in global message-ID order. Because IDs are globally monotonic and per-session messages preserve their relative ordering, Olm/Megolm ratchets advance correctly without per-session coordination.
+- **Checkpoint Recovery:**
+  - Progress tracked in IndexedDB (`STORE_MLS_KEYS`, key `'migration:checkpoint'`) storing `{ lastScannedId, totalMigrated, failedCount, activeSessions }`.
+  - Resilient to unexpected browser termination: worker resumes from `lastScannedId` without reprocessing or duplicate encryption.
+- **Failure Classification & Cascade Taxonomy:**
+  - `SESSION_EXPIRED`: Session not found in `STORE_OLM`. Cascades across all messages in that session: labeled `"session expired prior to vault migration"`.
+  - `RATCHET_DESYNC`: Session present, but chain key advanced past message index or Olm skipped-key limit (>2000) exceeded. Cascades for messages prior to current ratchet position: labeled `"ratchet advanced past this message"`.
+  - `CORRUPT_PAYLOAD`: Single message ciphertext damaged or unparseable. **Does not cascade**: because Double Ratchet / Megolm ratchet state is not advanced on decryption errors, subsequent valid messages in the same session remain decryptable. Only the damaged message is labeled `"message ciphertext corrupted"`.
+  - Failed messages are flagged with `unrecoverable: true` and their diagnostic label in the local plaintext vault (`STORE_SECURE_MESSAGES`), ensuring the migration loop never hangs or blocks the batch.
+
+### 7.5 Data Export Semantics (GDPR Article 20 / Portable Archive)
+- **Encryption by Default:**
+  - Encrypted export (password-protected via PBKDF2/Argon2 + AES-256-GCM) is the default for all data archives.
+  - Plaintext export is available as an explicit opt-in behind a user warning confirmation dialog, recording explicit user acknowledgment in the export metadata.
+- **Export Inclusions & Payload Optimization:**
+  - Exports include the **consolidated decrypted plaintext vault** (covering all pre-decrypted historical Olm/Megolm messages and MLS application messages) formatted as standardized JSON.
+  - Ephemeral Olm ratchets, raw pairwise ciphertext envelopes, and unpicked session blobs are explicitly excluded, reducing payload size by excluding session state.
+- **Unrecoverable Message Handling:**
+  - Messages flagged as unrecoverable export with a structured diagnostic placeholder:
+    `"[Message unrecoverable: legacy session expired prior to vault migration]"`.
+  - Preserves full auditability, timeline chronology, and regulatory compliance.
+
 ---
 
 ## 8. Database Schema (`src/db.js`)

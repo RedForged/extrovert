@@ -79,22 +79,68 @@ async function run() {
 
     // 4. Batch Upload KeyPackages
     console.log('3. Testing POST /mls/keypackages (validation & batch upload)...');
+    const MLS_LABEL = Buffer.from('MLS 1.0 KeyPackage Reference', 'utf8');
+    function makeValidTestWire(index) {
+      const inner = Buffer.from('synthetic_keypackage_data_for_device_testing_' + index);
+      const wire = Buffer.concat([Buffer.from([0x00, 0x01, 0x00, 0x05]), inner]);
+      const lenBuf = inner.length < 64
+        ? Buffer.from([inner.length])
+        : Buffer.from([((inner.length >> 8) & 0x3f) | 0x40, inner.length & 0xff]);
+      const ref = crypto.createHash('sha256')
+        .update(Buffer.concat([Buffer.from([MLS_LABEL.length]), MLS_LABEL, lenBuf, inner]))
+        .digest('hex');
+      return { data: wire.toString('base64'), ref };
+    }
+
     // Verify rejection when keypackage_ref is missing
-    const badUpload = await req('/mls/keypackages', {
+    const badUpload1 = await req('/mls/keypackages', {
       token: btok,
       method: 'POST',
-      body: { device_id: 'bob_desktop', keypackages: [{ data: 'kp_invalid', ciphersuite: 1 }] }
+      body: { device_id: 'bob_desktop', keypackages: [{ data: makeValidTestWire(0).data, ciphersuite: 1 }] }
     });
-    assert.strictEqual(badUpload.status, 400);
-    assert.ok(badUpload.json.error.includes('keypackage_ref'), 'Must reject missing keypackage_ref');
+    assert.strictEqual(badUpload1.status, 400);
+    assert.ok(badUpload1.json.error.includes('keypackage_ref'), 'Must reject missing keypackage_ref');
+
+    // Verify rejection when MLSMessage wire framing is malformed
+    const badUpload2 = await req('/mls/keypackages', {
+      token: btok,
+      method: 'POST',
+      body: {
+        device_id: 'bob_desktop',
+        keypackages: [{
+          data: Buffer.from([0x00, 0x00, 0x00, 0x00, 0x99]).toString('base64'),
+          ciphersuite: 1,
+          keypackage_ref: 'a'.repeat(64)
+        }]
+      }
+    });
+    assert.strictEqual(badUpload2.status, 400);
+    assert.strictEqual(badUpload2.json.code, 'MalformedKeyPackageWire');
+
+    // Verify rejection when keypackage_ref does not match semantic RefHash
+    const testWire0 = makeValidTestWire(0);
+    const badUpload3 = await req('/mls/keypackages', {
+      token: btok,
+      method: 'POST',
+      body: {
+        device_id: 'bob_desktop',
+        keypackages: [{
+          data: testWire0.data,
+          ciphersuite: 1,
+          keypackage_ref: '0'.repeat(64) // Mismatched ref
+        }]
+      }
+    });
+    assert.strictEqual(badUpload3.status, 400);
+    assert.strictEqual(badUpload3.json.code, 'KeyPackageRefMismatch');
 
     const packages = [];
     for (let i = 0; i < 20; i++) {
-      const hexSuffix = (i < 10 ? '0' + i : String(i));
+      const item = makeValidTestWire(i);
       packages.push({
-        data: 'kp_bob_pkg_' + i,
+        data: item.data,
         ciphersuite: 1,
-        keypackage_ref: 'b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0' + hexSuffix
+        keypackage_ref: item.ref
       });
     }
     const uploadRes = await req('/mls/keypackages', {
@@ -104,7 +150,7 @@ async function run() {
     });
     assert.strictEqual(uploadRes.status, 200);
     assert.strictEqual(uploadRes.json.saved, 20);
-    console.log('   [OK] Batch KeyPackages uploaded with valid keypackage_ref (and missing ref rejected with 400)\n');
+    console.log('   [OK] Wire framing verified, RefHash mismatch rejected, and 20 valid KeyPackages uploaded\n');
 
     // 5. KeyPackage Status
     console.log('4. Testing GET /mls/keypackages/status...');
@@ -118,7 +164,8 @@ async function run() {
     const claimRes = await req('/mls/keypackages/' + bobId, { token: atok });
     assert.strictEqual(claimRes.status, 200);
     assert.strictEqual(claimRes.json.keypackages.length, 1);
-    assert.strictEqual(claimRes.json.keypackages[0].keypackage_data, 'kp_bob_pkg_0');
+    assert.strictEqual(claimRes.json.keypackages[0].keypackage_data, packages[0].data);
+    assert.strictEqual(claimRes.json.keypackages[0].keypackage_ref, packages[0].keypackage_ref);
 
     // Verify Bob's pool decremented
     const statusAfter = await req('/mls/keypackages/status?device_id=bob_desktop', { token: btok });

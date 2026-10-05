@@ -548,12 +548,17 @@
   }
 
   function invalidateRoomMlsSupport(roomId) {
-    var gid = getRoomGroupId(roomId);
-    Object.keys(roomMlsSupportCache).forEach(function (k) {
-      if (k.indexOf(gid) === 0) {
-        delete roomMlsSupportCache[k];
-      }
-    });
+    if (roomId) {
+      var gid = getRoomGroupId(roomId);
+      var prefix = gid + ':';
+      Object.keys(roomMlsSupportCache).forEach(function (k) {
+        if (k === gid || k.startsWith(prefix)) {
+          delete roomMlsSupportCache[k];
+        }
+      });
+    } else {
+      roomMlsSupportCache = {};
+    }
   }
 
   function checkRoomMlsSupport(roomId, memberUserIds) {
@@ -954,6 +959,18 @@
     });
   }
 
+  function revokeDevice(targetDeviceId) {
+    var dev = targetDeviceId || deviceId;
+    return csrfFetch('/mls/devices/' + encodeURIComponent(dev), {
+      method: 'DELETE'
+    }).then(function (r) {
+      return r.json();
+    }).then(function (res) {
+      invalidateRoomMlsSupport(); // Flush capability cache immediately on device revocation
+      return res;
+    });
+  }
+
   // Export onto window.ExtrovertMLS
   root.ExtrovertMLS = {
     init: initDevice,
@@ -970,6 +987,7 @@
     invalidateRoomMlsSupport: invalidateRoomMlsSupport,
     encryptRoomMessage: encryptRoomMessage,
     decryptRoomMessage: decryptRoomMessage,
+    revokeDevice: revokeDevice,
     pollWelcomes: pollAndProcessWelcomes,
     getDeviceId: function () { return deviceId; },
     ready: function () { return !!(ciphersuiteImpl && deviceId); },
