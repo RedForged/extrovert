@@ -347,29 +347,20 @@ router.post('/:username/send', (req, res) => {
     return req.xhr ? res.json({ error: 'cannot message' }) : res.redirect(back(req, '/chats'));
   }
   const body = String(req.body.body || '').trim();
-  const keyForSender = String(req.body.key_for_sender || '').trim() || null;
-  const keyForRecipient = String(req.body.key_for_recipient || '').trim() || null;
-  const rawProto = String(req.body.proto || 'rsa').trim();
-  const proto = (rawProto === 'mls' || rawProto === 'olm') ? rawProto : 'rsa';
+  const rawProto = String(req.body.proto || '').trim();
   const senderCiphertextRaw = String(req.body.sender_ciphertext || '').trim();
-  // Reject oversize payloads outright — truncating a ciphertext would store a
-  // corrupted message that can never be decrypted.
-  if (body.length > DM_BODY_MAX) {
+  if (body.length > DM_BODY_MAX || senderCiphertextRaw.length > DM_SENDER_CT_MAX) {
     return req.xhr ? res.json({ error: 'Message is too long.' }) : res.status(400).send('Message is too long.');
   }
-  if (senderCiphertextRaw.length > DM_SENDER_CT_MAX) {
-    return req.xhr ? res.json({ error: 'Ciphertext too long.' }) : res.status(400).send('Ciphertext too long.');
-  }
-  const senderCiphertext = senderCiphertextRaw || null;
   const isSticker = body.startsWith('/uploads/stickers/');
   if (body && !isSticker) {
-    if ((proto !== 'olm' && proto !== 'mls') || !senderCiphertext) {
-      return req.xhr ? res.json({ error: 'End-to-end encryption required. All messages must be Olm or MLS encrypted.' }) : res.status(400).send('E2EE required');
+    if (rawProto !== 'mls') {
+      return req.xhr ? res.json({ error: 'End-to-end encryption required. All messages must be MLS encrypted.' }) : res.status(400).send('MLS required');
     }
   }
   if (body) {
     const secure = getDmSecurity(user.id, other.id).active ? 1 : 0;
-    const msgId = sendMessage(user.id, other.id, body, keyForSender, keyForRecipient, proto, senderCiphertext, secure);
+    const msgId = sendMessage(user.id, other.id, body, null, null, 'mls', senderCiphertextRaw || null, secure);
     createNotification({ userId: other.id, type: 'message', actorId: user.id });
     const msg = db.prepare(`SELECT id, from_id, body, created_at, key_for_sender, key_for_recipient, proto, sender_ciphertext, secure FROM messages WHERE id = ?`).get(msgId);
     // Live-deliver the ciphertext to the recipient's open tab(s) and sender's other devices.

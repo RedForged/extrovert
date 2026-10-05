@@ -2758,31 +2758,21 @@ router.post('/rooms/:id/channels/:cid/messages', requireApiAuth('write'), requir
   }
 
   const body = String(req.body.body || '').trim();
-  const rawProto = String(req.body.proto || 'plain').trim();
-  const proto = (rawProto === 'mls' || rawProto === 'megolm') ? rawProto : 'plain';
+  const rawProto = String(req.body.proto || '').trim();
   const ciphertextRaw = String(req.body.ciphertext || '').trim();
-  const groupSessionId = String(req.body.group_session_id || '').trim() || null;
   const isSticker = body.startsWith('/uploads/stickers/');
   if (!isSticker) {
-    if (!body && !ciphertextRaw) return errorResponse(res, 400, 'Bad Request', 'body or ciphertext is required.');
-    if (body.length > 20000 || ciphertextRaw.length > 20000) {
+    if (!ciphertextRaw) return errorResponse(res, 400, 'Bad Request', 'ciphertext is required.');
+    if (ciphertextRaw.length > 20000) {
       return errorResponse(res, 400, 'Bad Request', 'Message is too long.');
     }
-    if ((proto !== 'megolm' && proto !== 'mls') || !ciphertextRaw) {
-      return errorResponse(res, 400, 'Bad Request', 'End-to-end encryption required. Room messages must be Megolm or MLS-encrypted.');
-    }
-    if (proto === 'megolm') {
-      if (!groupSessionId) {
-        return errorResponse(res, 400, 'Bad Request', 'group_session_id required for Megolm messages.');
-      }
-      if (!db.isRoomGroupSessionUsable(room.id, req.apiUser.id, groupSessionId)) {
-        return errorResponse(res, 400, 'Bad Request', 'Unknown group session.');
-      }
+    if (rawProto !== 'mls') {
+      return errorResponse(res, 400, 'Bad Request', 'End-to-end encryption required. Room messages must be MLS-encrypted.');
     }
   }
   const ciphertext = ciphertextRaw || null;
 
-  const msgId = db.sendRoomMessage(channel.id, req.apiUser.id, isSticker ? body : '', proto, ciphertext, isSticker ? null : groupSessionId);
+  const msgId = db.sendRoomMessage(channel.id, req.apiUser.id, isSticker ? body : '', 'mls', ciphertext, null);
 
   const clientId = req.body.client_id || req.body.nonce || req.body.client_tx_id;
   const msgData = {
@@ -3287,19 +3277,17 @@ router.post('/conversations/:username/messages', requireApiAuth('write:direct'),
 
   const keyForSender = String(req.body.key_for_sender || '').trim() || null;
   const keyForRecipient = String(req.body.key_for_recipient || '').trim() || null;
-  const rawProto = String(req.body.proto || 'rsa').trim();
-  const proto = (rawProto === 'mls' || rawProto === 'olm') ? rawProto : 'rsa';
+  const rawProto = String(req.body.proto || '').trim();
   const senderCiphertextRaw = String(req.body.sender_ciphertext || '').trim();
   if (senderCiphertextRaw.length > 65536) return errorResponse(res, 400, 'Bad Request', 'sender_ciphertext is too long.');
-  const senderCiphertext = senderCiphertextRaw || null;
 
   if (!body.startsWith('/uploads/stickers/')) {
-    if ((proto !== 'olm' && proto !== 'mls') || !senderCiphertext) {
-      return errorResponse(res, 400, 'Bad Request', 'End-to-end encryption required. All messages must be Olm or MLS encrypted.');
+    if (rawProto !== 'mls') {
+      return errorResponse(res, 400, 'Bad Request', 'End-to-end encryption required. All messages must be MLS encrypted.');
     }
   }
 
-  const msgId = dm.sendMessage(req.apiUser.id, other.id, body, keyForSender, keyForRecipient, proto, senderCiphertext, dm.getDmSecurity(req.apiUser.id, other.id).active);
+  const msgId = dm.sendMessage(req.apiUser.id, other.id, body, null, null, 'mls', senderCiphertextRaw || null, dm.getDmSecurity(req.apiUser.id, other.id).active);
   db.createNotification({ userId: other.id, type: 'message', actorId: req.apiUser.id });
 
   const msg = db.db.prepare(`SELECT id, from_id, to_id, body, created_at, key_for_sender, key_for_recipient, proto, sender_ciphertext, secure FROM messages WHERE id = ?`).get(msgId);

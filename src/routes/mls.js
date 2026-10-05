@@ -435,97 +435,12 @@ router.post('/backup', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-// 14. Historical Messages for Pre-Decryption Migration Worker
-router.get('/migration/messages', requireAuth, (req, res) => {
-  const user = res.locals.currentUser;
-  const dmCursor = parseInt(req.query.dm_cursor, 10) || 0;
-  const roomCursor = parseInt(req.query.room_cursor, 10) || 0;
-  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 100);
-
-  const dmMessages = getHistoricalDmMessagesForMigration(user.id, dmCursor, limit);
-  const remainingLimit = limit - dmMessages.length;
-  const roomMessages = remainingLimit > 0
-    ? getHistoricalRoomMessagesForMigration(user.id, roomCursor, remainingLimit)
-    : [];
-
-  const nextDmCursor = dmMessages.length ? dmMessages[dmMessages.length - 1].id : dmCursor;
-  const nextRoomCursor = roomMessages.length ? roomMessages[roomMessages.length - 1].id : roomCursor;
-  const hasMore = dmMessages.length === limit || (remainingLimit > 0 && roomMessages.length === remainingLimit);
-
-  res.json({
-    ok: true,
-    dm_messages: dmMessages,
-    room_messages: roomMessages,
-    next_dm_cursor: nextDmCursor,
-    next_room_cursor: nextRoomCursor,
-    has_more: hasMore
-  });
-});
-
-// 15. Migration Status Telemetry (Privacy-Preserving Bucket Reporting)
-router.post('/migration/status', requireAuth, (req, res) => {
-  const user = res.locals.currentUser;
-  const { has_completed_full_scan, total_migrated, unrecoverable_count_bucket, blocked_by_policy } = req.body || {};
-
-  const allowedBuckets = ['0', '1-10', '11-100', '100+'];
-  if (!unrecoverable_count_bucket || !allowedBuckets.includes(unrecoverable_count_bucket)) {
-    return res.status(400).json({ error: 'unrecoverable_count_bucket must be one of: 0, 1-10, 11-100, 100+' });
-  }
-
-  recordMigrationTelemetry(
-    user.id,
-    Boolean(has_completed_full_scan),
-    parseInt(total_migrated, 10) || 0,
-    unrecoverable_count_bucket,
-    Boolean(blocked_by_policy)
-  );
-
-  res.json({ ok: true });
-});
-
-// 16. Fleet Migration Summary & Multi-Criteria Status
-// Note: `pct_users_with_any_failures_7d`, `reporters_7d`, `failures_7d` are deprecated aliases
-// retained for backwards compatibility. They will be removed on 2027-04-01 or when no consumer
-// has queried the legacy names for 90 days, whichever is later.
-router.get('/migration/fleet-summary', requireAuth, (req, res) => {
-  const fleetSummary = getFleetMigrationSummary();
-
-  res.json({
-    ok: true,
-    traffic_sunset: fleetSummary.traffic_sunset,
-    fleet_migration: fleetSummary.fleet_migration,
-    time_window: fleetSummary.time_window,
-    all_criteria_met: fleetSummary.all_criteria_met,
-    force_sunset_active: fleetSummary.force_sunset_active
-  });
-});
-
-// 17. Client MLS & Sunset Configuration Transport
+// 14. Client MLS Configuration Transport
 router.get('/config', (req, res) => {
-  const legacyEnabled = isLegacyE2eeEnabled(req.ip);
-  const launchDateStr = process.env.MLS_MIGRATION_START_DATE || '2026-10-05T00:00:00.000Z';
-  const launchTs = new Date(launchDateStr).getTime();
-  const tier = parseInt(process.env.MLS_MIGRATION_TIER, 10) || 1;
-  const forceRevert = (process.env.MLS_MIGRATION_TIER_FORCE_REVERT === 'true' || process.env.MLS_MIGRATION_TIER_OVERRIDE_STICKY === 'false');
-  const retentionDays = (tier === 2) ? 365 : 180;
-  const cutoffDays = (tier === 2) ? 545 : 365;
-  const defaultCutoffTs = launchTs + (cutoffDays * 86400 * 1000);
-  const cutoffDateStr = process.env.MLS_SUNSET_DATE || new Date(defaultCutoffTs).toISOString();
-  const cutoffTs = new Date(cutoffDateStr).getTime();
-  const daysRemaining = Math.max(0, Math.ceil((cutoffTs - Date.now()) / (86400 * 1000)));
-  const pollIntervalSeconds = parseInt(process.env.MLS_CONFIG_POLL_INTERVAL_SECONDS, 10) || 900;
-
   res.json({
     ok: true,
-    migration_tier: tier,
-    force_tier_revert: forceRevert,
-    legacy_retention_days: retentionDays,
-    server_cutoff_days: cutoffDays,
-    legacy_e2ee_enabled: legacyEnabled,
-    config_poll_interval_seconds: pollIntervalSeconds,
-    migration_start_date: launchDateStr,
-    sunset_cutoff_date: cutoffDateStr,
-    days_remaining_to_cutoff: daysRemaining
+    mls_enabled: true,
+    legacy_e2ee_enabled: false
   });
 });
 
