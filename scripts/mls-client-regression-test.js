@@ -86,6 +86,22 @@ function makeMockIndexedDB() {
               });
               return req;
             },
+            getAllKeys: () => {
+              const req = {};
+              setImmediate(() => {
+                req.result = Array.from(store.keys());
+                if (req.onsuccess) req.onsuccess({ target: req });
+              });
+              return req;
+            },
+            getAll: () => {
+              const req = {};
+              setImmediate(() => {
+                req.result = Array.from(store.values());
+                if (req.onsuccess) req.onsuccess({ target: req });
+              });
+              return req;
+            },
           }),
         };
       },
@@ -147,6 +163,7 @@ function makeRouter() {
     registrations: [],
     pendingProposals: [],
     claimable: {},
+    backup: null,
   };
 
   state.setPendingProposals = (p) => { state.pendingProposals = p; };
@@ -171,6 +188,11 @@ function makeRouter() {
 
     if (path.includes('/mls/keypackages/status')) return json({ ok: true, available: 20 });
     if (path.includes('/mls/welcomes')) return json({ ok: true, welcomes: [] });
+    if (path.endsWith('/mls/backup') && method === 'POST') {
+      state.backup = { backup_data: body.backup_data, kek_salt: body.salt };
+      return json({ ok: true });
+    }
+    if (path.endsWith('/mls/backup')) return json({ ok: true, backup: state.backup });
     if (path.includes('/mls/groups/') && path.includes('/proposals') && method === 'GET') {
       const pending = state.pendingProposals;
       state.pendingProposals = [];
@@ -451,6 +473,97 @@ async function scenarioStaleGroupResetRecovery() {
   console.log('   [OK] CAS reset re-init, corrupt-blob cleanup, own-device exclusion, welcomes for all devices');
 }
 
+async function scenarioPasswordBackupRestore() {
+  console.log('5. Password backup: new device restores history + message cache with just the password...');
+
+  const PW = 'correct horse battery staple';
+
+  // --- Device A: owns the group state; a real peer sends a message ----------
+  const idbA = makeMockIndexedDB();
+  const recA = idbA.seed('extrovert_crypto', 1, ['crypto', 'mls_keys', 'mls_groups', 'mls_msg_cache', 'mls_history']);
+  const router = makeRouter();
+
+  const devKey = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  recA.stores.get('crypto').set('deviceKey', devKey);
+  recA.stores.get('mls_keys').set('deviceId', 'devLocal');
+  recA.stores.get('mls_keys').set('credential', {
+    credentialType: 'basic',
+    identity: new TextEncoder().encode('user:1:dev:devLocal'),
+  });
+
+  const myKp = await genKp('user:1:dev:devLocal');
+  const peerKp = await genKp('user:2:dev:devPeer');
+  const alice = await mls.createGroup(new TextEncoder().encode('dm:1_2'), myKp.publicPackage, myKp.privatePackage, [], impl);
+  const addPeer = await mls.createCommit(
+    { state: alice, cipherSuite: impl },
+    { extraProposals: [{ proposalType: 'add', add: { keyPackage: peerKp.publicPackage } }], ratchetTreeExtension: true }
+  );
+  const aliceState = addPeer.newState;
+  const peerState = await mls.joinGroup(addPeer.welcome, peerKp.publicPackage, peerKp.privatePackage, mls.emptyPskIndex, impl);
+
+  // The peer's message — never opened on device A; only the backup can save it.
+  const peerSend = await mls.createApplicationMessage(peerState, new TextEncoder().encode('peer secret'), impl);
+  const peerCipher = b64(mls.encodeMlsMessage({
+    privateMessage: peerSend.privateMessage,
+    wireformat: 'mls_private_message',
+    version: 'mls10',
+  }));
+
+  recA.stores.get('mls_groups').set('dm:1_2', await encryptKd(devKey, mls.encodeGroupState(aliceState)));
+  recA.stores.get('mls_msg_cache').set('42', 'aia sent this earlier');
+
+  const clientA = loadClient(idbA, router);
+  await clientA.init();
+  const unlocked = await clientA.unlockBackup(PW);
+  assert.ok(unlocked && unlocked.created, 'first unlock must create and upload the backup');
+  assert.ok(router.backup && router.backup.backup_data, 'encrypted backup must reach the server');
+  await clientA.backupNow();
+
+  const firstBlob = JSON.parse(new TextDecoder().decode(new Uint8Array(Buffer.from(router.backup.backup_data, 'base64'))));
+  assert.ok(firstBlob.bk_id && firstBlob.wrappedBk && firstBlob.payload, 'blob must wrap a backup key with the password');
+
+  // --- Device B: brand new device, password only ---------------------------
+  const idbB = makeMockIndexedDB();
+  idbB.seed('extrovert_crypto', 1, ['crypto', 'mls_keys', 'mls_groups', 'mls_msg_cache', 'mls_history']);
+  const clientB = loadClient(idbB, router);
+  await clientB.init();
+  const restored = await clientB.unlockBackup(PW);
+  assert.ok(restored && restored.restored, 'backup must restore on the new device');
+
+  const recB = idbB.recs.get('extrovert_crypto');
+  assert.strictEqual(recB.stores.get('mls_msg_cache').get('42'), 'aia sent this earlier',
+    'message cache must restore');
+
+  const pt = await clientB.decryptDmMessage(2, peerCipher);
+  assert.strictEqual(pt, 'peer secret', 'old peer message must decrypt on the new device via restored state');
+  console.log('   [OK] new device decrypts full history with just the password');
+
+  // --- Wrong password must not unlock --------------------------------------
+  const idbC = makeMockIndexedDB();
+  idbC.seed('extrovert_crypto', 1, ['crypto', 'mls_keys', 'mls_groups']);
+  const clientC = loadClient(idbC, router);
+  await clientC.init();
+  let wrongPwThrew = false;
+  try {
+    await clientC.unlockBackup('wrong password entirely');
+  } catch (err) {
+    wrongPwThrew = true;
+  }
+  assert.ok(wrongPwThrew, 'wrong password must not unlock the backup');
+  console.log('   [OK] wrong password rejected');
+
+  // --- Device A restarted: no password, backups must continue --------------
+  const clientD = loadClient(idbA, router);
+  await clientD.init();
+  await clientD.encryptDmMessage(2, 'second message');
+  await clientD.backupNow();
+  const latestBlob = JSON.parse(new TextDecoder().decode(new Uint8Array(Buffer.from(router.backup.backup_data, 'base64'))));
+  assert.strictEqual(latestBlob.wrappedBk, firstBlob.wrappedBk,
+    'password-less sessions must keep the existing password wrapping');
+  assert.strictEqual(latestBlob.bk_id, firstBlob.bk_id, 'the backup key must stay stable across sessions');
+  console.log('   [OK] password-less sessions keep backing up under the same wrapped key');
+}
+
 async function run() {
   console.log('=== Starting MLS Browser Client Regression Test Suite ===\n');
   const cs = mls.getCiphersuiteFromName('MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519');
@@ -460,6 +573,7 @@ async function run() {
   await scenarioHighVersionDbNoVersionError();
   await scenarioMembershipFixes();
   await scenarioStaleGroupResetRecovery();
+  await scenarioPasswordBackupRestore();
 
   console.log('\n=== All MLS Browser Client Regression Assertions PASSED ===');
 }

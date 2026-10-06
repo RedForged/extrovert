@@ -11,7 +11,8 @@
   var STORE_MLS_KEYS = 'mls_keys';
   var STORE_MLS_GROUPS = 'mls_groups';
   var STORE_MSG_CACHE = 'mls_msg_cache';
-  var ALL_STORES = [STORE_CRYPTO, STORE_MLS_KEYS, STORE_MLS_GROUPS, STORE_MSG_CACHE];
+  var STORE_MLS_HISTORY = 'mls_history';
+  var ALL_STORES = [STORE_CRYPTO, STORE_MLS_KEYS, STORE_MLS_GROUPS, STORE_MSG_CACHE, STORE_MLS_HISTORY];
 
   var ciphersuiteImpl = null;
   var deviceKey = null;
@@ -128,6 +129,28 @@
     });
   }
 
+  function idbGetAll(storeName) {
+    return openDB().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(storeName, 'readonly');
+        var store = tx.objectStore(storeName);
+        var keysReq = store.getAllKeys();
+        var valsReq = store.getAll();
+        var keys = null;
+        var vals = null;
+        function maybe() {
+          if (keys && vals) {
+            resolve(keys.map(function (k, i) { return { key: k, value: vals[i] }; }));
+          }
+        }
+        keysReq.onsuccess = function () { keys = keysReq.result || []; maybe(); };
+        valsReq.onsuccess = function () { vals = valsReq.result || []; maybe(); };
+        keysReq.onerror = function () { reject(keysReq.error); };
+        valsReq.onerror = function () { reject(valsReq.error); };
+      });
+    });
+  }
+
   function uint8ToHex(u) {
     var s = '';
     for (var i = 0; i < u.length; i++) {
@@ -164,10 +187,10 @@
     });
   }
 
-  function encryptWithKd(data) {
+  function encryptWithKey(key, data) {
     var iv = crypto.getRandomValues(new Uint8Array(12));
     var bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
-    return crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, deviceKey, bytes).then(function (ct) {
+    return crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, key, bytes).then(function (ct) {
       var c = new Uint8Array(iv.length + ct.byteLength);
       c.set(iv);
       c.set(new Uint8Array(ct), iv.length);
@@ -175,11 +198,19 @@
     });
   }
 
-  function decryptWithKd(b64) {
+  function decryptWithKey(key, b64) {
     var c = b64ToUint8(b64);
-    return crypto.subtle.decrypt({ name: 'AES-GCM', iv: c.slice(0, 12) }, deviceKey, c.slice(12)).then(function (pt) {
+    return crypto.subtle.decrypt({ name: 'AES-GCM', iv: c.slice(0, 12) }, key, c.slice(12)).then(function (pt) {
       return new Uint8Array(pt);
     });
+  }
+
+  function encryptWithKd(data) {
+    return encryptWithKey(deviceKey, data);
+  }
+
+  function decryptWithKd(b64) {
+    return decryptWithKey(deviceKey, b64);
   }
 
   // --- MLS Engine Initialization ---
@@ -269,6 +300,10 @@
       });
     }).then(function () {
       return pollAndProcessWelcomes();
+    }).then(function () {
+      return loadBackupKey();
+    }).then(function () {
+      return resumeBackupUnlock();
     }).catch(function (err) {
       initPromise = null;
       throw err;
@@ -473,6 +508,7 @@
   // --- Group State Persistence ---
   function saveGroupState(groupId, state) {
     if (!state) return Promise.resolve();
+    scheduleBackup();
     try {
       var mls = root.MLS;
       var encoded = mls.encodeGroupState(state);
@@ -701,27 +737,89 @@
     });
   }
 
-  function decryptDmMessage(peerUserId, ciphertextB64) {
+  function decryptWithState(groupState, ciphertextB64) {
     var mls = root.MLS;
-    var gid = getDmGroupId(peerUserId);
+    var dec = mls.decodeMlsMessage(b64ToUint8(ciphertextB64), 0)[0];
+    if (!dec || dec.wireformat !== 'mls_private_message') {
+      return Promise.reject(new Error('Malformed MLS private message'));
+    }
+    return mls.processPrivateMessage(groupState, dec.privateMessage, mls.emptyPskIndex, ciphersuiteImpl);
+  }
 
-    return ensureDmGroup(peerUserId).then(function (groupState) {
-      if (!groupState) {
-        throw new Error('Unable to resolve MLS conversation state for peer');
-      }
-      var msgBytes = b64ToUint8(ciphertextB64);
-      var dec = mls.decodeMlsMessage(msgBytes, 0)[0];
-      if (!dec || dec.wireformat !== 'mls_private_message') {
-        throw new Error('Malformed MLS private message');
-      }
+  function loadHistoryStates(gid) {
+    if (historyStates[gid]) return Promise.resolve(historyStates[gid]);
+    return idbGet(STORE_MLS_HISTORY, gid).then(function (rows) {
+      var mls = root.MLS;
+      var entries = [];
+      (rows || []).forEach(function (row) {
+        try {
+          var decoded = mls.decodeGroupState(b64ToUint8(row.bytes), 0);
+          if (decoded && decoded[0]) {
+            entries.push({ deviceId: row.deviceId, state: restoreClientConfig(decoded[0]) });
+          }
+        } catch (err) {}
+      });
+      historyStates[gid] = entries;
+      return entries;
+    }).catch(function () { return []; });
+  }
 
-      return mls.processPrivateMessage(groupState, dec.privateMessage, mls.emptyPskIndex, ciphersuiteImpl).then(function (recvRes) {
+  function tryHistoryDecrypt(gid, ciphertextB64) {
+    return loadHistoryStates(gid).then(function (entries) {
+      var chain = Promise.resolve(null);
+      entries.forEach(function (entry) {
+        chain = chain.then(function (found) {
+          if (found !== null) return found;
+          return decryptWithState(entry.state, ciphertextB64).then(function (recvRes) {
+            return (recvRes && recvRes.kind === 'applicationMessage')
+              ? new TextDecoder().decode(recvRes.message)
+              : null;
+          }).catch(function () { return null; });
+        });
+      });
+      return chain;
+    }).then(function (pt) {
+      if (pt !== null) scheduleBackup();
+      return pt;
+    }).catch(function () { return null; });
+  }
+
+  function decryptGroupMessage(gid, ensureFn, missingMsg, ciphertextB64) {
+    function withActiveState(state) {
+      return decryptWithState(state, ciphertextB64).then(function (recvRes) {
+        if (!recvRes || recvRes.kind !== 'applicationMessage') {
+          throw new Error('Unexpected MLS handshake message in conversation');
+        }
         activeGroups[gid] = recvRes.newState;
         return saveGroupState(gid, recvRes.newState).then(function () {
           return new TextDecoder().decode(recvRes.message);
         });
       });
+    }
+
+    function viaEnsure() {
+      return ensureFn().then(function (groupState) {
+        if (!groupState) throw new Error(missingMsg);
+        return withActiveState(groupState);
+      });
+    }
+
+    function historyOrEnsure() {
+      return tryHistoryDecrypt(gid, ciphertextB64).then(function (pt) {
+        return pt !== null ? pt : viaEnsure();
+      });
+    }
+
+    return loadGroupState(gid).then(function (state) {
+      if (!state) return historyOrEnsure();
+      return withActiveState(state).catch(historyOrEnsure);
     });
+  }
+
+  function decryptDmMessage(peerUserId, ciphertextB64) {
+    var gid = getDmGroupId(peerUserId);
+    return decryptGroupMessage(gid, function () { return ensureDmGroup(peerUserId); },
+      'Unable to resolve MLS conversation state for peer', ciphertextB64);
   }
 
   // --- Room Group Initialization & Message Encryption ---
@@ -1171,26 +1269,9 @@
   }
 
   function decryptRoomMessage(roomId, ciphertextB64) {
-    var mls = root.MLS;
     var gid = getRoomGroupId(roomId);
-
-    return ensureRoomGroup(roomId).then(function (groupState) {
-      if (!groupState) {
-        throw new Error('Unable to resolve MLS conversation state for room');
-      }
-      var msgBytes = b64ToUint8(ciphertextB64);
-      var dec = mls.decodeMlsMessage(msgBytes, 0)[0];
-      if (!dec || dec.wireformat !== 'mls_private_message') {
-        throw new Error('Malformed MLS private message');
-      }
-
-      return mls.processPrivateMessage(groupState, dec.privateMessage, mls.emptyPskIndex, ciphersuiteImpl).then(function (recvRes) {
-        activeGroups[gid] = recvRes.newState;
-        return saveGroupState(gid, recvRes.newState).then(function () {
-          return new TextDecoder().decode(recvRes.message);
-        });
-      });
-    });
+    return decryptGroupMessage(gid, function () { return ensureRoomGroup(roomId); },
+      'Unable to resolve MLS conversation state for room', ciphertextB64);
   }
 
   function revokeDevice(targetDeviceId) {
@@ -1202,6 +1283,294 @@
     }).then(function (res) {
       invalidateRoomMlsSupport(); // Flush capability cache immediately on device revocation
       return res;
+    });
+  }
+
+  // --- Password-Restorable Message & State Backups ---
+  var PBKDF2_ITERATIONS = 310000;
+  var BACKUP_SESSION_KEY = 'extrovert_pending_backup';
+  var historyStates = {};
+  var backupKey = null;
+  var backupKeyId = null;
+  var backupKek = null;
+  var backupKekSalt = null;
+  var backupTimer = null;
+  var backupBusy = false;
+  var backupQueued = false;
+
+  function loadBackupKey() {
+    return idbGet(STORE_CRYPTO, 'backupKey').then(function (bk) {
+      if (!bk) return null;
+      backupKey = bk;
+      return idbGet(STORE_CRYPTO, 'backupKekSalt').then(function (salt) {
+        backupKekSalt = salt || null;
+        return computeBackupKeyId();
+      });
+    }).catch(function () { return null; });
+  }
+
+  function computeBackupKeyId() {
+    return crypto.subtle.exportKey('raw', backupKey).then(function (raw) {
+      return crypto.subtle.digest('SHA-256', raw);
+    }).then(function (digest) {
+      backupKeyId = uint8ToHex(new Uint8Array(digest)).slice(0, 16);
+      return backupKeyId;
+    });
+  }
+
+  function persistBackupKey() {
+    return computeBackupKeyId().then(function () {
+      return idbSet(STORE_CRYPTO, 'backupKey', backupKey);
+    }).then(function () {
+      return idbSet(STORE_CRYPTO, 'backupKekSalt', backupKekSalt || null);
+    });
+  }
+
+  function generateBackupKey() {
+    return crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+  }
+
+  function deriveBackupKek(password, saltBytes) {
+    var salt = (saltBytes && saltBytes.length) ? saltBytes : crypto.getRandomValues(new Uint8Array(16));
+    return crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey'])
+      .then(function (baseKey) {
+        return crypto.subtle.deriveKey(
+          { name: 'PBKDF2', hash: 'SHA-256', salt: salt, iterations: PBKDF2_ITERATIONS },
+          baseKey,
+          { name: 'AES-GCM', length: 256 },
+          false,
+          ['encrypt', 'decrypt']
+        );
+      }).then(function (kek) {
+        return { kek: kek, salt: salt };
+      });
+  }
+
+  function wrapBackupKey() {
+    return crypto.subtle.exportKey('raw', backupKey).then(function (raw) {
+      return encryptWithKey(backupKek, new Uint8Array(raw));
+    });
+  }
+
+  function unwrapBackupKey(wrappedB64) {
+    return decryptWithKey(backupKek, wrappedB64).then(function (bytes) {
+      return crypto.subtle.importKey('raw', bytes, { name: 'AES-GCM' }, true, ['encrypt', 'decrypt']);
+    });
+  }
+
+  function ensureBackupReady() {
+    if (backupKey && backupKeyId) return Promise.resolve(true);
+    return loadBackupKey().then(function () {
+      if (backupKey && backupKeyId) return true;
+      if (!backupKek) return false;
+      return generateBackupKey().then(function (bk) {
+        backupKey = bk;
+        if (!backupKekSalt) backupKekSalt = crypto.getRandomValues(new Uint8Array(16));
+        return persistBackupKey();
+      }).then(function () { return true; });
+    });
+  }
+
+  function packBackupPayload() {
+    return idbGetAll(STORE_MSG_CACHE).then(function (cacheRows) {
+      return idbGetAll(STORE_MLS_HISTORY).then(function (histRows) {
+        return idbGetAll(STORE_MLS_GROUPS).then(function (stateRows) {
+          var devices = {};
+          histRows.forEach(function (row) {
+            (row.value || []).forEach(function (e) {
+              var d = devices[e.deviceId] || (devices[e.deviceId] = {});
+              d[row.key] = e.bytes;
+            });
+          });
+          var mine = devices[deviceId] || (devices[deviceId] = {});
+          var chain = Promise.resolve();
+          stateRows.forEach(function (row) {
+            chain = chain.then(function () {
+              return decryptWithKd(row.value).then(function (bytes) {
+                mine[row.key] = uint8ToB64(bytes);
+              }).catch(function () {});
+            });
+          });
+          return chain.then(function () {
+            var msgCache = {};
+            cacheRows.forEach(function (row) { msgCache[String(row.key)] = row.value; });
+            return { updatedAt: Date.now(), devices: devices, msgCache: msgCache };
+          });
+        });
+      });
+    });
+  }
+
+  function fetchBackupBlob() {
+    return csrfFetch('/mls/backup').then(function (r) {
+      return r.json();
+    }).then(function (res) {
+      return (res && res.ok && res.backup && res.backup.backup_data) ? res.backup : null;
+    }).catch(function () { return null; });
+  }
+
+  function parseBackupBlob(backupDataB64) {
+    return JSON.parse(new TextDecoder().decode(b64ToUint8(backupDataB64)));
+  }
+
+  function doBackup() {
+    return ensureBackupReady().then(function (ready) {
+      if (!ready) return null;
+      return fetchBackupBlob().then(function (row) {
+        var parsed = null;
+        if (row) {
+          try { parsed = parseBackupBlob(row.backup_data); } catch (err) { parsed = null; }
+        }
+        if (parsed && parsed.bk_id !== backupKeyId) {
+          console.warn('MLS backup: server copy uses a different backup key; leaving it intact');
+          return null;
+        }
+        var serverPayloadP = parsed
+          ? decryptWithKey(backupKey, parsed.payload).then(function (b) {
+              return JSON.parse(new TextDecoder().decode(b));
+            }).catch(function () { return null; })
+          : Promise.resolve(null);
+
+        return serverPayloadP.then(function (serverPayload) {
+          return packBackupPayload().then(function (localPayload) {
+            var payload = {
+              updatedAt: Date.now(),
+              devices: Object.assign({}, serverPayload ? serverPayload.devices : {}),
+              msgCache: Object.assign({}, serverPayload ? serverPayload.msgCache : {}, localPayload.msgCache)
+            };
+            payload.devices[deviceId] = localPayload.devices[deviceId] || {};
+            return encryptWithKey(backupKey, new TextEncoder().encode(JSON.stringify(payload)));
+          }).then(function (payloadB64) {
+            var wrapP = backupKek ? wrapBackupKey() : Promise.resolve(parsed ? parsed.wrappedBk : null);
+            return wrapP.then(function (wrappedBk) {
+              if (!wrappedBk) throw new Error('Backup key cannot be wrapped without the account password');
+              var blob = { v: 1, bk_id: backupKeyId, wrappedBk: wrappedBk, payload: payloadB64 };
+              return csrfFetch('/mls/backup', {
+                method: 'POST',
+                body: JSON.stringify({
+                  backup_data: uint8ToB64(new TextEncoder().encode(JSON.stringify(blob))),
+                  salt: backupKek ? uint8ToB64(backupKekSalt) : row.kek_salt
+                })
+              }).then(function (r) { return r.json(); });
+            });
+          });
+        });
+      });
+    });
+  }
+
+  function backupNow() {
+    if (!deviceId) return Promise.resolve(null);
+    if (backupBusy) {
+      backupQueued = true;
+      return Promise.resolve(null);
+    }
+    backupBusy = true;
+    return doBackup().catch(function (err) {
+      console.warn('MLS backup upload skipped:', err && err.message);
+      return null;
+    }).then(function (res) {
+      backupBusy = false;
+      if (backupQueued) {
+        backupQueued = false;
+        return backupNow();
+      }
+      return res;
+    });
+  }
+
+  function scheduleBackup() {
+    if (backupTimer) clearTimeout(backupTimer);
+    backupTimer = setTimeout(function () {
+      backupTimer = null;
+      backupNow();
+    }, 4000);
+  }
+
+  function restoreFromPayload(payloadB64) {
+    return decryptWithKey(backupKey, payloadB64).then(function (bytes) {
+      var payload = JSON.parse(new TextDecoder().decode(bytes));
+      var chain = Promise.resolve();
+      var msgIds = Object.keys(payload.msgCache || {});
+      msgIds.forEach(function (id) {
+        chain = chain.then(function () {
+          return idbSet(STORE_MSG_CACHE, String(id), payload.msgCache[id]);
+        });
+      });
+      var devs = payload.devices || {};
+      Object.keys(devs).forEach(function (devId) {
+        Object.keys(devs[devId]).forEach(function (gid) {
+          chain = chain.then(function () {
+            return idbGet(STORE_MLS_HISTORY, gid).then(function (rows) {
+              var list = (rows || []).filter(function (r) { return r.deviceId !== devId; });
+              list.push({ deviceId: devId, bytes: devs[devId][gid] });
+              return idbSet(STORE_MLS_HISTORY, gid, list);
+            }).then(function () {
+              delete historyStates[gid];
+            });
+          });
+        });
+      });
+      return chain.then(function () {
+        return { restored: true, messages: msgIds.length };
+      });
+    });
+  }
+
+  function unlockBackup(password) {
+    if (!password) return Promise.resolve(null);
+    return fetchBackupBlob().then(function (row) {
+      var saltBytes = row && row.kek_salt ? b64ToUint8(row.kek_salt) : null;
+      return deriveBackupKek(password, saltBytes).then(function (d) {
+        backupKek = d.kek;
+        backupKekSalt = d.salt;
+        if (!row) {
+          return generateBackupKey().then(function (bk) {
+            backupKey = bk;
+            return persistBackupKey();
+          }).then(function () {
+            return backupNow();
+          }).then(function () { return { created: true }; });
+        }
+        var parsed = parseBackupBlob(row.backup_data);
+        return unwrapBackupKey(parsed.wrappedBk).then(function (bk) {
+          backupKey = bk;
+          return persistBackupKey();
+        }).then(function () {
+          return restoreFromPayload(parsed.payload);
+        });
+      });
+    });
+  }
+
+  function notePasswordForBackup(password) {
+    try {
+      root.sessionStorage.setItem(BACKUP_SESSION_KEY, JSON.stringify({ pw: password, ts: Date.now() }));
+    } catch (err) {}
+  }
+
+  function resumeBackupUnlock() {
+    var stashed = null;
+    try {
+      var raw = root.sessionStorage.getItem(BACKUP_SESSION_KEY);
+      if (raw) root.sessionStorage.removeItem(BACKUP_SESSION_KEY);
+      if (raw) {
+        var parsed = JSON.parse(raw);
+        if (parsed && parsed.pw && Date.now() - parsed.ts < 300000) stashed = parsed.pw;
+      }
+    } catch (err) {}
+    if (!stashed) return Promise.resolve(null);
+    return unlockBackup(stashed).catch(function () { return null; });
+  }
+
+  function bindBackupForms() {
+    if (typeof document === 'undefined' || !document.querySelectorAll) return;
+    var forms = document.querySelectorAll('form[action="/login"], form[action^="/register"]');
+    Array.prototype.forEach.call(forms, function (form) {
+      form.addEventListener('submit', function () {
+        var input = form.querySelector('input[type="password"][name="password"]');
+        if (input && input.value) notePasswordForBackup(input.value);
+      });
     });
   }
 
@@ -1223,6 +1592,8 @@
     decryptRoomMessage: decryptRoomMessage,
     revokeDevice: revokeDevice,
     pollWelcomes: pollAndProcessWelcomes,
+    unlockBackup: unlockBackup,
+    backupNow: backupNow,
     getDeviceId: function () { return deviceId; },
     ready: function () { return !!(ciphersuiteImpl && deviceId); },
   };
@@ -1230,6 +1601,7 @@
   // Auto-init on page load if user is logged in
   if (typeof document !== 'undefined') {
     var kickOff = function () {
+      bindBackupForms();
       if (currentUserId()) {
         initDevice().catch(function (err) {
           console.warn('MLS auto-init background warning:', err);

@@ -5,7 +5,7 @@
 
   var DB_NAME = 'extrovert_crypto';
   var STORE_MSG_CACHE = 'mls_msg_cache';
-  var ALL_STORES = ['crypto', 'mls_keys', 'mls_groups', STORE_MSG_CACHE];
+  var ALL_STORES = ['crypto', 'mls_keys', 'mls_groups', STORE_MSG_CACHE, 'mls_history'];
 
   // Cache plaintext of sent & received messages device-locally
   var memCache = {};
