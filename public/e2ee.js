@@ -4,38 +4,54 @@
   // === Pure MLS (RFC 9420) E2EE Client Engine ===
 
   var DB_NAME = 'extrovert_crypto';
-  var DB_VERSION = 4;
   var STORE_MSG_CACHE = 'mls_msg_cache';
+  var ALL_STORES = ['crypto', 'mls_keys', 'mls_groups', STORE_MSG_CACHE];
 
   // Cache plaintext of sent & received messages device-locally
   var memCache = {};
 
+  var cacheDbPromise = null;
+
+  function wireCacheDb(db) {
+    db.onversionchange = function () {
+      db.close();
+      cacheDbPromise = null;
+    };
+    return db;
+  }
+
   function openCacheDB() {
-    return new Promise(function (resolve, reject) {
-      var req = indexedDB.open(DB_NAME, DB_VERSION);
-      req.onupgradeneeded = function (e) {
+    if (cacheDbPromise) return cacheDbPromise;
+    cacheDbPromise = new Promise(function (resolve, reject) {
+      var req = indexedDB.open(DB_NAME);
+      req.onupgradeneeded = function () {
         var db = req.result;
-        if (!db.objectStoreNames.contains(STORE_MSG_CACHE)) {
-          db.createObjectStore(STORE_MSG_CACHE);
-        }
+        ALL_STORES.forEach(function (s) {
+          if (!db.objectStoreNames.contains(s)) db.createObjectStore(s);
+        });
       };
       req.onsuccess = function () {
         var db = req.result;
-        if (!db.objectStoreNames.contains(STORE_MSG_CACHE)) {
-          var v = db.version + 1;
-          db.close();
-          var upReq = indexedDB.open(DB_NAME, v);
-          upReq.onupgradeneeded = function () {
-            upReq.result.createObjectStore(STORE_MSG_CACHE);
-          };
-          upReq.onsuccess = function () { resolve(upReq.result); };
-          upReq.onerror = function () { reject(upReq.error); };
-        } else {
-          resolve(db);
-        }
+        var missing = ALL_STORES.filter(function (s) { return !db.objectStoreNames.contains(s); });
+        if (!missing.length) return resolve(wireCacheDb(db));
+        var target = db.version + 1;
+        db.close();
+        var up = indexedDB.open(DB_NAME, target);
+        up.onupgradeneeded = function () {
+          var udb = up.result;
+          missing.forEach(function (s) {
+            if (!udb.objectStoreNames.contains(s)) udb.createObjectStore(s);
+          });
+        };
+        up.onsuccess = function () { resolve(wireCacheDb(up.result)); };
+        up.onerror = function () { cacheDbPromise = null; reject(up.error); };
       };
-      req.onerror = function () { reject(req.error); };
+      req.onerror = function () { cacheDbPromise = null; reject(req.error); };
+    }).catch(function (err) {
+      cacheDbPromise = null;
+      throw err;
     });
+    return cacheDbPromise;
   }
 
   function getCachedMessage(msgId) {
