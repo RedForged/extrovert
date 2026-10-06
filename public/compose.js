@@ -13,11 +13,12 @@
   });
 })();
 
-// @mention autocomplete for the post body
+// @mention autocomplete — a gentle chat bubble that appears under the @,
+// tail pointing at the caret so friends can be mentioned without full names.
 (function(){
   var input = document.getElementById('post-body');
   if (!input) return;
-  var box = null, timer = null, items = [], sel = -1;
+  var box = null, hideTimer = null, timer = null, items = [], sel = -1;
 
   function currentQuery() {
     var upto = input.value.slice(0, input.selectionStart);
@@ -25,23 +26,45 @@
     return m ? m[2] : null;
   }
 
-  function hide() {
-    if (box) { box.remove(); box = null; }
-    items = []; sel = -1;
+  function caretPoint() {
+    var style = window.getComputedStyle(input);
+    var div = document.createElement('div');
+    div.style.cssText = 'position:absolute;top:0;left:0;visibility:hidden;white-space:pre-wrap;word-wrap:break-word;overflow-wrap:break-word;';
+    ['fontFamily', 'fontSize', 'fontWeight', 'letterSpacing', 'lineHeight', 'textTransform', 'textIndent',
+     'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'borderTopWidth', 'borderLeftWidth', 'boxSizing'
+    ].forEach(function(p) { div.style[p] = style[p]; });
+    div.style.width = input.offsetWidth + 'px';
+    div.textContent = input.value.slice(0, input.selectionStart);
+    var marker = document.createElement('span');
+    marker.textContent = '\u200b';
+    div.appendChild(marker);
+    document.body.appendChild(div);
+    var lineH = parseFloat(style.lineHeight) || (parseFloat(style.fontSize) * 1.5);
+    var r = input.getBoundingClientRect();
+    var pt = {
+      x: r.left + window.scrollX + marker.offsetLeft - input.scrollLeft,
+      y: r.top + window.scrollY + marker.offsetTop - input.scrollTop + lineH,
+    };
+    div.remove();
+    return pt;
   }
 
-  function positionBox() {
-    var r = input.getBoundingClientRect();
-    box.style.left = r.left + window.scrollX + 'px';
-    box.style.top = (r.bottom + window.scrollY + 4) + 'px';
-    box.style.width = Math.min(r.width, 360) + 'px';
+  function hide() {
+    items = []; sel = -1;
+    if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+    if (!box) return;
+    var el = box;
+    box = null;
+    el.classList.remove('visible');
+    setTimeout(function() { el.remove(); }, 140);
   }
 
   function select(i) {
     sel = i;
     if (!box) return;
-    Array.prototype.forEach.call(box.children, function(el, idx) {
-      el.style.background = idx === i ? 'rgba(127,127,127,0.15)' : 'none';
+    var rows = box.querySelectorAll('.mention-suggest-item');
+    Array.prototype.forEach.call(rows, function(el, idx) {
+      el.classList.toggle('active', idx === i);
     });
   }
 
@@ -55,37 +78,60 @@
   }
 
   function show(users) {
-    hide();
-    if (!users.length) return;
+    if (!users.length) { hide(); return; }
     items = users;
+    if (box) box.remove();
     box = document.createElement('div');
     box.className = 'mention-suggest';
-    box.style.cssText = 'position:absolute;z-index:1000;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,0.35);overflow:hidden';
     users.forEach(function(u, i) {
       var row = document.createElement('button');
       row.type = 'button';
-      row.style.cssText = 'display:flex;align-items:baseline;gap:8px;width:100%;padding:8px 10px;background:none;border:none;cursor:pointer;text-align:left;font:inherit;color:inherit';
+      row.className = 'mention-suggest-item';
+      if (u.avatar) {
+        var img = document.createElement('img');
+        img.className = 'mention-avatar';
+        img.src = u.avatar;
+        img.alt = '';
+        row.appendChild(img);
+      } else {
+        var av = document.createElement('span');
+        av.className = 'mention-avatar mention-avatar-letter';
+        av.textContent = (u.display_name || u.username).slice(0, 1).toUpperCase();
+        row.appendChild(av);
+      }
       var name = document.createElement('strong');
       name.textContent = '@' + u.username;
       var disp = document.createElement('span');
-      disp.className = 'muted';
-      disp.style.cssText = 'font-size:0.8rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+      disp.className = 'mention-display';
       disp.textContent = u.display_name || '';
       row.appendChild(name);
       row.appendChild(disp);
-      row.addEventListener('click', function() { insert(u.username); });
+      row.addEventListener('mousedown', function(e) { e.preventDefault(); insert(u.username); });
       row.addEventListener('mouseenter', function() { select(i); });
       box.appendChild(row);
     });
     document.body.appendChild(box);
-    positionBox();
+
+    var pt = caretPoint();
+    var r = input.getBoundingClientRect();
+    var bubbleW = box.offsetWidth;
+    var left = Math.min(Math.max(pt.x - 18, r.left + window.scrollX), r.right + window.scrollX - bubbleW);
+    var top = pt.y + 10;
+    box.style.left = left + 'px';
+    box.style.top = top + 'px';
+    box.style.setProperty('--tail-x', Math.min(Math.max(pt.x - left - 6, 14), bubbleW - 26) + 'px');
+
     select(0);
+    requestAnimationFrame(function() {
+      if (box) box.classList.add('visible');
+    });
   }
 
   function schedule() {
     clearTimeout(timer);
     var q = currentQuery();
     if (!q) { hide(); return; }
+    if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
     timer = setTimeout(function() {
       fetch('/search/suggest?q=' + encodeURIComponent(q), {
         headers: { 'Accept': 'application/json' },
@@ -97,13 +143,16 @@
   }
 
   input.addEventListener('input', schedule);
+  input.addEventListener('scroll', function() { if (box) hide(); });
   input.addEventListener('keydown', function(e) {
     if (!box) return;
     if (e.key === 'ArrowDown') { e.preventDefault(); select(Math.min(sel + 1, items.length - 1)); }
     else if (e.key === 'ArrowUp') { e.preventDefault(); select(Math.max(sel - 1, 0)); }
-    else if (e.key === 'Enter' && sel >= 0) { e.preventDefault(); insert(items[sel].username); }
+    else if ((e.key === 'Enter' || e.key === 'Tab') && sel >= 0) { e.preventDefault(); insert(items[sel].username); }
     else if (e.key === 'Escape') { hide(); }
   });
-  input.addEventListener('blur', function() { setTimeout(hide, 150); });
-  window.addEventListener('resize', function() { if (box) positionBox(); });
+  input.addEventListener('blur', function() {
+    hideTimer = setTimeout(hide, 140);
+  });
+  window.addEventListener('resize', function() { if (box) hide(); });
 })();

@@ -19,6 +19,9 @@
 /* ── Tokens ─────────────────────────────────────────────────────────── */
 
 :root, [data-theme="dark"] {
+  /* native widgets (select popups, scrollbars, date pickers) render dark too */
+  color-scheme: dark;
+
   /* base — cool blue-violet ink, lifted surfaces */
   --bg: #10131f;
   --surface: #181b2e;
@@ -89,6 +92,8 @@
 }
 
 [data-theme="light"] {
+  color-scheme: light;
+
   /* warm-bright counterpart — soft lavender-white, not beige */
   --bg: #f6f5fb;
   --surface: #ffffff;
@@ -521,8 +526,126 @@ select { appearance: none; -webkit-appearance: none; background-image:
   background-position: calc(100% - 18px) 50%, calc(100% - 13px) 50%;
   background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; padding-right: 36px;
 }
+select option {
+  background: var(--surface);
+  color: var(--text);
+}
+select option:checked {
+  background: var(--primary);
+  color: var(--on-primary);
+}
+input[type="file"] {
+  padding: 8px;
+  background: var(--surface);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+input[type="file"]::file-selector-button,
+input[type="file"]::-webkit-file-upload-button {
+  margin-right: 10px;
+  padding: 8px 14px;
+  background: var(--surface-3);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--t-fast) var(--ease-soft), border-color var(--t-fast) var(--ease-soft);
+}
+input[type="file"]::file-selector-button:hover,
+input[type="file"]::-webkit-file-upload-button:hover {
+  background: var(--primary-soft);
+  border-color: var(--primary);
+}
 label { display: block; font-size: var(--fs-sm); color: var(--text-secondary); margin: 18px 0 7px; font-weight: 600; letter-spacing: 0.01em; }
 .form-row { margin-bottom: 16px; }
+
+/* ── @mention suggestion bubble ───────────────────────────────────── */
+
+.mention-suggest {
+  position: absolute;
+  z-index: 1000;
+  min-width: 220px;
+  max-width: 320px;
+  padding: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.32);
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity var(--t-fast) var(--ease-soft), transform var(--t-fast) var(--ease-soft);
+  pointer-events: none;
+}
+.mention-suggest.visible {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+.mention-suggest::before {
+  content: '';
+  position: absolute;
+  top: -6px;
+  left: var(--tail-x, 18px);
+  width: 11px;
+  height: 11px;
+  background: var(--surface-2);
+  border-left: 1px solid var(--border);
+  border-top: 1px solid var(--border);
+  border-radius: 2px;
+  transform: rotate(45deg);
+}
+.mention-suggest-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 6px 9px;
+  background: none;
+  border: none;
+  border-radius: 9px;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  transition: background var(--t-fast) var(--ease-soft);
+}
+.mention-suggest-item:hover,
+.mention-suggest-item.active {
+  background: var(--primary-soft);
+}
+.mention-avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  flex: none;
+  object-fit: cover;
+}
+.mention-avatar-letter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--primary-soft);
+  color: var(--primary-strong);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+.mention-suggest-item strong {
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+}
+.mention-display {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
 
 /* ── Post card ────────────────────────────────────────────────────── */
 
