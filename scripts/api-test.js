@@ -23,6 +23,7 @@ let server, baseUrl;
 
 // Create users directly in DB for testing
 const aliceId = db.createUser({ username: 'alice', passwordHash: 'hash', displayName: 'Alice' });
+db.promoteUser(aliceId);
 const bobId = db.createUser({ username: 'bob', passwordHash: 'hash', displayName: 'Bob' });
 
 // Create OAuth apps and tokens directly in DB
@@ -390,6 +391,81 @@ describe('Extrovert REST API', () => {
   });
 
   // ---- Search ----
+  // ---- Bots (planned.md F5) ----
+  describe('Bots', () => {
+    let botToken = null;
+    let botId = null;
+    let botTokenId = null;
+
+    it('admin creates a bot and receives a one-time token', async () => {
+      const resp = await fetchJson('/api/v1/bots', {
+        method: 'POST', token: aliceToken,
+        body: { username: 'echo_bot', display_name: 'Echo Bot' },
+      });
+      assert.strictEqual(resp.status, 201);
+      const d = (await resp.json()).data;
+      botToken = d.token;
+      botId = Number(d.account.id);
+      botTokenId = d.token_id;
+      assert.ok(botToken && botToken.startsWith('exb_'), 'token is returned raw, once');
+      assert.strictEqual(d.account.is_bot, true);
+    });
+
+    it('non-admin cannot create bots', async () => {
+      const resp = await fetchJson('/api/v1/bots', {
+        method: 'POST', token: bobToken,
+        body: { username: 'evil_bot' },
+      });
+      assert.strictEqual(resp.status, 403);
+    });
+
+    it('bot token drives the existing API', async () => {
+      const me = await fetchJson('/api/v1/bot/me', { token: botToken });
+      assert.strictEqual(me.status, 200);
+      assert.strictEqual((await me.json()).data.is_bot, true);
+      const post = await fetchJson('/api/v1/statuses', {
+        method: 'POST', token: botToken,
+        body: { type: 'text', body: 'hello from the bot' },
+      });
+      assert.strictEqual(post.status, 201);
+    });
+
+    it('mentions timeline delivers the mention to the bot', async () => {
+      const resp = await fetchJson('/api/v1/statuses', {
+        method: 'POST', token: bobToken,
+        body: { type: 'text', body: 'hey @echo_bot look at this' },
+      });
+      assert.strictEqual(resp.status, 201);
+      const feed = await fetchJson('/api/v1/timelines/mentions', { token: botToken });
+      assert.strictEqual(feed.status, 200);
+      const d = await feed.json();
+      assert(d.data.some(p => (p.body || '').includes('hey @echo_bot')), 'bot must see the mention');
+    });
+
+    it('webhook registration returns an HMAC secret and signs correctly', async () => {
+      const reg = await fetchJson('/api/v1/bots/webhook', {
+        method: 'POST', token: botToken,
+        body: { url: 'https://bot.example.com/hook' },
+      });
+      assert.strictEqual(reg.status, 200);
+      const secret = (await reg.json()).data.secret;
+      assert.ok(secret && secret.startsWith('whsec_'));
+      const { sign } = require('../src/bot-webhooks');
+      const sig = sign(secret, '{"type":"mention"}');
+      assert.strictEqual(sig.length, 64);
+      assert.strictEqual(sig, sign(secret, '{"type":"mention"}'), 'HMAC is deterministic');
+    });
+
+    it('revoked token stops working', async () => {
+      const rev = await fetchJson(`/api/v1/bots/${botId}/tokens/${botTokenId}`, {
+        method: 'DELETE', token: aliceToken,
+      });
+      assert.strictEqual(rev.status, 200);
+      const me = await fetchJson('/api/v1/bot/me', { token: botToken });
+      assert.strictEqual(me.status, 401);
+    });
+  });
+
   describe('Search', () => {
     it('search accounts (platform-wide)', async () => {
       const resp = await fetchJson(`/api/v1/search?q=bob&type=accounts`, { token: aliceToken });

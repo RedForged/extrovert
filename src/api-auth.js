@@ -13,6 +13,32 @@ function validateScopes(tokenScopes, requiredScopes) {
   return true;
 }
 
+// Bot tokens (planned.md F5.2): long-lived, revocable, hashed at rest like
+// PATs, authenticating into the owning bot user through the same Bearer
+// pipeline — with a dedicated env-configurable rate budget (F5.5).
+const botBuckets = new Map();
+const BOT_RATE_MAX = Number(process.env.EXTV_BOT_RATE_LIMIT) || 120;
+const BOT_RATE_WINDOW_MS = 60 * 1000;
+
+function allowBotRequest(tokenId) {
+  const now = Date.now();
+  const bucket = botBuckets.get(tokenId);
+  if (!bucket || now - bucket.start > BOT_RATE_WINDOW_MS) {
+    botBuckets.set(tokenId, { start: now, count: 1 });
+    return true;
+  }
+  if (bucket.count >= BOT_RATE_MAX) return false;
+  bucket.count++;
+  return true;
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of botBuckets.entries()) {
+    if (now - v.start > BOT_RATE_WINDOW_MS * 2) botBuckets.delete(k);
+  }
+}, 120000).unref();
+
 function requireApiAuth(...requiredScopes) {
   return (req, res, next) => {
     const authHeader = req.headers.authorization;
@@ -44,6 +70,27 @@ function requireApiAuth(...requiredScopes) {
           app_id: null,
           is_pat: true,
           name: pat.name,
+        };
+      }
+    }
+
+    if (!tokenRecord) {
+      const botToken = db.getBotTokenByHash(db.hashOAuthToken(token));
+      if (botToken) {
+        if (!allowBotRequest(botToken.id)) {
+          return res.status(429).json({
+            error: 'rate_limited',
+            error_description: 'Bot token rate limit exceeded. Please slow down.',
+          });
+        }
+        tokenRecord = {
+          id: botToken.id,
+          user_id: botToken.user_id,
+          scopes: botToken.scopes,
+          expires_at: null,
+          app_id: null,
+          is_bot_token: true,
+          name: botToken.name,
         };
       }
     }

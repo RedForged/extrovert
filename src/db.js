@@ -698,6 +698,29 @@ try {
 try { db.exec(`ALTER TABLE personal_access_tokens ADD COLUMN token_prefix TEXT`); } catch (e) {}
 try { db.exec(`CREATE INDEX IF NOT EXISTS idx_pat_token ON personal_access_tokens(token_hash)`); } catch {}
 try { db.exec(`CREATE INDEX IF NOT EXISTS idx_pat_user ON personal_access_tokens(user_id)`); } catch {}
+// ---------- Bots (planned.md F5) ----------
+try { db.exec(`ALTER TABLE users ADD COLUMN is_bot INTEGER NOT NULL DEFAULT 0`); } catch {}
+try {
+  db.exec(`CREATE TABLE IF NOT EXISTS bot_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    name TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    token_prefix TEXT,
+    scopes TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    revoked_at INTEGER
+  )`);
+} catch {}
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_bot_tokens_user ON bot_tokens(user_id)`); } catch {}
+try {
+  db.exec(`CREATE TABLE IF NOT EXISTS bot_webhooks (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id),
+    url TEXT NOT NULL,
+    secret TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  )`);
+} catch {}
 
 // 3. Post follow-from tracking
 try {
@@ -1031,6 +1054,7 @@ function createNotification({ userId, type, actorId, postId }) {
   ).run(userId, type, actorId, postId || null, now);
   const notif = { id: result.lastInsertRowid, type, actor_id: actorId, post_id: postId || null, created_at: now };
   notify(userId, notif);
+  require('./bot-webhooks').dispatchBotWebhook(userId, notif);
 }
 
 function getNotifications(userId, limit = 50, cursor) {
@@ -2716,6 +2740,85 @@ function markOAuthCodeUsed(id) {
 // Bearer tokens are high-value secrets; store only a SHA-256 hash so a leaked
 // database dump cannot be replayed. Lookups hash the presented token first.
 const TOKEN_HASH_PREFIX = 'sha256$';
+// ---------- Bot accounts, tokens & webhooks (planned.md F5) ----------
+const BOT_SCOPES = 'read write follow notifications media.write profile';
+
+function generateBotTokenValue() {
+  return 'exb_' + crypto.randomBytes(32).toString('base64url');
+}
+
+// Bots are users with no usable password: the random hash never verifies and
+// login additionally rejects is_bot outright. Bots authenticate only with
+// long-lived bot tokens.
+function createBotUser({ username, displayName }) {
+  const res = db.prepare(
+    `INSERT INTO users (username, password_hash, display_name, created_at, is_bot) VALUES (?,?,?,?,1)`
+  ).run(username, '!' + crypto.randomBytes(24).toString('hex'), displayName || username, Date.now());
+  return res.lastInsertRowid;
+}
+
+function getAllBots() {
+  return db.prepare(`SELECT * FROM users WHERE is_bot = 1 ORDER BY created_at DESC`).all();
+}
+
+function createBotToken(userId, name, token) {
+  const res = db.prepare(
+    `INSERT INTO bot_tokens (user_id, name, token_hash, token_prefix, scopes, created_at) VALUES (?,?,?,?,?,?)`
+  ).run(userId, name || 'default', hashOAuthToken(token), String(token).slice(0, 15) + '...', BOT_SCOPES, Date.now());
+  return res.lastInsertRowid;
+}
+
+function getBotTokenByHash(tokenHash) {
+  return db.prepare(`SELECT * FROM bot_tokens WHERE token_hash = ? AND revoked_at IS NULL`).get(tokenHash) || null;
+}
+
+function listBotTokens(userId) {
+  return db.prepare(`
+    SELECT id, user_id, name, token_prefix, scopes, created_at, revoked_at
+    FROM bot_tokens WHERE user_id = ? ORDER BY created_at DESC
+  `).all(userId);
+}
+
+function revokeBotToken(userId, tokenId) {
+  return db.prepare(
+    `UPDATE bot_tokens SET revoked_at = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL`
+  ).run(Date.now(), tokenId, userId);
+}
+
+function setBotWebhook(userId, url, secret) {
+  db.prepare(`
+    INSERT INTO bot_webhooks (user_id, url, secret, created_at) VALUES (?,?,?,?)
+    ON CONFLICT(user_id) DO UPDATE SET url = excluded.url, secret = excluded.secret
+  `).run(userId, url, secret, Date.now());
+}
+
+function getBotWebhook(userId) {
+  return db.prepare(`SELECT user_id, url, secret, created_at FROM bot_webhooks WHERE user_id = ?`).get(userId) || null;
+}
+
+function generateBotWebhookSecret() {
+  return 'whsec_' + crypto.randomBytes(24).toString('base64url');
+}
+
+function rotateBotWebhookSecret(userId) {
+  const secret = generateBotWebhookSecret();
+  const res = db.prepare(`UPDATE bot_webhooks SET secret = ? WHERE user_id = ?`).run(secret, userId);
+  return res.changes > 0 ? secret : null;
+}
+
+// Mentions-only feed: posts that produced a mention notification for the user.
+function getMentionsFeed(userId, limit = 40) {
+  return db.prepare(`
+    SELECT p.*, u.username, u.display_name, u.avatar, u.bio AS user_bio, u.created_at AS user_created_at
+    FROM notifications n
+    JOIN posts p ON p.id = n.post_id
+    JOIN users u ON u.id = p.user_id
+    WHERE n.user_id = ? AND n.type = 'mention'
+    ORDER BY p.created_at DESC
+    LIMIT ?
+  `).all(userId, Math.min(Number(limit) || 40, 80));
+}
+
 function hashOAuthToken(token) {
   return TOKEN_HASH_PREFIX + crypto.createHash('sha256').update(String(token)).digest('hex');
 }
@@ -3141,6 +3244,10 @@ module.exports = {
   getCustomization, setCustomization,
   // notifications
   createNotification, notifyMentions, getNotifications, countUnreadNotifications, markNotificationsRead,
+  // bots (planned.md F5)
+  createBotUser, getAllBots, createBotToken, getBotTokenByHash, listBotTokens, revokeBotToken,
+  generateBotTokenValue, setBotWebhook, getBotWebhook, generateBotWebhookSecret, rotateBotWebhookSecret,
+  getMentionsFeed,
   // push subscriptions
   addPushSubscription, getPushSubscriptions, removePushSubscription, deletePushSubscriptionsByEndpoint,
   // user lists

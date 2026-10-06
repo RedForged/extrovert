@@ -301,7 +301,7 @@ router.post('/login', (req, res) => {
     });
   }
   const user = getUserByUsername(username);
-  if (!user || !bcrypt.compareSync(password, user.password_hash)) {
+  if (!user || user.is_bot || !bcrypt.compareSync(password, user.password_hash)) {
     return res.render('login', {
       error: 'Invalid username or password.',
       next: nextFromBody,

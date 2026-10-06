@@ -143,6 +143,7 @@ function serializeAccount(user, currentUserId) {
     following_count: db.countFollowing(user.id),
     is_following: currentUserId ? db.isFollowing(currentUserId, user.id) : false,
     is_self: isSelf,
+    is_bot: !!user.is_bot,
     html: (custom && custom.html) || '',
     css: (custom && custom.css) || '',
     // Email info is only ever exposed to the account owner (never in public
@@ -1995,6 +1996,19 @@ function resolveVisiblePost(postId, userId) {
 
 // ======== Timelines ========
 
+// Mentions-only feed (planned.md F5.4) — cheap, high value for bots.
+router.get('/timelines/mentions', requireApiAuth('read'), (req, res) => {
+  const posts = db.getMentionsFeed(req.apiUser.id, parseInt(req.query.limit, 10) || 40);
+  responseEnvelope(res, posts.map((p) => serializePost(p, {
+    id: p.user_id,
+    username: p.username,
+    display_name: p.display_name,
+    avatar: p.avatar,
+    bio: p.user_bio || '',
+    created_at: p.user_created_at,
+  }, req.apiUser.id)));
+});
+
 router.get('/timelines/home', requireApiAuth('read'), (req, res) => {
   const limit = Math.min(parseInt(req.query.limit, 10) || 20, 40);
   const cursor = req.query.cursor ? decodeCursor(req.query.cursor) : null;
@@ -2101,6 +2115,113 @@ router.get('/notifications/stream', requireApiAuth('notifications'), (req, res) 
     clearInterval(heartbeat);
     unsubscribe();
   });
+});
+
+// ======== Bots (planned.md F5) ========
+
+function requireAdminApi(req, res) {
+  if (!req.apiUser || !req.apiUser.is_admin) {
+    errorResponse(res, 403, 'Forbidden', 'Admins only.');
+    return false;
+  }
+  return true;
+}
+
+// Admin-only: create a bot account and its first long-lived token. The raw
+// token is returned exactly once — only its hash is stored.
+router.post('/bots', requireApiAuth('write'), (req, res) => {
+  if (!requireAdminApi(req, res)) return;
+  const username = String(req.body.username || '').trim();
+  const displayName = String(req.body.display_name || '').trim() || username;
+  if (!/^[a-zA-Z0-9_]{3,20}$/.test(username)) {
+    return errorResponse(res, 400, 'Bad Request', 'username must be 3-20 letters, numbers, or underscores.');
+  }
+  if (db.getUserByUsername(username)) return errorResponse(res, 409, 'Conflict', 'That username is taken.');
+  const botId = db.createBotUser({ username, displayName });
+  const token = db.generateBotTokenValue();
+  const tokenId = db.createBotToken(botId, 'default', token);
+  db.auditLog('bot_created', req.apiUser.id, `Bot @${username} (token ${tokenId})`);
+  res.status(201).json({
+    data: {
+      account: serializeAccount(db.getUserById(botId), req.apiUser.id),
+      token,
+      token_id: String(tokenId),
+    },
+  });
+});
+
+// Admin-only: list all bot accounts.
+router.get('/bots', requireApiAuth('read'), (req, res) => {
+  if (!requireAdminApi(req, res)) return;
+  responseEnvelope(res, db.getAllBots().map((b) => serializeAccount(b, req.apiUser.id)));
+});
+
+// Admin-only: issue an additional long-lived token for a bot.
+router.post('/bots/:id/tokens', requireApiAuth('write'), (req, res) => {
+  if (!requireAdminApi(req, res)) return;
+  const bot = db.getUserById(parseInt(req.params.id, 10));
+  if (!bot || !bot.is_bot) return errorResponse(res, 404, 'Not Found', 'Bot not found.');
+  const token = db.generateBotTokenValue();
+  const tokenId = db.createBotToken(bot.id, String(req.body.name || 'default').slice(0, 60), token);
+  db.auditLog('bot_token_issued', req.apiUser.id, `Bot @${bot.username} token ${tokenId}`);
+  res.status(201).json({ data: { token, token_id: String(tokenId) } });
+});
+
+// Admin-only: list a bot's tokens (prefixes only, never the secrets).
+router.get('/bots/:id/tokens', requireApiAuth('read'), (req, res) => {
+  if (!requireAdminApi(req, res)) return;
+  const bot = db.getUserById(parseInt(req.params.id, 10));
+  if (!bot || !bot.is_bot) return errorResponse(res, 404, 'Not Found', 'Bot not found.');
+  responseEnvelope(res, db.listBotTokens(bot.id).map((t) => ({
+    id: String(t.id),
+    name: t.name,
+    token_prefix: t.token_prefix,
+    created_at: t.created_at,
+    revoked_at: t.revoked_at,
+  })));
+});
+
+// Admin-only: revoke a bot token.
+router.delete('/bots/:id/tokens/:tokenId', requireApiAuth('write'), (req, res) => {
+  if (!requireAdminApi(req, res)) return;
+  const bot = db.getUserById(parseInt(req.params.id, 10));
+  if (!bot || !bot.is_bot) return errorResponse(res, 404, 'Not Found', 'Bot not found.');
+  const r = db.revokeBotToken(bot.id, parseInt(req.params.tokenId, 10));
+  if (!r.changes) return errorResponse(res, 404, 'Not Found', 'Token not found or already revoked.');
+  db.auditLog('bot_token_revoked', req.apiUser.id, `Bot @${bot.username} token ${req.params.tokenId}`);
+  responseEnvelope(res, { ok: true });
+});
+
+// Bot self-service: register a webhook endpoint. The HMAC secret is returned
+// exactly once; rotate it with /bots/webhook/rotate if it leaks.
+router.post('/bots/webhook', requireApiAuth('write'), (req, res) => {
+  if (!req.apiUser.is_bot) return errorResponse(res, 403, 'Forbidden', 'Bot accounts only.');
+  const url = String(req.body.url || '').trim();
+  if (!/^https?:\/\/.+/i.test(url) || url.length > 500) {
+    return errorResponse(res, 400, 'Bad Request', 'url must be a valid http(s) URL.');
+  }
+  const secret = db.generateBotWebhookSecret();
+  db.setBotWebhook(req.apiUser.id, url, secret);
+  db.auditLog('bot_webhook_set', req.apiUser.id, url);
+  responseEnvelope(res, {
+    url,
+    secret,
+    signature: 'X-Webhook-Signature: hex(HMAC-SHA256(secret, raw_body))',
+  });
+});
+
+// Bot self-service: rotate the webhook signing secret.
+router.post('/bots/webhook/rotate', requireApiAuth('write'), (req, res) => {
+  if (!req.apiUser.is_bot) return errorResponse(res, 403, 'Forbidden', 'Bot accounts only.');
+  const secret = db.rotateBotWebhookSecret(req.apiUser.id);
+  if (!secret) return errorResponse(res, 404, 'Not Found', 'No webhook registered.');
+  db.auditLog('bot_webhook_rotated', req.apiUser.id, 'secret rotated');
+  responseEnvelope(res, { secret });
+});
+
+// Own identity — works for bots and humans alike.
+router.get('/bot/me', requireApiAuth('read'), (req, res) => {
+  responseEnvelope(res, serializeAccount(req.apiUser, req.apiUser.id));
 });
 
 // ======== Media ========

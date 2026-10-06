@@ -4,6 +4,7 @@
       <div>
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
           <h1 style="margin:0"><%= profileUser.display_name %></h1>
+          <% if (profileUser.is_bot) { %><span class="badge" title="Automated account">bot</span><% } %>
           <% if (locals.currentUser && !isOwn) { %>
             <% if (mutual) { %>
               <a href="/chats/<%= profileUser.username %>" class="chat-icon" title="Send a message"><%- include('partials/icon', { name: 'chat', size: 18 }) %></a>

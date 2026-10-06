@@ -198,6 +198,30 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
     { url: 'http://localhost:3000', description: 'Local development' },
   ],
   paths: {
+    // --- Bots (planned.md F5) ---
+    '/bots': {
+      post: { tags: ['Bots'], summary: 'Admin: create a bot account and its first long-lived token (the raw token is returned exactly once)', responses: { 201: { description: 'Created' }, 403: { description: 'Admins only' } } },
+      get: { tags: ['Bots'], summary: 'Admin: list bot accounts', responses: { 200: { description: 'OK' } } },
+    },
+    '/bots/{id}/tokens': {
+      post: { tags: ['Bots'], summary: 'Admin: issue an additional bot token (returned once)', responses: { 201: { description: 'Created' } } },
+      get: { tags: ['Bots'], summary: "Admin: list a bot's token prefixes (never the secrets)", responses: { 200: { description: 'OK' } } },
+    },
+    '/bots/{id}/tokens/{tokenId}': {
+      delete: { tags: ['Bots'], summary: 'Admin: revoke a bot token', responses: { 200: { description: 'OK' } } },
+    },
+    '/bots/webhook': {
+      post: { tags: ['Bots'], summary: 'Bot: register a webhook URL; the HMAC signing secret is returned exactly once', responses: { 200: { description: 'OK' } } },
+    },
+    '/bots/webhook/rotate': {
+      post: { tags: ['Bots'], summary: 'Bot: rotate the webhook signing secret', responses: { 200: { description: 'OK' } } },
+    },
+    '/bot/me': {
+      get: { tags: ['Bots'], summary: 'Own account identity (bots and humans)', responses: { 200: { description: 'OK' } } },
+    },
+    '/timelines/mentions': {
+      get: { tags: ['Timelines'], summary: 'Mentions-only feed — posts that mentioned you, newest first', responses: { 200: { description: 'OK' } } },
+    },
     '/api/v1/auth/pair/init': {
       post: {
         summary: 'Initialize device pairing code for zero-typing login',
