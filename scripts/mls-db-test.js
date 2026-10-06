@@ -177,6 +177,43 @@ async function run() {
   assert.strictEqual(backup.kek_salt, 'random_salt_123');
   console.log('   [OK] Credential backup vault stored and retrieved\n');
 
+  // 8. Group Reset CAS & Self-Device Exclusion
+  console.log('8. Testing Group Reset CAS & Self-Device Exclusion...');
+  db.registerMlsDevice(u2.id, 'bob_watch', 'Bob Watch', 'key_pub_bob_3');
+  db.saveMlsKeyPackages(u2.id, 'bob_watch', [
+    { data: 'watch_pkg_1_data', keypackage_ref: 'a'.repeat(64) },
+    { data: 'watch_pkg_2_data', keypackage_ref: 'b'.repeat(64) },
+  ]);
+
+  const exclClaim = db.claimUserMlsKeyPackages(u2.id, 'bob_laptop');
+  assert.ok(exclClaim.length > 0, 'Non-excluded devices must still claim');
+  assert.ok(exclClaim.every(k => k.device_id !== 'bob_laptop'), 'Excluded device must not be claimed');
+
+  let resetConflictThrew = false;
+  try {
+    db.resetMlsGroup('dm:1_2', 99);
+  } catch (err) {
+    resetConflictThrew = true;
+    assert.strictEqual(err.code, 'EPOCH_CONFLICT');
+    assert.strictEqual(err.server_epoch, 3);
+  }
+  assert.ok(resetConflictThrew, 'Reset with stale expected epoch must throw EPOCH_CONFLICT');
+  assert.strictEqual(db.getMlsGroup('dm:1_2').epoch, 3, 'Failed reset must not touch the group');
+
+  const unackedBefore = db.getMlsWelcomes(u2.id, 'bob_phone');
+  assert.strictEqual(unackedBefore.length, 1, 'bob_phone must have an unacked welcome before reset');
+
+  const resetRes = db.resetMlsGroup('dm:1_2', 3);
+  assert.strictEqual(resetRes.ok, true);
+  assert.strictEqual(db.getMlsGroup('dm:1_2'), null, 'Group rows must be wiped');
+  assert.strictEqual(db.getMlsCommits('dm:1_2', -1).length, 0, 'Stale commits must be wiped');
+  assert.strictEqual(db.getMlsWelcomes(u2.id, 'bob_phone').length, 0, 'Stale welcomes must be wiped');
+
+  const reInit = db.initMlsGroup('dm:1_2', 0, [], 'fresh_initial_commit_bytes', [], 'idem_after_reset');
+  assert.strictEqual(reInit.ok, true);
+  assert.strictEqual(reInit.epoch, 1, 'Re-initialized group must restart at epoch 1');
+  console.log('   [OK] CAS-checked group reset, full stale row wipe, and re-init verified\n');
+
   console.log('=== All MLS Database Tests Passed Successfully! ===\n');
 }
 

@@ -23,6 +23,7 @@ const {
   getMlsGroup,
   initMlsGroup,
   commitMlsGroup,
+  resetMlsGroup,
   getMlsCommits,
   getMlsWelcomes,
   ackMlsWelcome,
@@ -233,7 +234,7 @@ router.get('/keypackages/:userId', requireAuth, (req, res) => {
     return res.json({ ok: true, user_id: targetUserId, keypackages: available });
   }
 
-  const claimed = claimUserMlsKeyPackages(targetUserId);
+  const claimed = claimUserMlsKeyPackages(targetUserId, req.query.exclude_device || null);
   res.json({ ok: true, user_id: targetUserId, keypackages: claimed });
 });
 
@@ -314,7 +315,7 @@ router.get('/groups/:groupId/proposals', requireAuth, (req, res) => {
 // 10. Atomic Group Initialization
 router.post('/groups/init', requireAuth, (req, res) => {
   const user = res.locals.currentUser;
-  const { group_id, initial_commit, welcomes, members, device_id, idempotency_key } = req.body || {};
+  const { group_id, initial_commit, welcomes, members, device_id, idempotency_key, reset_existing, expected_epoch } = req.body || {};
   if (!group_id) return res.status(400).json({ error: 'group_id is required' });
 
   // Authorization: for DMs (dm:uid1_uid2), caller must be one of the participants
@@ -332,11 +333,27 @@ router.post('/groups/init', requireAuth, (req, res) => {
 
   const initialMembers = Array.isArray(members) && members.length ? members : (device_id ? [{ user_id: user.id, device_id, leaf_index: 0, role: 'creator' }] : []);
 
+  const runInit = () => initMlsGroup(group_id, 0, initialMembers, initial_commit || null, welcomes || [], idempotency_key || null);
+
   try {
-    const response = initMlsGroup(group_id, 0, initialMembers, initial_commit || null, welcomes || [], idempotency_key || null);
+    const response = runInit();
     res.status(201).json(response);
   } catch (err) {
     if (err.code === 'GROUP_EXISTS') {
+      const staleMatch = expected_epoch === undefined || expected_epoch === null || Number(expected_epoch) === err.epoch;
+      if (reset_existing && staleMatch) {
+        try {
+          resetMlsGroup(group_id, err.epoch);
+          const response = runInit();
+          return res.status(201).json(response);
+        } catch (err2) {
+          if (err2.code === 'GROUP_EXISTS') {
+            return res.status(409).json({ error: 'GroupExists', epoch: err2.epoch });
+          }
+          console.error('Error resetting stale MLS group:', err2);
+          return res.status(500).json({ error: 'Failed to reset stale group' });
+        }
+      }
       return res.status(409).json({ error: 'GroupExists', epoch: err.epoch });
     }
     console.error('Error initializing MLS group:', err);

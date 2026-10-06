@@ -1414,10 +1414,12 @@ function claimMlsKeyPackage(userId, deviceId) {
   `).get(now, userId, String(deviceId), nowSec) || null;
 }
 
-function claimUserMlsKeyPackages(userId) {
+function claimUserMlsKeyPackages(userId, excludeDeviceId = null) {
   const devices = getMlsDevices(userId);
+  const exclude = excludeDeviceId ? String(excludeDeviceId) : null;
   const result = [];
   for (const dev of devices) {
+    if (exclude && dev.device_id === exclude) continue;
     const kp = claimMlsKeyPackage(userId, dev.device_id);
     if (kp) {
       result.push({
@@ -1742,6 +1744,33 @@ function commitMlsGroup(groupId, expectedEpoch, commitData, welcomes = [], propo
     }
     db.exec('COMMIT');
     return response;
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+function resetMlsGroup(groupId, expectedEpoch = null) {
+  const gid = String(groupId);
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const g = db.prepare(`SELECT epoch FROM mls_groups WHERE group_id = ?`).get(gid);
+    if (!g) {
+      const err = new Error('Group not found');
+      err.code = 'GROUP_NOT_FOUND';
+      throw err;
+    }
+    if (expectedEpoch !== null && expectedEpoch !== undefined && g.epoch !== Number(expectedEpoch)) {
+      const err = new Error('Epoch conflict: expected ' + expectedEpoch + ' but server is at ' + g.epoch);
+      err.code = 'EPOCH_CONFLICT';
+      err.server_epoch = g.epoch;
+      throw err;
+    }
+    for (const table of ['mls_welcomes', 'mls_proposals', 'mls_commits', 'mls_group_members', 'mls_idempotency', 'mls_groups']) {
+      db.prepare(`DELETE FROM ${table} WHERE group_id = ?`).run(gid);
+    }
+    db.exec('COMMIT');
+    return { ok: true, group_id: gid };
   } catch (err) {
     db.exec('ROLLBACK');
     throw err;
@@ -3188,7 +3217,7 @@ module.exports = {
   claimMlsKeyPackage, claimUserMlsKeyPackages, getMlsKeyPackageStatus,
   addMlsGroupMember, removeMlsGroupMember, getMlsGroupMembers, isMlsGroupMember, getUserMlsGroups,
   saveMlsProposal, getPendingMlsProposals, consumeMlsProposals,
-  getMlsGroup, initMlsGroup, commitMlsGroup, getMlsCommits,
+  getMlsGroup, initMlsGroup, commitMlsGroup, resetMlsGroup, getMlsCommits,
   getMlsWelcomes, ackMlsWelcome,
   saveMlsBackup, getMlsBackup,
   getHistoricalDmMessagesForMigration, getHistoricalRoomMessagesForMigration,

@@ -492,14 +492,18 @@
       return decryptWithKd(enc).then(function (bytes) {
         var mls = root.MLS;
         var decoded = mls.decodeGroupState(bytes, 0);
-        if (!decoded || !decoded[0]) return null;
+        if (!decoded || !decoded[0]) throw new Error('Undecodable MLS group state');
         var state = restoreClientConfig(decoded[0]);
         activeGroups[groupId] = state;
         return state;
       });
     }).catch(function (err) {
       console.warn('Failed to load/decode MLS group state for', groupId, err);
-      return null;
+      return idbDelete(STORE_MLS_GROUPS, groupId).then(function () {
+        return null;
+      }).catch(function () {
+        return null;
+      });
     });
   }
 
@@ -510,92 +514,156 @@
     return 'dm:' + Math.min(myId, pId) + '_' + Math.max(myId, pId);
   }
 
+  function postGroupInit(body) {
+    return csrfFetch('/mls/groups/init', {
+      method: 'POST',
+      body: JSON.stringify(body)
+    }).then(function (r) {
+      return r.json();
+    });
+  }
+
+  function claimKeyPackagesFor(uid, excludeDevice) {
+    var url = '/mls/keypackages/' + encodeURIComponent(uid);
+    if (excludeDevice) url += '?exclude_device=' + encodeURIComponent(excludeDevice);
+    return csrfFetch(url).then(function (r) {
+      return r.json();
+    }).then(function (res) {
+      return (res && res.ok && Array.isArray(res.keypackages)) ? res.keypackages : [];
+    });
+  }
+
+  function resolveGroupConflict(gid, initBody, conflictEpoch, newState, missingMsg) {
+    function pollOrThrow() {
+      return pollAndProcessWelcomes().then(function () {
+        return loadGroupState(gid);
+      }).then(function (st) {
+        if (st) return st;
+        throw new Error(missingMsg);
+      });
+    }
+
+    return pollAndProcessWelcomes().then(function () {
+      return loadGroupState(gid);
+    }).then(function (st) {
+      if (st) return st;
+      // Local state is gone and no Welcome will arrive for this device: the
+      // server-side group is unrecoverable. CAS-reset the dead group and
+      // re-initialize with the same commit; peers converge via the Welcomes.
+      var resetBody = {};
+      for (var k in initBody) resetBody[k] = initBody[k];
+      resetBody.reset_existing = true;
+      resetBody.expected_epoch = conflictEpoch;
+      return postGroupInit(resetBody).then(function (resetRes) {
+        if (resetRes.error === 'GroupExists') return pollOrThrow();
+        if (resetRes.error) {
+          throw new Error(resetRes.error || resetRes.message || 'Server error initializing MLS group');
+        }
+        activeGroups[gid] = newState;
+        return saveGroupState(gid, newState).then(function () {
+          return newState;
+        });
+      });
+    });
+  }
+
   function ensureDmGroup(peerUserId) {
     return initDevice().then(function () {
       var mls = root.MLS;
       var gid = getDmGroupId(peerUserId);
 
       return loadGroupState(gid).then(function (existing) {
-      if (existing) {
-        var ep = existing.groupContext ? Number(existing.groupContext.epoch) : 0;
-        return catchUpCommits(gid, existing, ep).then(function (finalState) {
-          activeGroups[gid] = finalState;
-          return saveGroupState(gid, finalState).then(function () { return finalState; });
-        });
-      }
-
-      // First check if any Welcome is waiting for us
-      return pollAndProcessWelcomes().then(function () {
-        return loadGroupState(gid);
-      }).then(function (joinedFromWelcome) {
-        if (joinedFromWelcome) return joinedFromWelcome;
-
-        // Group not yet loaded locally — claim peer KeyPackages and initialize
-        return csrfFetch('/mls/keypackages/' + encodeURIComponent(peerUserId)).then(function (r) {
-        return r.json();
-      }).then(function (kpRes) {
-        if (!kpRes.ok || !Array.isArray(kpRes.keypackages) || !kpRes.keypackages.length) {
-          throw new Error('Peer has no available MLS devices or KeyPackages');
+        if (existing) {
+          return pollAndProcessWelcomes().then(function () {
+            return loadGroupState(gid);
+          }).then(function (st) {
+            var base = st || existing;
+            var ep = base.groupContext ? Number(base.groupContext.epoch) : 0;
+            return catchUpCommits(gid, base, ep).then(function (finalState) {
+              activeGroups[gid] = finalState;
+              return saveGroupState(gid, finalState).then(function () { return finalState; });
+            });
+          });
         }
 
-        return mls.generateKeyPackage(clientCredential, mls.defaultCapabilities(), mls.defaultLifetime, [], ciphersuiteImpl).then(function (myKp) {
-          var groupBytes = new TextEncoder().encode(gid);
-          return mls.createGroup(groupBytes, myKp.publicPackage, myKp.privatePackage, [], ciphersuiteImpl).then(function (freshGroup) {
-            // Build AddProposals for peer's devices
-            var proposals = [];
-            for (var i = 0; i < kpRes.keypackages.length; i++) {
-              var decKp = mls.decodeMlsMessage(b64ToUint8(kpRes.keypackages[i].keypackage_data), 0)[0];
-              if (decKp && decKp.keyPackage) {
-                proposals.push({ proposalType: 'add', add: { keyPackage: decKp.keyPackage } });
-              }
+        // First check if any Welcome is waiting for us
+        return pollAndProcessWelcomes().then(function () {
+          return loadGroupState(gid);
+        }).then(function (joinedFromWelcome) {
+          if (joinedFromWelcome) return joinedFromWelcome;
+
+          // Group not yet loaded locally — claim KeyPackages for the peer's
+          // devices and our own other devices, then initialize
+          return claimKeyPackagesFor(peerUserId).then(function (peerKps) {
+            if (!peerKps.length) {
+              throw new Error('Peer has no available MLS devices or KeyPackages');
             }
-
-            return mls.createCommit(
-              { state: freshGroup, cipherSuite: ciphersuiteImpl },
-              { extraProposals: proposals, ratchetTreeExtension: true }
-            ).then(function (commitRes) {
-              var welcomeEnc = mls.encodeMlsMessage({
-                welcome: commitRes.welcome,
-                wireformat: 'mls_welcome',
-                version: 'mls10'
+            return claimKeyPackagesFor(currentUserId(), deviceId).catch(function () {
+              return [];
+            }).then(function (ownKps) {
+              var targets = [];
+              peerKps.forEach(function (p) {
+                targets.push({ user_id: parseInt(peerUserId, 10), pkg: p });
               });
-              var commitEnc = mls.encodeMlsMessage(commitRes.commit);
+              ownKps.forEach(function (p) {
+                targets.push({ user_id: currentUserId(), pkg: p });
+              });
 
-              var welcomesList = [];
-              for (var j = 0; j < kpRes.keypackages.length; j++) {
-                welcomesList.push({
-                  user_id: parseInt(peerUserId, 10),
-                  device_id: kpRes.keypackages[j].device_id,
-                  welcome_data: uint8ToB64(welcomeEnc)
-                });
-              }
-
-              return csrfFetch('/mls/groups/init', {
-                method: 'POST',
-                body: JSON.stringify({
-                  group_id: gid,
-                  initial_commit: uint8ToB64(commitEnc),
-                  welcomes: welcomesList,
-                  idempotency_key: 'init_' + gid + '_' + Date.now()
-                })
-              }).then(function (r) { return r.json(); }).then(function (initRes) {
-                if (initRes.error === 'GroupExists') {
-                  // Peer beat us to creation! Wait for welcome or catch-up
-                  return pollAndProcessWelcomes().then(function () {
-                    return loadGroupState(gid);
-                  }).then(function (st) {
-                    if (!st) {
-                      throw new Error('MLS conversation exists on server, but no welcome was received for this device. Please refresh or retry.');
+              return mls.generateKeyPackage(clientCredential, mls.defaultCapabilities(), mls.defaultLifetime, [], ciphersuiteImpl).then(function (myKp) {
+                var groupBytes = new TextEncoder().encode(gid);
+                return mls.createGroup(groupBytes, myKp.publicPackage, myKp.privatePackage, [], ciphersuiteImpl).then(function (freshGroup) {
+                  var addable = [];
+                  targets.forEach(function (t) {
+                    var decKp = mls.decodeMlsMessage(b64ToUint8(t.pkg.keypackage_data), 0)[0];
+                    if (decKp && decKp.keyPackage) {
+                      addable.push({ user_id: t.user_id, device_id: t.pkg.device_id, keyPackage: decKp.keyPackage });
                     }
-                    return st;
                   });
-                }
-                if (initRes.error) {
-                  throw new Error(initRes.error || initRes.message || 'Server error initializing MLS group');
-                }
-                activeGroups[gid] = commitRes.newState;
-                return saveGroupState(gid, commitRes.newState).then(function () {
-                  return commitRes.newState;
+
+                  var proposals = addable.map(function (a) {
+                    return { proposalType: 'add', add: { keyPackage: a.keyPackage } };
+                  });
+
+                  return mls.createCommit(
+                    { state: freshGroup, cipherSuite: ciphersuiteImpl },
+                    { extraProposals: proposals, ratchetTreeExtension: true }
+                  ).then(function (commitRes) {
+                    var welcomeEnc = mls.encodeMlsMessage({
+                      welcome: commitRes.welcome,
+                      wireformat: 'mls_welcome',
+                      version: 'mls10'
+                    });
+                    var commitEnc = mls.encodeMlsMessage(commitRes.commit);
+
+                    var welcomesList = addable.map(function (a) {
+                      return {
+                        user_id: a.user_id,
+                        device_id: a.device_id,
+                        welcome_data: uint8ToB64(welcomeEnc)
+                      };
+                    });
+
+                    var initBody = {
+                      group_id: gid,
+                      initial_commit: uint8ToB64(commitEnc),
+                      welcomes: welcomesList,
+                      idempotency_key: 'init_' + gid + '_' + Date.now()
+                    };
+
+                    return postGroupInit(initBody).then(function (initRes) {
+                      if (initRes.error === 'GroupExists') {
+                        return resolveGroupConflict(gid, initBody, initRes.epoch, commitRes.newState,
+                          'MLS conversation exists on server, but no welcome was received for this device. Please refresh or retry.');
+                      }
+                      if (initRes.error) {
+                        throw new Error(initRes.error || initRes.message || 'Server error initializing MLS group');
+                      }
+                      activeGroups[gid] = commitRes.newState;
+                      return saveGroupState(gid, commitRes.newState).then(function () {
+                        return commitRes.newState;
+                      });
+                    });
+                  });
                 });
               });
             });
@@ -603,10 +671,7 @@
         });
       });
     });
-  });
-});
-}
-
+  }
   function encryptDmMessage(peerUserId, plaintext) {
     var mls = root.MLS;
     var gid = getDmGroupId(peerUserId);
@@ -721,119 +786,120 @@
       var gid = getRoomGroupId(roomId);
 
       return loadGroupState(gid).then(function (existing) {
-      if (existing) {
-        var ep = existing.groupContext ? Number(existing.groupContext.epoch) : 0;
-        return catchUpCommits(gid, existing, ep).then(function (afterCatchUp) {
-          return commitPendingProposals(gid, afterCatchUp);
-        }).then(function (finalState) {
-          activeGroups[gid] = finalState;
-          return saveGroupState(gid, finalState).then(function () { return finalState; });
-        });
-      }
-
-      // First check if any Welcome is waiting for us
-      return pollAndProcessWelcomes().then(function () {
-        return loadGroupState(gid);
-      }).then(function (joinedFromWelcome) {
-        if (joinedFromWelcome) return joinedFromWelcome;
-
-        // Group not yet loaded locally — claim member KeyPackages and initialize
-        var membersP;
-        if (Array.isArray(memberUserIds) && memberUserIds.length) {
-          membersP = Promise.resolve(memberUserIds);
-        } else {
-          membersP = fetch('/rooms/' + encodeURIComponent(roomId) + '/channels/0/messages').then(function (r) {
-            return r.json();
-          }).then(function (d) {
-            if (d && Array.isArray(d.members)) {
-              return d.members.map(function (m) { return m.user_id; });
-            }
-            return [];
-          }).catch(function () { return []; });
-        }
-
-        return membersP.then(function (rawMembers) {
-          var myId = currentUserId();
-          var otherMembers = (rawMembers || []).map(function (m) {
-            return typeof m === 'object' && m !== null ? (m.id || m.user_id) : m;
-          }).map(Number).filter(function (uid) {
-            return uid && uid !== myId;
-          });
-
-          // Fetch KeyPackages for all other members
-          var kpPromises = otherMembers.map(function (uid) {
-            return csrfFetch('/mls/keypackages/' + encodeURIComponent(uid)).then(function (r) {
-              return r.json();
-            }).then(function (kpRes) {
-              if (!kpRes.ok || !Array.isArray(kpRes.keypackages) || !kpRes.keypackages.length) {
-                throw new Error('Room member ' + uid + ' has no available MLS devices or KeyPackages');
-              }
-              return { uid: uid, packages: kpRes.keypackages };
+        if (existing) {
+          return pollAndProcessWelcomes().then(function () {
+            return loadGroupState(gid);
+          }).then(function (st) {
+            var base = st || existing;
+            var ep = base.groupContext ? Number(base.groupContext.epoch) : 0;
+            return catchUpCommits(gid, base, ep).then(function (afterCatchUp) {
+              return commitPendingProposals(gid, afterCatchUp);
+            }).then(function (finalState) {
+              activeGroups[gid] = finalState;
+              return saveGroupState(gid, finalState).then(function () { return finalState; });
             });
           });
+        }
 
-          return Promise.all(kpPromises).then(function (peerKps) {
-            return mls.generateKeyPackage(clientCredential, mls.defaultCapabilities(), mls.defaultLifetime, [], ciphersuiteImpl).then(function (myKp) {
-              var groupBytes = new TextEncoder().encode(gid);
-              return mls.createGroup(groupBytes, myKp.publicPackage, myKp.privatePackage, [], ciphersuiteImpl).then(function (freshGroup) {
-                var proposals = [];
-                var welcomesList = [];
+        // First check if any Welcome is waiting for us
+        return pollAndProcessWelcomes().then(function () {
+          return loadGroupState(gid);
+        }).then(function (joinedFromWelcome) {
+          if (joinedFromWelcome) return joinedFromWelcome;
 
-                peerKps.forEach(function (peer) {
-                  peer.packages.forEach(function (pkg) {
-                    var decKp = mls.decodeMlsMessage(b64ToUint8(pkg.keypackage_data), 0)[0];
-                    if (decKp && decKp.keyPackage) {
-                      proposals.push({ proposalType: 'add', add: { keyPackage: decKp.keyPackage } });
-                    }
-                  });
-                });
+          // Group not yet loaded locally — claim member KeyPackages and initialize
+          var membersP;
+          if (Array.isArray(memberUserIds) && memberUserIds.length) {
+            membersP = Promise.resolve(memberUserIds);
+          } else {
+            membersP = fetch('/rooms/' + encodeURIComponent(roomId) + '/channels/0/messages').then(function (r) {
+              return r.json();
+            }).then(function (d) {
+              if (d && Array.isArray(d.members)) {
+                return d.members.map(function (m) { return m.user_id; });
+              }
+              return [];
+            }).catch(function () { return []; });
+          }
 
-                return mls.createCommit(
-                  { state: freshGroup, cipherSuite: ciphersuiteImpl },
-                  { extraProposals: proposals, ratchetTreeExtension: true }
-                ).then(function (commitRes) {
-                  var welcomeEnc = mls.encodeMlsMessage({
-                    welcome: commitRes.welcome,
-                    wireformat: 'mls_welcome',
-                    version: 'mls10'
-                  });
-                  var commitEnc = mls.encodeMlsMessage(commitRes.commit);
+          return membersP.then(function (rawMembers) {
+            var myId = currentUserId();
+            var otherMembers = (rawMembers || []).map(function (m) {
+              return typeof m === 'object' && m !== null ? (m.id || m.user_id) : m;
+            }).map(Number).filter(function (uid) {
+              return uid && uid !== myId;
+            });
 
+            var kpPromises = otherMembers.map(function (uid) {
+              return claimKeyPackagesFor(uid).then(function (kps) {
+                if (!kps.length) {
+                  throw new Error('Room member ' + uid + ' has no available MLS devices or KeyPackages');
+                }
+                return { uid: uid, packages: kps };
+              });
+            });
+            kpPromises.push(claimKeyPackagesFor(myId, deviceId).catch(function () {
+              return [];
+            }).then(function (kps) {
+              return { uid: myId, packages: kps };
+            }));
+
+            return Promise.all(kpPromises).then(function (peerKps) {
+              return mls.generateKeyPackage(clientCredential, mls.defaultCapabilities(), mls.defaultLifetime, [], ciphersuiteImpl).then(function (myKp) {
+                var groupBytes = new TextEncoder().encode(gid);
+                return mls.createGroup(groupBytes, myKp.publicPackage, myKp.privatePackage, [], ciphersuiteImpl).then(function (freshGroup) {
+                  var addable = [];
                   peerKps.forEach(function (peer) {
                     peer.packages.forEach(function (pkg) {
-                      welcomesList.push({
-                        user_id: peer.uid,
-                        device_id: pkg.device_id,
-                        welcome_data: uint8ToB64(welcomeEnc)
-                      });
+                      var decKp = mls.decodeMlsMessage(b64ToUint8(pkg.keypackage_data), 0)[0];
+                      if (decKp && decKp.keyPackage) {
+                        addable.push({ user_id: peer.uid, device_id: pkg.device_id, keyPackage: decKp.keyPackage });
+                      }
                     });
                   });
 
-                  return csrfFetch('/mls/groups/init', {
-                    method: 'POST',
-                    body: JSON.stringify({
+                  var proposals = addable.map(function (a) {
+                    return { proposalType: 'add', add: { keyPackage: a.keyPackage } };
+                  });
+
+                  return mls.createCommit(
+                    { state: freshGroup, cipherSuite: ciphersuiteImpl },
+                    { extraProposals: proposals, ratchetTreeExtension: true }
+                  ).then(function (commitRes) {
+                    var welcomeEnc = mls.encodeMlsMessage({
+                      welcome: commitRes.welcome,
+                      wireformat: 'mls_welcome',
+                      version: 'mls10'
+                    });
+                    var commitEnc = mls.encodeMlsMessage(commitRes.commit);
+
+                    var welcomesList = addable.map(function (a) {
+                      return {
+                        user_id: a.user_id,
+                        device_id: a.device_id,
+                        welcome_data: uint8ToB64(welcomeEnc)
+                      };
+                    });
+
+                    var initBody = {
                       group_id: gid,
                       initial_commit: uint8ToB64(commitEnc),
                       welcomes: welcomesList,
                       idempotency_key: 'init_' + gid + '_' + Date.now()
-                    })
-                  }).then(function (r) { return r.json(); }).then(function (initRes) {
-                    if (initRes.error === 'GroupExists') {
-                      return pollAndProcessWelcomes().then(function () {
-                        return loadGroupState(gid);
-                      }).then(function (st) {
-                        if (!st) {
-                          throw new Error('MLS room exists on server, but no welcome was received for this device. Please refresh or retry.');
-                        }
-                        return st;
+                    };
+
+                    return postGroupInit(initBody).then(function (initRes) {
+                      if (initRes.error === 'GroupExists') {
+                        return resolveGroupConflict(gid, initBody, initRes.epoch, commitRes.newState,
+                          'MLS room exists on server, but no welcome was received for this device. Please refresh or retry.');
+                      }
+                      if (initRes.error) {
+                        throw new Error(initRes.error || initRes.message || 'Server error initializing MLS room');
+                      }
+                      activeGroups[gid] = commitRes.newState;
+                      return saveGroupState(gid, commitRes.newState).then(function () {
+                        return commitRes.newState;
                       });
-                    }
-                    if (initRes.error) {
-                      throw new Error(initRes.error || initRes.message || 'Server error initializing MLS room');
-                    }
-                    activeGroups[gid] = commitRes.newState;
-                    return saveGroupState(gid, commitRes.newState).then(function () {
-                      return commitRes.newState;
                     });
                   });
                 });
@@ -843,9 +909,7 @@
         });
       });
     });
-  });
-}
-
+  }
   function findUserLeaves(state, uidStr) {
     var found = [];
     var prefix = 'user:' + uidStr + ':dev:';

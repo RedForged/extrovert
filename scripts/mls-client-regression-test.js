@@ -151,6 +151,8 @@ function makeRouter() {
 
   state.setPendingProposals = (p) => { state.pendingProposals = p; };
   state.lastCommit = () => state.commits[state.commits.length - 1];
+  state.inits = [];
+  state.initResponses = [];
 
   function json(obj) {
     return Promise.resolve({ status: 200, json: () => Promise.resolve(obj) });
@@ -160,28 +162,41 @@ function makeRouter() {
     const method = (opts && opts.method) || 'GET';
     const body = opts && opts.body ? JSON.parse(opts.body) : null;
     state.requests.push({ method, url, body });
+    const qIdx = url.indexOf('?');
+    const path = qIdx === -1 ? url : url.slice(0, qIdx);
+    const query = {};
+    if (qIdx !== -1) {
+      new URLSearchParams(url.slice(qIdx + 1)).forEach(function (v, k) { query[k] = v; });
+    }
 
-    if (url.includes('/mls/keypackages/status')) return json({ ok: true, available: 20 });
-    if (url.includes('/mls/welcomes')) return json({ ok: true, welcomes: [] });
-    if (url.includes('/mls/groups/') && url.includes('/proposals') && method === 'GET') {
+    if (path.includes('/mls/keypackages/status')) return json({ ok: true, available: 20 });
+    if (path.includes('/mls/welcomes')) return json({ ok: true, welcomes: [] });
+    if (path.includes('/mls/groups/') && path.includes('/proposals') && method === 'GET') {
       const pending = state.pendingProposals;
       state.pendingProposals = [];
       return json({ ok: true, proposals: pending });
     }
-    if (url.includes('/mls/groups/') && url.includes('/commits')) return json({ ok: true, commits: [] });
-    if (url.includes('/mls/groups/') && url.includes('/commit') && method === 'POST') {
+    if (path.includes('/mls/groups/') && path.includes('/commits')) return json({ ok: true, commits: [] });
+    if (path.endsWith('/mls/groups/init') && method === 'POST') {
+      state.inits.push(body);
+      if (state.initResponses.length) return json(state.initResponses.shift());
+      return json({ ok: true, group_id: body.group_id, epoch: 1 });
+    }
+    if (path.includes('/mls/groups/') && path.includes('/commit') && method === 'POST') {
       state.commits.push(body);
       return json({ ok: true, new_epoch: body.current_epoch + 1 });
     }
-    if (method === 'GET' && /\/mls\/keypackages\/\d+$/.test(url)) {
-      const uid = url.split('/').pop();
-      return json({ ok: true, user_id: Number(uid), keypackages: state.claimable[uid] || [] });
+    if (method === 'GET' && /\/mls\/keypackages\/\d+$/.test(path)) {
+      const uid = path.split('/').pop();
+      let kps = state.claimable[uid] || [];
+      if (query.exclude_device) kps = kps.filter((k) => k.device_id !== query.exclude_device);
+      return json({ ok: true, user_id: Number(uid), keypackages: kps });
     }
-    if (url.includes('/mls/device/register')) {
+    if (path.includes('/mls/device/register')) {
       state.registrations.push(body);
       return json({ ok: true, device: {} });
     }
-    if (url.includes('/mls/keypackages') && method === 'POST') {
+    if (path.includes('/mls/keypackages') && method === 'POST') {
       return json({ ok: true, saved: (body.keypackages || []).length });
     }
     return json({ ok: true });
@@ -389,6 +404,53 @@ async function scenarioMembershipFixes() {
   console.log('   [OK] leave proposal committed, leaver removed from the tree, send unaffected');
 }
 
+async function scenarioStaleGroupResetRecovery() {
+  console.log('4. Stale server group with no local state recovers via CAS reset...');
+
+  const idb = makeMockIndexedDB();
+  const rec = idb.seed('extrovert_crypto', 4, ['crypto', 'mls_keys', 'mls_groups']);
+  const router = makeRouter();
+
+  const devKey = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  rec.stores.get('crypto').set('deviceKey', devKey);
+  rec.stores.get('mls_keys').set('deviceId', 'devLocal');
+  rec.stores.get('mls_keys').set('credential', {
+    credentialType: 'basic',
+    identity: new TextEncoder().encode('user:1:dev:devLocal'),
+  });
+  rec.stores.get('mls_groups').set('dm:1_2', 'AAAAAAAAAAAAAAAA');
+
+  const peerKp = await genKp('user:2:dev:devPeer');
+  router.claimable['2'] = [await wireKp(peerKp, 'devPeer')];
+  const ownKp = await genKp('user:1:dev:devOld');
+  router.claimable['1'] = [await wireKp(ownKp, 'devOld')];
+
+  router.initResponses = [{ error: 'GroupExists', epoch: 3 }];
+
+  const client = loadClient(idb, router);
+  await client.init();
+
+  const sent = await client.encryptDmMessage(2, 'hello after recovery');
+  assert.ok(sent && sent.body, 'message must encrypt after stale group recovery');
+
+  assert.strictEqual(router.inits.length, 2, 'init must be retried once with reset_existing');
+  assert.strictEqual(router.inits[0].reset_existing, undefined, 'first init must not reset');
+  assert.strictEqual(router.inits[1].reset_existing, true, 'retry must request a reset');
+  assert.strictEqual(router.inits[1].expected_epoch, 3, 'reset must be CAS-checked against the observed epoch');
+
+  const ownClaimReq = router.requests.find((r) => r.url.includes('/mls/keypackages/1?'));
+  assert.ok(ownClaimReq && ownClaimReq.url.includes('exclude_device=devLocal'),
+    'own other devices must be claimed excluding the current device');
+
+  const welcomeDevices = router.inits[1].welcomes.map((w) => w.user_id + ':' + w.device_id).sort();
+  assert.deepStrictEqual(welcomeDevices, ['1:devOld', '2:devPeer'],
+    'peer devices and own other devices must both receive Welcomes');
+
+  const stored = rec.stores.get('mls_groups').get('dm:1_2');
+  assert.notStrictEqual(stored, 'AAAAAAAAAAAAAAAA', 'corrupt stale blob must be replaced with fresh state');
+  console.log('   [OK] CAS reset re-init, corrupt-blob cleanup, own-device exclusion, welcomes for all devices');
+}
+
 async function run() {
   console.log('=== Starting MLS Browser Client Regression Test Suite ===\n');
   const cs = mls.getCiphersuiteFromName('MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519');
@@ -397,6 +459,7 @@ async function run() {
   await scenarioLegacyDbRepair();
   await scenarioHighVersionDbNoVersionError();
   await scenarioMembershipFixes();
+  await scenarioStaleGroupResetRecovery();
 
   console.log('\n=== All MLS Browser Client Regression Assertions PASSED ===');
 }

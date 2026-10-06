@@ -170,6 +170,11 @@ async function run() {
     // Verify Bob's pool decremented
     const statusAfter = await req('/mls/keypackages/status?device_id=bob_desktop', { token: btok });
     assert.strictEqual(statusAfter.json.available, 19);
+
+    // Claim with exclude_device must skip the excluded device entirely
+    const exclClaimRes = await req('/mls/keypackages/' + bobId + '?exclude_device=bob_desktop', { token: atok });
+    assert.strictEqual(exclClaimRes.status, 200);
+    assert.strictEqual(exclClaimRes.json.keypackages.length, 0, 'Excluded device must not be claimed');
     console.log('   [OK] KeyPackage claimed and decremented pool count to 19\n');
 
     // 7. Atomic Group Init
@@ -266,6 +271,39 @@ async function run() {
     assert.strictEqual(getBk.json.backup.backup_data, 'encrypted_vault_ciphertext');
     assert.strictEqual(getBk.json.backup.kek_salt, 'salt_abc_123');
     console.log('   [OK] Credential backup vault stored and retrieved\n');
+
+    // 11. Stale Group Reset Recovery
+    console.log('11. Testing POST /mls/groups/init reset_existing (stale group recovery)...');
+
+    // Reset with a stale expected epoch must NOT wipe the group
+    const badReset = await req('/mls/groups/init', {
+      token: atok,
+      method: 'POST',
+      body: { group_id: dmGroupId, initial_commit: 'stale_reset_commit', reset_existing: true, expected_epoch: 99 }
+    });
+    assert.strictEqual(badReset.status, 409);
+    assert.strictEqual(badReset.json.error, 'GroupExists');
+
+    // Reset with the observed epoch wipes the dead group and re-initializes
+    const okReset = await req('/mls/groups/init', {
+      token: atok,
+      method: 'POST',
+      body: {
+        group_id: dmGroupId,
+        initial_commit: 'fresh_initial_commit_wire_data',
+        welcomes: [{ user_id: bobId, device_id: 'bob_desktop', welcome_data: 'welcome_bytes_bob_reset' }],
+        idempotency_key: 'init_key_reset',
+        reset_existing: true,
+        expected_epoch: badReset.json.epoch,
+      }
+    });
+    assert.strictEqual(okReset.status, 201);
+    assert.strictEqual(okReset.json.epoch, 1, 'Re-initialized group must restart at epoch 1');
+
+    const freshCommits = await req('/mls/groups/' + dmGroupId + '/commits?since=-1', { token: btok });
+    assert.strictEqual(freshCommits.json.commits.length, 1, 'Reset must wipe stale commits');
+    assert.strictEqual(freshCommits.json.commits[0].epoch, 1);
+    console.log('   [OK] CAS-checked stale group reset and re-initialization verified\n');
 
     console.log('=== All MLS API Endpoint Tests Passed Successfully! ===\n');
     process.exit(0);
