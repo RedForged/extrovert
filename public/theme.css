@@ -647,6 +647,32 @@ label { display: block; font-size: var(--fs-sm); color: var(--text-secondary); m
   min-width: 0;
 }
 
+/* Live @mention highlight while composing */
+.compose-highlight {
+  position: relative;
+  z-index: 1;
+  color: transparent;
+  caret-color: var(--text);
+}
+.compose-highlight::placeholder {
+  color: var(--text-muted);
+  opacity: 1;
+}
+.compose-mirror {
+  position: absolute;
+  z-index: 0;
+  pointer-events: none;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  overflow: hidden;
+  color: var(--text);
+}
+.mention-live {
+  color: var(--primary);
+  font-weight: 600;
+}
+
 /* ── Post card ────────────────────────────────────────────────────── */
 
 .post {

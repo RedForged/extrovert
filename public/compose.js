@@ -156,3 +156,56 @@
   });
   window.addEventListener('resize', function() { if (box) hide(); });
 })();
+
+// Live @mention highlight — a mirror layer under the textarea paints @tokens
+// in the detail color while typing; the real caret keeps drawing on top.
+(function(){
+  var input = document.getElementById('post-body');
+  if (!input) return;
+  var mirror = document.createElement('div');
+  mirror.className = 'compose-mirror';
+  mirror.setAttribute('aria-hidden', 'true');
+  input.classList.add('compose-highlight');
+  var parent = input.parentNode;
+  if (window.getComputedStyle(parent).position === 'static') parent.style.position = 'relative';
+  parent.appendChild(mirror);
+
+  function fit() {
+    var style = window.getComputedStyle(input);
+    ['fontFamily', 'fontSize', 'fontWeight', 'letterSpacing', 'lineHeight', 'textTransform', 'textIndent',
+     'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'borderTopWidth', 'borderRightWidth',
+     'borderBottomWidth', 'borderLeftWidth', 'boxSizing'
+    ].forEach(function(p) { mirror.style[p] = style[p]; });
+    mirror.style.top = input.offsetTop + 'px';
+    mirror.style.left = input.offsetLeft + 'px';
+    mirror.style.width = input.offsetWidth + 'px';
+    mirror.style.height = input.offsetHeight + 'px';
+  }
+
+  function esc(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function paint() {
+    var text = input.value;
+    var re = /(^|[^\w@\/])(@[a-zA-Z0-9_]*)/g;
+    var html = '';
+    var last = 0;
+    var m;
+    while ((m = re.exec(text)) !== null) {
+      var start = m.index + m[1].length;
+      html += esc(text.slice(last, start));
+      html += '<span class="mention-live">' + esc(m[2]) + '</span>';
+      last = start + m[2].length;
+    }
+    html += esc(text.slice(last));
+    mirror.innerHTML = html + '\n';
+    mirror.scrollTop = input.scrollTop;
+  }
+
+  input.addEventListener('input', paint);
+  input.addEventListener('scroll', function() { mirror.scrollTop = input.scrollTop; });
+  window.addEventListener('resize', function() { fit(); paint(); });
+  fit();
+  paint();
+})();
