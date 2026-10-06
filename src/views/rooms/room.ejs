@@ -100,7 +100,7 @@
 </div>
   <div id="room-members" style="display:none" data-room-id="<%= room.id %>" data-user-id="<%= locals.currentUser.id %>" data-username="<%= locals.currentUser.username %>" data-members='<%= JSON.stringify(members.map(function(m){ return { id: m.user_id, username: m.username }; })) %>'></div>
   <div id="room-e2ee-status" class="muted" style="font-size:0.75rem;text-align:center"></div>
-  <script src="/static/rooms.js?v=7"></script>
-  <script src="/static/room-e2ee.js?v=1"></script>
+  <script src="/static/rooms.js?v=8"></script>
+  <script src="/static/room-e2ee.js?v=2"></script>
   <script src="/static/webrtc-room.js?v=2"></script>
 <%- include('../partials/footer') %>

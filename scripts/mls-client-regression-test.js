@@ -651,7 +651,14 @@ async function scenarioRoomFreshInit() {
   const welcomeDevices = initBody.welcomes.map((w) => w.user_id + ':' + w.device_id).sort();
   assert.deepStrictEqual(welcomeDevices, ['1:devOther', '2:devA', '3:devB', '3:devC'],
     'all member devices and own other devices must receive Welcomes');
-  console.log('   [OK] room group created, welcomes queued for every device');
+
+  const cacheKey = client.roomCacheKey(77, sent.body);
+  await client.rememberPlaintext(cacheKey, 'hello room');
+  assert.strictEqual(await client.recallPlaintext(cacheKey), 'hello room',
+    'room plaintext cache must round-trip for own messages');
+  assert.strictEqual(await client.recallPlaintext(client.roomCacheKey(77, 'other-ct')), null,
+    'cache keys must bind to the ciphertext so edits never show stale text');
+  console.log('   [OK] room group created, welcomes queued, plaintext cache round-trips');
 }
 
 async function run() {

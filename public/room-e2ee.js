@@ -56,6 +56,7 @@
 
   function decryptExistingMessages() {
     document.querySelectorAll('#room-messages .room-msg[data-proto="mls"]').forEach(function (el) {
+      var msgId = el.getAttribute('data-msg-id');
       var senderId = el.getAttribute('data-sender-id');
       var ciphertext = el.getAttribute('data-ciphertext');
       var textEl = el.querySelector('.room-msg-text');
@@ -63,12 +64,27 @@
       if (textEl.textContent && textEl.textContent !== '[unable to decrypt]' && textEl.textContent !== '…') return;
       if (!ciphertext) return;
 
-      decryptMessage(senderId, ciphertext).then(function (plain) {
+      var mls = window.ExtrovertMLS;
+      var cacheKey = mls && mls.roomCacheKey ? mls.roomCacheKey(msgId, ciphertext) : 'room:' + msgId;
+
+      function finish(plain, cacheIt) {
         textEl.textContent = plain;
         textEl.classList.remove('e2ee-pending');
-      }).catch(function () {
-        textEl.textContent = '[unable to decrypt]';
-        textEl.classList.remove('e2ee-pending');
+        if (cacheIt && mls && mls.rememberPlaintext) mls.rememberPlaintext(cacheKey, plain);
+      }
+
+      var recall = mls && mls.recallPlaintext
+        ? mls.recallPlaintext(cacheKey)
+        : Promise.resolve(null);
+
+      recall.then(function (cached) {
+        if (cached) return finish(cached, false);
+        decryptMessage(senderId, ciphertext).then(function (plain) {
+          finish(plain, true);
+        }).catch(function () {
+          textEl.textContent = '[unable to decrypt]';
+          textEl.classList.remove('e2ee-pending');
+        });
       });
     });
   }

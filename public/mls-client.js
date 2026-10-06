@@ -1329,6 +1329,28 @@
     return false;
   }
 
+  // Shared plaintext recall for surfaces without their own cache (rooms).
+  // Entries ride the backup msgCache automatically.
+  function roomCacheKey(msgId, ciphertext) {
+    var s = String(msgId) + '|' + String(ciphertext || '');
+    var h = 0x811c9dc5;
+    for (var i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+    }
+    return 'room:' + msgId + ':' + h.toString(16);
+  }
+
+  function rememberPlaintext(key, text) {
+    if (!key || !text) return Promise.resolve(null);
+    return idbSet(STORE_MSG_CACHE, String(key), text);
+  }
+
+  function recallPlaintext(key) {
+    if (!key) return Promise.resolve(null);
+    return idbGet(STORE_MSG_CACHE, String(key)).catch(function () { return null; });
+  }
+
   function noteMessageDeleted(msgId) {
     var id = String(msgId);
     if (deletedMsgIds.indexOf(id) === -1) deletedMsgIds.push(id);
@@ -1683,6 +1705,9 @@
     backupNow: backupNow,
     syncBackup: syncBackup,
     noteMessageDeleted: noteMessageDeleted,
+    roomCacheKey: roomCacheKey,
+    rememberPlaintext: rememberPlaintext,
+    recallPlaintext: recallPlaintext,
     getDeviceId: function () { return deviceId; },
     ready: function () { return !!(ciphersuiteImpl && deviceId); },
   };

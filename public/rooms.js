@@ -64,6 +64,9 @@ document.addEventListener('DOMContentLoaded', function() {
           input.disabled = false;
           return;
         }
+        if (d.id && window.ExtrovertMLS && window.ExtrovertMLS.rememberPlaintext) {
+          window.ExtrovertMLS.rememberPlaintext(window.ExtrovertMLS.roomCacheKey(d.id, sentCiphertext), body);
+        }
         input.value = '';
         input.disabled = false;
         input.focus();
@@ -71,9 +74,11 @@ document.addEventListener('DOMContentLoaded', function() {
       }).catch(function() { input.disabled = false; });
     };
 
+    var sentCiphertext = null;
     var e2ee = window.ExtrovertRoomE2EE;
     if (e2ee) {
       e2ee.encryptMessage(body).then(function(r) {
+        sentCiphertext = r.ciphertext;
         doPost('proto=mls&ciphertext=' + encodeURIComponent(r.ciphertext));
       }).catch(function(err) {
         alert('Could not encrypt message: ' + ((err && err.message) || 'MLS not ready yet — try again.'));
@@ -149,6 +154,9 @@ document.addEventListener('DOMContentLoaded', function() {
       var e2ee = window.ExtrovertRoomE2EE;
       if (e2ee) {
         e2ee.encryptMessage(newBody).then(function(r) {
+          if (window.ExtrovertMLS && window.ExtrovertMLS.rememberPlaintext) {
+            window.ExtrovertMLS.rememberPlaintext(window.ExtrovertMLS.roomCacheKey(msgId, r.ciphertext), newBody);
+          }
           doEditPost('proto=mls&ciphertext=' + encodeURIComponent(r.ciphertext));
         }).catch(function(err) {
           alert('Could not encrypt edit: ' + ((err && err.message) || 'MLS not ready yet — try again.'));
@@ -169,7 +177,12 @@ document.addEventListener('DOMContentLoaded', function() {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf }
       }).then(function(r) { return r.json(); }).then(function(d) {
-        if (d.ok) loadMessages(cid);
+        if (d.ok) {
+          if (window.ExtrovertMLS && window.ExtrovertMLS.noteMessageDeleted) {
+            window.ExtrovertMLS.noteMessageDeleted('room:' + msgId);
+          }
+          loadMessages(cid);
+        }
       });
       return;
     }
