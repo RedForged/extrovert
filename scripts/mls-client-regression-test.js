@@ -564,6 +564,59 @@ async function scenarioPasswordBackupRestore() {
   console.log('   [OK] password-less sessions keep backing up under the same wrapped key');
 }
 
+async function scenarioCrossDeviceMessageSync() {
+  console.log('6. Reported flow: send on laptop, open on phone — message must arrive decrypted...');
+
+  const PW = 'correct horse battery staple';
+
+  // --- Laptop A ------------------------------------------------------------
+  const idbA = makeMockIndexedDB();
+  const recA = idbA.seed('extrovert_crypto', 1, ['crypto', 'mls_keys', 'mls_groups', 'mls_msg_cache', 'mls_history']);
+  const router = makeRouter();
+
+  const devKey = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  recA.stores.get('crypto').set('deviceKey', devKey);
+  recA.stores.get('mls_keys').set('deviceId', 'devLocal');
+  recA.stores.get('mls_keys').set('credential', {
+    credentialType: 'basic',
+    identity: new TextEncoder().encode('user:1:dev:devLocal'),
+  });
+  router.claimable['2'] = [await wireKp(await genKp('user:2:dev:devPeer'), 'devPeer')];
+
+  const clientA = loadClient(idbA, router);
+  await clientA.init();
+  await clientA.unlockBackup(PW);
+  const blobBeforeSend = router.backup.backup_data;
+
+  const sent = await clientA.encryptDmMessage(2, 'hello from laptop');
+  assert.ok(sent && sent.body);
+  assert.notStrictEqual(router.backup.backup_data, blobBeforeSend,
+    'a send must upload the backup immediately, not on a debounce');
+  recA.stores.get('mls_msg_cache').set('77', 'hello from laptop');
+  await clientA.backupNow();
+
+  // --- Phone C logs in with the password AFTER the send --------------------
+  const idbC = makeMockIndexedDB();
+  idbC.seed('extrovert_crypto', 1, ['crypto', 'mls_keys', 'mls_groups', 'mls_msg_cache', 'mls_history']);
+  const clientC = loadClient(idbC, router);
+  await clientC.init();
+  await clientC.unlockBackup(PW);
+  const recC = idbC.recs.get('extrovert_crypto');
+  assert.strictEqual(recC.stores.get('mls_msg_cache').get('77'), 'hello from laptop',
+    'phone must restore the just-sent message as plaintext');
+
+  // --- Freshness gap: laptop sends again AFTER the phone already synced ----
+  await clientA.encryptDmMessage(2, 'second message');
+  recA.stores.get('mls_msg_cache').set('78', 'second message');
+  await clientA.backupNow();
+  assert.strictEqual(recC.stores.get('mls_msg_cache').get('78'), undefined,
+    'precondition: the later message is not on the phone yet');
+  await clientC.syncBackup();
+  assert.strictEqual(recC.stores.get('mls_msg_cache').get('78'), 'second message',
+    'phone must pull newer backups without re-entering the password');
+  console.log('   [OK] send uploads promptly and the phone syncs newer messages without the password');
+}
+
 async function run() {
   console.log('=== Starting MLS Browser Client Regression Test Suite ===\n');
   const cs = mls.getCiphersuiteFromName('MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519');
@@ -574,6 +627,7 @@ async function run() {
   await scenarioMembershipFixes();
   await scenarioStaleGroupResetRecovery();
   await scenarioPasswordBackupRestore();
+  await scenarioCrossDeviceMessageSync();
 
   console.log('\n=== All MLS Browser Client Regression Assertions PASSED ===');
 }

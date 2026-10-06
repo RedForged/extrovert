@@ -73,6 +73,7 @@
   function cacheMessage(msgId, plaintext) {
     if (!msgId || !plaintext) return Promise.resolve();
     memCache[msgId] = plaintext;
+    if (window.ExtrovertMLS && window.ExtrovertMLS.backupNow) window.ExtrovertMLS.backupNow();
     return openCacheDB().then(function (db) {
       return new Promise(function (resolve) {
         var tx = db.transaction(STORE_MSG_CACHE, 'readwrite');
@@ -148,8 +149,37 @@
     scrollChatBottom();
   }
 
+  var backupSyncOnce = null;
+  function syncBackupOnce() {
+    if (!backupSyncOnce) {
+      backupSyncOnce = (window.ExtrovertMLS && window.ExtrovertMLS.syncBackup)
+        ? window.ExtrovertMLS.syncBackup()
+        : Promise.resolve(null);
+    }
+    return backupSyncOnce;
+  }
+
+  function resolveMsgText(msgId, isOwn, body, decryptFn) {
+    return getCachedMessage(msgId).then(function (cached) {
+      if (cached) return cached;
+      return syncBackupOnce().then(function () {
+        return getCachedMessage(msgId);
+      }).then(function (cached2) {
+        if (cached2) return cached2;
+        if (!window.ExtrovertMLS || !window.ExtrovertMLS.ready() || !body) {
+          return isOwn ? '[sent message]' : '[unable to decrypt]';
+        }
+        return decryptFn().then(function (plain) {
+          cacheMessage(msgId, plain);
+          return plain;
+        }).catch(function () {
+          return isOwn ? '[sent message]' : '[unable to decrypt]';
+        });
+      });
+    });
+  }
+
   function decryptExistingMessages(otherId) {
-    var myId = currentUserId();
     var els = document.querySelectorAll('.chat-msg[data-proto="mls"]');
 
     els.forEach(function (el) {
@@ -161,31 +191,10 @@
 
       if (body && body.indexOf('/uploads/stickers/') === 0) return;
 
-      getCachedMessage(msgId).then(function (cached) {
-        if (cached) {
-          bubble.textContent = cached;
-          return;
-        }
-
-        if (isOwn) {
-          // Sent by us on this or another device; if no cache, leave placeholder or show
-          if (bubble.textContent === '…' || !bubble.textContent.trim()) {
-            bubble.textContent = '[sent message]';
-          }
-          return;
-        }
-
-        if (!window.ExtrovertMLS || !window.ExtrovertMLS.ready()) {
-          return;
-        }
-
-        window.ExtrovertMLS.decryptDmMessage(otherId, body).then(function (plain) {
-          bubble.textContent = plain;
-          cacheMessage(msgId, plain);
-        }).catch(function (err) {
-          console.warn('MLS DM decrypt failed for msg ' + msgId, err);
-          bubble.textContent = '[unable to decrypt]';
-        });
+      resolveMsgText(msgId, isOwn, body, function () {
+        return window.ExtrovertMLS.decryptDmMessage(otherId, body);
+      }).then(function (text) {
+        bubble.textContent = text;
       });
     });
   }
@@ -299,14 +308,15 @@
         var msg = data.message;
         var myId = currentUserId();
 
-        if (String(msg.from_id) === String(myId)) return; // already rendered locally
-        if (String(msg.from_id) !== String(otherId)) return; // belongs to another chat
+        if (String(msg.from_id) !== String(myId) && String(msg.from_id) !== String(otherId)) return;
 
         var container = document.querySelector('.chat-messages');
         if (!container) return;
+        if (container.querySelector('[data-msg-id="' + msg.id + '"]')) return;
 
+        var isOwn = String(msg.from_id) === String(myId);
         var div = document.createElement('div');
-        div.className = 'chat-msg';
+        div.className = isOwn ? 'chat-msg own' : 'chat-msg';
         div.setAttribute('data-msg-id', String(msg.id));
         div.setAttribute('data-proto', 'mls');
 
@@ -326,14 +336,14 @@
 
         if (msg.body && msg.body.indexOf('/uploads/stickers/') === 0) {
           bubble.innerHTML = '<img src="' + esc(msg.body) + '" class="sticker-inline" style="max-width:120px;max-height:120px;vertical-align:middle" alt="sticker">';
-        } else if (window.ExtrovertMLS && window.ExtrovertMLS.ready()) {
-          window.ExtrovertMLS.decryptDmMessage(otherId, msg.body).then(function (plain) {
-            bubble.textContent = plain;
-            cacheMessage(msg.id, plain);
-          }).catch(function () {
-            bubble.textContent = '[unable to decrypt]';
-          });
+          return;
         }
+
+        resolveMsgText(String(msg.id), isOwn, msg.body, function () {
+          return window.ExtrovertMLS.decryptDmMessage(otherId, msg.body);
+        }).then(function (text) {
+          bubble.textContent = text;
+        });
       } catch (err) {}
     });
   }

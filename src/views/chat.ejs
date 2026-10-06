@@ -44,7 +44,7 @@
              data-msg-id="<%= m.id %>"
              data-ts="<%= m.created_at %>"
              data-secure="<%= m.secure ? '1' : '0' %>">
-           <div class="chat-bubble"><% if (m.body && m.body.startsWith('/uploads/stickers/')) { %><img src="<%= m.body %>" class="sticker-inline" style="max-width:120px;max-height:120px;vertical-align:middle" alt="sticker"><% } else { %><%= m.body %><% } %></div>
+           <div class="chat-bubble"><% if (m.body && m.body.startsWith('/uploads/stickers/')) { %><img src="<%= m.body %>" class="sticker-inline" style="max-width:120px;max-height:120px;vertical-align:middle" alt="sticker"><% } else { %><%= m.proto === 'mls' ? '…' : m.body %><% } %></div>
            <div class="muted" style="font-size:0.7rem;padding:0 4px">
              <%= locals.relTime(m.created_at) %>
              <% if (m.edited_at) { %><span class="edited-indicator" title="<%= new Date(m.edited_at).toLocaleString() %>">· edited</span><% } %>

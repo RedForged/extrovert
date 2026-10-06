@@ -304,6 +304,8 @@
       return loadBackupKey();
     }).then(function () {
       return resumeBackupUnlock();
+    }).then(function () {
+      return syncBackup();
     }).catch(function (err) {
       initPromise = null;
       throw err;
@@ -727,6 +729,8 @@
         });
 
         return saveGroupState(gid, sendRes.newState).then(function () {
+          return backupNow();
+        }).then(function () {
           return {
             proto: 'mls',
             group_id: gid,
@@ -1258,6 +1262,8 @@
         });
 
         return saveGroupState(gid, sendRes.newState).then(function () {
+          return backupNow();
+        }).then(function () {
           return {
             proto: 'mls',
             group_id: gid,
@@ -1487,34 +1493,53 @@
     }, 4000);
   }
 
-  function restoreFromPayload(payloadB64) {
-    return decryptWithKey(backupKey, payloadB64).then(function (bytes) {
-      var payload = JSON.parse(new TextDecoder().decode(bytes));
-      var chain = Promise.resolve();
-      var msgIds = Object.keys(payload.msgCache || {});
-      msgIds.forEach(function (id) {
-        chain = chain.then(function () {
+  function importBackupPayload(payload) {
+    var chain = Promise.resolve();
+    var msgIds = Object.keys(payload.msgCache || {});
+    msgIds.forEach(function (id) {
+      chain = chain.then(function () {
+        return idbGet(STORE_MSG_CACHE, String(id)).then(function (existing) {
+          if (existing) return null;
           return idbSet(STORE_MSG_CACHE, String(id), payload.msgCache[id]);
         });
       });
-      var devs = payload.devices || {};
-      Object.keys(devs).forEach(function (devId) {
-        Object.keys(devs[devId]).forEach(function (gid) {
-          chain = chain.then(function () {
-            return idbGet(STORE_MLS_HISTORY, gid).then(function (rows) {
-              var list = (rows || []).filter(function (r) { return r.deviceId !== devId; });
-              list.push({ deviceId: devId, bytes: devs[devId][gid] });
-              return idbSet(STORE_MLS_HISTORY, gid, list);
-            }).then(function () {
-              delete historyStates[gid];
-            });
+    });
+    var devs = payload.devices || {};
+    Object.keys(devs).forEach(function (devId) {
+      Object.keys(devs[devId]).forEach(function (gid) {
+        chain = chain.then(function () {
+          return idbGet(STORE_MLS_HISTORY, gid).then(function (rows) {
+            var list = (rows || []).filter(function (r) { return r.deviceId !== devId; });
+            list.push({ deviceId: devId, bytes: devs[devId][gid] });
+            return idbSet(STORE_MLS_HISTORY, gid, list);
+          }).then(function () {
+            delete historyStates[gid];
           });
         });
       });
-      return chain.then(function () {
-        return { restored: true, messages: msgIds.length };
-      });
     });
+    return chain.then(function () {
+      return { restored: true, messages: msgIds.length };
+    });
+  }
+
+  function restoreFromPayload(payloadB64) {
+    return decryptWithKey(backupKey, payloadB64).then(function (bytes) {
+      return importBackupPayload(JSON.parse(new TextDecoder().decode(bytes)));
+    });
+  }
+
+  function syncBackup() {
+    if (!backupKey || !backupKeyId) return Promise.resolve(null);
+    return fetchBackupBlob().then(function (row) {
+      if (!row) return null;
+      var parsed = null;
+      try { parsed = parseBackupBlob(row.backup_data); } catch (err) { return null; }
+      if (!parsed || parsed.bk_id !== backupKeyId) return null;
+      return decryptWithKey(backupKey, parsed.payload).then(function (b) {
+        return importBackupPayload(JSON.parse(new TextDecoder().decode(b)));
+      }).catch(function () { return null; });
+    }).catch(function () { return null; });
   }
 
   function unlockBackup(password) {
@@ -1594,6 +1619,7 @@
     pollWelcomes: pollAndProcessWelcomes,
     unlockBackup: unlockBackup,
     backupNow: backupNow,
+    syncBackup: syncBackup,
     getDeviceId: function () { return deviceId; },
     ready: function () { return !!(ciphersuiteImpl && deviceId); },
   };
