@@ -7,11 +7,13 @@ regular REST API with a plain HTTP client. Any language works; example bots ship
 
 ## Quick start
 
-1. **An admin creates the bot** (bots can never sign up or log in interactively):
+1. **Create your bot** — anyone can, Discord-style (self-hosted, owned by its creator):
+   use **Settings → Bots** in the web UI (create, issue/revoke tokens, manage the webhook),
+   or the API:
 
    ```bash
    curl -X POST https://extrovert.redforged.eu/api/v1/bots \
-     -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+     -H "Authorization: Bearer $YOUR_TOKEN" -H 'Content-Type: application/json' \
      -d '{"username":"echo_bot","display_name":"Echo Bot"}'
    ```
 
@@ -36,16 +38,20 @@ regular REST API with a plain HTTP client. Any language works; example bots ship
 
 ## Accounts & tokens
 
-- `POST /api/v1/bots` (admin) — create bot + first token. `GET /api/v1/bots` (admin) — list.
-- `POST /api/v1/bots/:id/tokens` (admin) — issue another token; `GET` lists prefixes only;
-  `DELETE /api/v1/bots/:id/tokens/:tokenId` revokes. Every issuance/revocation is audit-logged.
+- Bots are **owned by their creator** (`bot_owner_id`); owners manage their own bots and
+  admins can manage all of them. Creation cap: `EXTV_BOT_LIMIT_PER_USER` per user (default 10).
+- `POST /api/v1/bots` — create bot + first token. `GET /api/v1/bots` — your bots
+  (admins see all).
+- `POST /api/v1/bots/:id/tokens` (owner/admin) — issue another token; `GET` lists prefixes
+  only; `DELETE /api/v1/bots/:id/tokens/:tokenId` revokes. Every issuance/revocation is
+  audit-logged. The **Settings → Bots** page does all of this without curl.
 - `is_bot` is exposed on accounts (`GET /api/v1/accounts/:id`) and shown as a **bot** badge on
   profiles so people always know when they're talking to software.
 
 ## Guardrails
 
-- Bots are **admin-created only** — they can't register or password-login (the login form
-  rejects them exactly like a wrong password).
+- Bots can't register or password-login (the login form rejects them exactly like a wrong
+  password) — they exist only as API-driven accounts.
 - Bot tokens authenticate through the same Bearer pipeline as OAuth/PATs and carry
   `read write follow notifications media.write profile` scopes.
 - Dedicated rate budget: `EXTV_BOT_RATE_LIMIT` requests per minute per token (default 120).

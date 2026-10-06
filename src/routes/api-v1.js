@@ -2119,25 +2119,26 @@ router.get('/notifications/stream', requireApiAuth('notifications'), (req, res) 
 
 // ======== Bots (planned.md F5) ========
 
-function requireAdminApi(req, res) {
-  if (!req.apiUser || !req.apiUser.is_admin) {
-    errorResponse(res, 403, 'Forbidden', 'Admins only.');
-    return false;
-  }
-  return true;
+// Discord-style: any user creates and owns their bots; admins manage all.
+const BOT_LIMIT_PER_USER = Number(process.env.EXTV_BOT_LIMIT_PER_USER) || 10;
+
+function botOwnedByCaller(req, bot) {
+  return !!bot && (bot.bot_owner_id === req.apiUser.id || !!req.apiUser.is_admin);
 }
 
-// Admin-only: create a bot account and its first long-lived token. The raw
-// token is returned exactly once — only its hash is stored.
+// Create a bot account owned by the caller + its first long-lived token. The
+// raw token is returned exactly once — only its hash is stored.
 router.post('/bots', requireApiAuth('write'), (req, res) => {
-  if (!requireAdminApi(req, res)) return;
   const username = String(req.body.username || '').trim();
   const displayName = String(req.body.display_name || '').trim() || username;
   if (!/^[a-zA-Z0-9_]{3,20}$/.test(username)) {
     return errorResponse(res, 400, 'Bad Request', 'username must be 3-20 letters, numbers, or underscores.');
   }
+  if (db.countBotsByOwner(req.apiUser.id) >= BOT_LIMIT_PER_USER) {
+    return errorResponse(res, 403, 'Forbidden', `Bot limit reached (${BOT_LIMIT_PER_USER}).`);
+  }
   if (db.getUserByUsername(username)) return errorResponse(res, 409, 'Conflict', 'That username is taken.');
-  const botId = db.createBotUser({ username, displayName });
+  const botId = db.createBotUser({ username, displayName, ownerId: req.apiUser.id });
   const token = db.generateBotTokenValue();
   const tokenId = db.createBotToken(botId, 'default', token);
   db.auditLog('bot_created', req.apiUser.id, `Bot @${username} (token ${tokenId})`);
@@ -2150,28 +2151,28 @@ router.post('/bots', requireApiAuth('write'), (req, res) => {
   });
 });
 
-// Admin-only: list all bot accounts.
+// List your bots (admins see every bot).
 router.get('/bots', requireApiAuth('read'), (req, res) => {
-  if (!requireAdminApi(req, res)) return;
-  responseEnvelope(res, db.getAllBots().map((b) => serializeAccount(b, req.apiUser.id)));
+  const bots = req.apiUser.is_admin ? db.getAllBots() : db.getBotsByOwner(req.apiUser.id);
+  responseEnvelope(res, bots.map((b) => serializeAccount(b, req.apiUser.id)));
 });
 
-// Admin-only: issue an additional long-lived token for a bot.
+// Issue an additional long-lived token for a bot you own.
 router.post('/bots/:id/tokens', requireApiAuth('write'), (req, res) => {
-  if (!requireAdminApi(req, res)) return;
   const bot = db.getUserById(parseInt(req.params.id, 10));
   if (!bot || !bot.is_bot) return errorResponse(res, 404, 'Not Found', 'Bot not found.');
+  if (!botOwnedByCaller(req, bot)) return errorResponse(res, 403, 'Forbidden', 'Not your bot.');
   const token = db.generateBotTokenValue();
   const tokenId = db.createBotToken(bot.id, String(req.body.name || 'default').slice(0, 60), token);
   db.auditLog('bot_token_issued', req.apiUser.id, `Bot @${bot.username} token ${tokenId}`);
   res.status(201).json({ data: { token, token_id: String(tokenId) } });
 });
 
-// Admin-only: list a bot's tokens (prefixes only, never the secrets).
+// List a bot's tokens (prefixes only, never the secrets).
 router.get('/bots/:id/tokens', requireApiAuth('read'), (req, res) => {
-  if (!requireAdminApi(req, res)) return;
   const bot = db.getUserById(parseInt(req.params.id, 10));
   if (!bot || !bot.is_bot) return errorResponse(res, 404, 'Not Found', 'Bot not found.');
+  if (!botOwnedByCaller(req, bot)) return errorResponse(res, 403, 'Forbidden', 'Not your bot.');
   responseEnvelope(res, db.listBotTokens(bot.id).map((t) => ({
     id: String(t.id),
     name: t.name,
@@ -2181,11 +2182,11 @@ router.get('/bots/:id/tokens', requireApiAuth('read'), (req, res) => {
   })));
 });
 
-// Admin-only: revoke a bot token.
+// Revoke a bot token.
 router.delete('/bots/:id/tokens/:tokenId', requireApiAuth('write'), (req, res) => {
-  if (!requireAdminApi(req, res)) return;
   const bot = db.getUserById(parseInt(req.params.id, 10));
   if (!bot || !bot.is_bot) return errorResponse(res, 404, 'Not Found', 'Bot not found.');
+  if (!botOwnedByCaller(req, bot)) return errorResponse(res, 403, 'Forbidden', 'Not your bot.');
   const r = db.revokeBotToken(bot.id, parseInt(req.params.tokenId, 10));
   if (!r.changes) return errorResponse(res, 404, 'Not Found', 'Token not found or already revoked.');
   db.auditLog('bot_token_revoked', req.apiUser.id, `Bot @${bot.username} token ${req.params.tokenId}`);

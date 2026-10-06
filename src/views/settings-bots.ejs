@@ -1,0 +1,93 @@
+<%- include('partials/header') %>
+  <div style="max-width:780px;margin:0 auto">
+    <h2>Bots</h2>
+    <p class="muted" style="margin-top:-4px">
+      Discord-style bots, self-hosted: anyone can create one. A bot is an account its
+      owner drives over the plain REST API — post, reply, follow, read mentions — with a
+      long-lived token. See the <a href="/docs">bot guide</a> and the example bots in
+      <code>examples/</code>.
+    </p>
+
+    <% if (error) { %><div class="flash err"><span><%= error %></span></div><% } %>
+
+    <% if (createdToken) { %>
+      <div class="card" style="border-color:var(--primary)">
+        <h3 style="margin:0 0 6px">Token for @<%= createdBotUsername %> — shown once</h3>
+        <p class="muted" style="margin:0 0 8px;font-size:var(--fs-sm)">Store it now; only its hash is kept. Revoke and reissue if it leaks.</p>
+        <input type="text" readonly value="<%= createdToken %>" onclick="this.select()" style="font-family:monospace">
+      </div>
+    <% } %>
+
+    <% if (newSecret) { %>
+      <div class="card" style="border-color:var(--primary)">
+        <h3 style="margin:0 0 6px">Webhook secret for @<%= secretBotUsername %> — shown once</h3>
+        <p class="muted" style="margin:0 0 8px;font-size:var(--fs-sm)">Verify <code>X-Webhook-Signature: hex(HMAC-SHA256(secret, raw_body))</code> on every delivery.</p>
+        <input type="text" readonly value="<%= newSecret %>" onclick="this.select()" style="font-family:monospace">
+      </div>
+    <% } %>
+
+    <div class="card">
+      <h3 style="margin:0 0 10px">Create a bot</h3>
+      <form method="post" action="/settings/bots">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <label for="bot-username">Username</label>
+        <input type="text" id="bot-username" name="username" required pattern="[A-Za-z0-9_]{3,20}" placeholder="echo_bot">
+        <label for="bot-display">Display name</label>
+        <input type="text" id="bot-display" name="display_name" placeholder="Echo Bot">
+        <button class="btn" type="submit" style="margin-top:14px">Create bot</button>
+        <span class="muted" style="font-size:var(--fs-xs);margin-left:8px"><%= bots.length %> / <%= limit %></span>
+      </form>
+    </div>
+
+    <% if (bots.length === 0) { %>
+      <div class="card empty-state"><p>No bots yet — create your first above.</p></div>
+    <% } %>
+
+    <% bots.forEach(function(b) { %>
+      <div class="card">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <h3 style="margin:0"><%= b.display_name %></h3>
+          <span class="badge" title="Automated account">bot</span>
+          <span class="muted">@<%= b.username %></span>
+          <a class="btn ghost small" href="/u/<%= b.username %>" style="margin-left:auto">View profile</a>
+        </div>
+
+        <h4 style="margin:14px 0 6px;font-size:var(--fs-sm)">Tokens</h4>
+        <% if (b.tokens.length === 0) { %><p class="muted" style="margin:0 0 8px;font-size:var(--fs-sm)">No tokens.</p><% } %>
+        <% b.tokens.forEach(function(t) { %>
+          <div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:var(--fs-sm)">
+            <code><%= t.token_prefix %></code>
+            <span class="muted"><%= t.name %></span>
+            <% if (t.revoked_at) { %><span class="badge">revoked</span><% } else { %>
+              <form method="post" action="/settings/bots/<%= b.id %>/tokens/<%= t.id %>/revoke" style="margin-left:auto">
+                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                <button class="btn ghost danger small">Revoke</button>
+              </form>
+            <% } %>
+          </div>
+        <% }) %>
+        <form method="post" action="/settings/bots/<%= b.id %>/tokens" style="display:flex;gap:8px;margin-top:8px">
+          <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+          <input type="text" name="name" placeholder="Token name (optional)" style="flex:1">
+          <button class="btn ghost small" type="submit">Issue token</button>
+        </form>
+
+        <h4 style="margin:16px 0 6px;font-size:var(--fs-sm)">Webhook</h4>
+        <% if (b.webhook) { %>
+          <p class="muted" style="margin:0 0 8px;font-size:var(--fs-sm)">Delivering to <code><%= b.webhook.url %></code> — verify <code>X-Webhook-Signature</code> (HMAC-SHA256).</p>
+        <% } %>
+        <form method="post" action="/settings/bots/<%= b.id %>/webhook" style="display:flex;gap:8px">
+          <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+          <input type="url" name="url" placeholder="https://your.bot/hook" value="<%= b.webhook ? b.webhook.url : '' %>" style="flex:1">
+          <button class="btn ghost small" type="submit"><%= b.webhook ? 'Update' : 'Register' %></button>
+        </form>
+        <% if (b.webhook) { %>
+          <form method="post" action="/settings/bots/<%= b.id %>/webhook/rotate" style="margin-top:8px">
+            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+            <button class="btn ghost small">Rotate signing secret</button>
+          </form>
+        <% } %>
+      </div>
+    <% }) %>
+  </div>
+<%- include('partials/footer') %>

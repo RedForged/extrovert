@@ -411,10 +411,20 @@ describe('Extrovert REST API', () => {
       assert.strictEqual(d.account.is_bot, true);
     });
 
-    it('non-admin cannot create bots', async () => {
+    it('any user can create and own bots', async () => {
       const resp = await fetchJson('/api/v1/bots', {
         method: 'POST', token: bobToken,
-        body: { username: 'evil_bot' },
+        body: { username: 'helper_bot', display_name: 'Helper' },
+      });
+      assert.strictEqual(resp.status, 201);
+      const d = (await resp.json()).data;
+      assert.strictEqual(d.account.is_bot, true);
+    });
+
+    it('cannot manage another users bot', async () => {
+      const resp = await fetchJson(`/api/v1/bots/${botId}/tokens`, {
+        method: 'POST', token: bobToken,
+        body: { name: 'stolen' },
       });
       assert.strictEqual(resp.status, 403);
     });

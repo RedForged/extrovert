@@ -72,6 +72,7 @@ async function main() {
     ['/chats/bob', 'chat thread'],
     ['/inbox', 'inbox'],
     ['/settings', 'settings'],
+    ['/settings/bots', 'settings bots'],
     ['/u/alice', 'own profile'],
     ['/u/alice/edit', 'profile edit'],
     ['/u/alice/followers', 'followers list'],

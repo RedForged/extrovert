@@ -441,4 +441,96 @@ router.post('/security/passkeys/:id/delete', (req, res) => {
   res.redirect('/settings/security');
 });
 
+// ---------- Bots (Discord-style, planned.md F5) ----------
+const BOT_LIMIT_PER_USER = Number(process.env.EXTV_BOT_LIMIT_PER_USER) || 10;
+
+function ownBot(user, id) {
+  const bot = db.getUserById(Number(id));
+  if (!bot || !bot.is_bot) return null;
+  return (bot.bot_owner_id === user.id || user.is_admin) ? bot : null;
+}
+
+function botViewState(user, extra = {}) {
+  return Object.assign({
+    bots: db.getBotsByOwner(user.id).map((b) => ({
+      ...b,
+      tokens: db.listBotTokens(b.id),
+      webhook: db.getBotWebhook(b.id),
+    })),
+    limit: BOT_LIMIT_PER_USER,
+    createdToken: null,
+    createdBotUsername: null,
+    newSecret: null,
+    secretBotUsername: null,
+    error: null,
+  }, extra);
+}
+
+router.get('/bots', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.redirect('/login');
+  res.render('settings-bots', botViewState(user, { error: req.query.error || null }));
+});
+
+router.post('/bots', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.redirect('/login');
+  const username = String(req.body.username || '').trim();
+  const displayName = String(req.body.display_name || '').trim() || username;
+  const fail = (msg) => res.redirect('/settings/bots?error=' + encodeURIComponent(msg));
+  if (!/^[a-zA-Z0-9_]{3,20}$/.test(username)) return fail('Username must be 3-20 letters, numbers, or underscores.');
+  if (db.countBotsByOwner(user.id) >= BOT_LIMIT_PER_USER) return fail('Bot limit reached (' + BOT_LIMIT_PER_USER + ').');
+  if (db.getUserByUsername(username)) return fail('That username is taken.');
+  const botId = db.createBotUser({ username, displayName, ownerId: user.id });
+  const token = db.generateBotTokenValue();
+  const tokenId = db.createBotToken(botId, 'default', token);
+  db.auditLog('bot_created', user.id, `Bot @${username} (token ${tokenId})`);
+  res.render('settings-bots', botViewState(user, { createdToken: token, createdBotUsername: username }));
+});
+
+router.post('/bots/:id/tokens', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.redirect('/login');
+  const bot = ownBot(user, req.params.id);
+  if (!bot) return res.redirect('/settings/bots?error=' + encodeURIComponent('Bot not found.'));
+  const token = db.generateBotTokenValue();
+  const tokenId = db.createBotToken(bot.id, String(req.body.name || 'default').slice(0, 60), token);
+  db.auditLog('bot_token_issued', user.id, `Bot @${bot.username} token ${tokenId}`);
+  res.render('settings-bots', botViewState(user, { createdToken: token, createdBotUsername: bot.username }));
+});
+
+router.post('/bots/:id/tokens/:tokenId/revoke', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.redirect('/login');
+  const bot = ownBot(user, req.params.id);
+  if (!bot) return res.redirect('/settings/bots?error=' + encodeURIComponent('Bot not found.'));
+  db.revokeBotToken(bot.id, Number(req.params.tokenId));
+  db.auditLog('bot_token_revoked', user.id, `Bot @${bot.username} token ${req.params.tokenId}`);
+  res.redirect('/settings/bots');
+});
+
+router.post('/bots/:id/webhook', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.redirect('/login');
+  const bot = ownBot(user, req.params.id);
+  const fail = (msg) => res.redirect('/settings/bots?error=' + encodeURIComponent(msg));
+  if (!bot) return fail('Bot not found.');
+  const url = String(req.body.url || '').trim();
+  if (!/^https?:\/\/.+/i.test(url) || url.length > 500) return fail('Webhook URL must be a valid http(s) URL.');
+  const secret = db.generateBotWebhookSecret();
+  db.setBotWebhook(bot.id, url, secret);
+  db.auditLog('bot_webhook_set', user.id, `Bot @${bot.username} ${url}`);
+  res.render('settings-bots', botViewState(user, { newSecret: secret, secretBotUsername: bot.username }));
+});
+
+router.post('/bots/:id/webhook/rotate', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.redirect('/login');
+  const bot = ownBot(user, req.params.id);
+  if (!bot) return res.redirect('/settings/bots?error=' + encodeURIComponent('Bot not found.'));
+  const secret = db.rotateBotWebhookSecret(bot.id);
+  db.auditLog('bot_webhook_rotated', user.id, `Bot @${bot.username}`);
+  res.render('settings-bots', botViewState(user, { newSecret: secret, secretBotUsername: bot.username }));
+});
+
 module.exports = router;

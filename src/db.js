@@ -700,6 +700,7 @@ try { db.exec(`CREATE INDEX IF NOT EXISTS idx_pat_token ON personal_access_token
 try { db.exec(`CREATE INDEX IF NOT EXISTS idx_pat_user ON personal_access_tokens(user_id)`); } catch {}
 // ---------- Bots (planned.md F5) ----------
 try { db.exec(`ALTER TABLE users ADD COLUMN is_bot INTEGER NOT NULL DEFAULT 0`); } catch {}
+try { db.exec(`ALTER TABLE users ADD COLUMN bot_owner_id INTEGER`); } catch {}
 try {
   db.exec(`CREATE TABLE IF NOT EXISTS bot_tokens (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2749,16 +2750,24 @@ function generateBotTokenValue() {
 
 // Bots are users with no usable password: the random hash never verifies and
 // login additionally rejects is_bot outright. Bots authenticate only with
-// long-lived bot tokens.
-function createBotUser({ username, displayName }) {
+// long-lived bot tokens. Every bot is owned by the user who created it.
+function createBotUser({ username, displayName, ownerId }) {
   const res = db.prepare(
-    `INSERT INTO users (username, password_hash, display_name, created_at, is_bot) VALUES (?,?,?,?,1)`
-  ).run(username, '!' + crypto.randomBytes(24).toString('hex'), displayName || username, Date.now());
+    `INSERT INTO users (username, password_hash, display_name, created_at, is_bot, bot_owner_id) VALUES (?,?,?,?,1,?)`
+  ).run(username, '!' + crypto.randomBytes(24).toString('hex'), displayName || username, Date.now(), ownerId || null);
   return res.lastInsertRowid;
 }
 
 function getAllBots() {
   return db.prepare(`SELECT * FROM users WHERE is_bot = 1 ORDER BY created_at DESC`).all();
+}
+
+function getBotsByOwner(ownerId) {
+  return db.prepare(`SELECT * FROM users WHERE is_bot = 1 AND bot_owner_id = ? ORDER BY created_at DESC`).all(ownerId);
+}
+
+function countBotsByOwner(ownerId) {
+  return db.prepare(`SELECT COUNT(*) AS count FROM users WHERE is_bot = 1 AND bot_owner_id = ?`).get(ownerId).count;
 }
 
 function createBotToken(userId, name, token) {
@@ -3245,7 +3254,7 @@ module.exports = {
   // notifications
   createNotification, notifyMentions, getNotifications, countUnreadNotifications, markNotificationsRead,
   // bots (planned.md F5)
-  createBotUser, getAllBots, createBotToken, getBotTokenByHash, listBotTokens, revokeBotToken,
+  createBotUser, getAllBots, getBotsByOwner, countBotsByOwner, createBotToken, getBotTokenByHash, listBotTokens, revokeBotToken,
   generateBotTokenValue, setBotWebhook, getBotWebhook, generateBotWebhookSecret, rotateBotWebhookSecret,
   getMentionsFeed,
   // push subscriptions
