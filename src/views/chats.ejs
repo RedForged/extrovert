@@ -11,6 +11,7 @@
       <a class="btn" href="/discover"><%- include('partials/icon', { name: 'search', size: 15 }) %> Find people to talk to</a>
     </div>
   <% } else { %>
+    <div id="chats-list">
     <% conversations.forEach(function(c){ %>
       <a href="/chats/<%= c.username %>" class="card conv-row" style="text-decoration:none">
         <% if (c.avatar) { %><img src="<%= c.avatar %>" alt="" class="avatar-img"><% } else { %><div class="avatar"><%= (c.display_name || '?').slice(0,1).toUpperCase() %></div><% } %>
@@ -29,5 +30,7 @@
         <% if (c.unread > 0) { %><sup class="badge"><%= c.unread %></sup><% } %>
       </a>
     <% }) %>
+    </div>
   <% } %>
+  <script src="/static/chats.js?v=1" defer></script>
 <%- include('partials/footer') %>

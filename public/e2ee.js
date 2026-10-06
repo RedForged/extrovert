@@ -73,8 +73,17 @@
         var req = tx.objectStore(STORE_MSG_CACHE).get(key);
         req.onsuccess = function () {
           var res = req.result || null;
-          if (res) memCache[key] = res;
-          resolve(res);
+          if (res) {
+            memCache[key] = res;
+            return resolve(res);
+          }
+          var legacy = tx.objectStore(STORE_MSG_CACHE).get(String(msgId));
+          legacy.onsuccess = function () {
+            var old = legacy.result || null;
+            if (old) memCache[key] = old;
+            resolve(old);
+          };
+          legacy.onerror = function () { resolve(null); };
         };
         req.onerror = function () { resolve(null); };
       });
@@ -150,7 +159,7 @@
     data.setAttribute('data-action', '/chats/' + encodeURIComponent(otherUsername) + '/edit/' + encodeURIComponent(msgId));
     timeEl.appendChild(editBtn);
     timeEl.appendChild(delBtn);
-    timeEl.parentNode.appendChild(data);
+    timeEl.appendChild(data);
   }
 
   function ensureEditedIndicator(msgEl) {
@@ -188,12 +197,12 @@
     time.className = 'muted';
     time.style.cssText = 'font-size:0.7rem;padding:0 4px';
     time.textContent = window.relTime ? window.relTime(msg.created_at || Date.now()) : new Date(msg.created_at || Date.now()).toLocaleString();
+    div.appendChild(time);
 
     if (msg.id) {
       appendMsgControls(time, msg.id, otherUsername);
     }
 
-    div.appendChild(time);
     container.appendChild(div);
     scrollChatBottom();
   }
