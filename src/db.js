@@ -1012,6 +1012,17 @@ function setCustomization(userId, html, css) {
 // ---------- notifications ----------
 const { notify } = require('./notif-broadcaster');
 
+// Notify users @mentioned in a post or comment body. Mentions are matched
+// case-insensitively; the author never notifies themselves.
+function notifyMentions(body, actorId, postId = null) {
+  const { parseMentions } = require('./markdown');
+  for (const name of parseMentions(body)) {
+    const u = db.prepare(`SELECT id FROM users WHERE username = ? COLLATE NOCASE`).get(name);
+    if (!u || u.id === actorId) continue;
+    createNotification({ userId: u.id, type: 'mention', actorId, postId });
+  }
+}
+
 function createNotification({ userId, type, actorId, postId }) {
   if (userId === actorId && type !== 'security' && type !== 'login') return;
   const now = Date.now();
@@ -3129,7 +3140,7 @@ module.exports = {
   // customization
   getCustomization, setCustomization,
   // notifications
-  createNotification, getNotifications, countUnreadNotifications, markNotificationsRead,
+  createNotification, notifyMentions, getNotifications, countUnreadNotifications, markNotificationsRead,
   // push subscriptions
   addPushSubscription, getPushSubscriptions, removePushSubscription, deletePushSubscriptionsByEndpoint,
   // user lists

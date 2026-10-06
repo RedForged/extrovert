@@ -7,6 +7,18 @@ const { foafIds, friendIds } = require('../network');
 
 const router = express.Router();
 
+// JSON username suggestions for @mention autocomplete in the composer.
+router.get('/search/suggest', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.status(401).json({ error: 'not logged in' });
+  const q = String(req.query.q || '').trim();
+  if (!q) return res.json({ users: [] });
+  const users = searchUsers(q, { excludeId: user.id, limit: 6 });
+  res.json({
+    users: users.map(u => ({ username: u.username, display_name: u.display_name, avatar: u.avatar || null })),
+  });
+});
+
 // Feed (home).
 router.get('/', (req, res) => {
   const user = res.locals.currentUser;

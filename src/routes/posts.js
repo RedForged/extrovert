@@ -16,7 +16,7 @@ function unlinkPostMedia(post) {
 }
 
 const {
-  db, createPost, getPostById, getDisplayPost, getUserById,
+  db, createPost, notifyMentions, getPostById, getDisplayPost, getUserById,
   toggleLike, addComment, commentsForPost, hasLiked, hasShared,
   sharePost, hasReposted, recordFollowFromPost, isFollowing,
   createNotification, deletePost,
@@ -82,16 +82,18 @@ router.post('/', upload.single('media'), (req, res) => {
     mediaPath = '/uploads/' + req.file.filename;
   }
 
+  let postId = null;
   if (type === 'text') {
     if (!body) return res.redirect(back(req, '/compose'));
-    createPost({ userId: user.id, type: 'text', body });
+    postId = createPost({ userId: user.id, type: 'text', body });
   } else if (type === 'photo' && mediaPath) {
-    createPost({ userId: user.id, type: 'photo', body, mediaPath });
+    postId = createPost({ userId: user.id, type: 'photo', body, mediaPath });
   } else if (type === 'video' && mediaPath) {
-    createPost({ userId: user.id, type: 'video', body, mediaPath });
+    postId = createPost({ userId: user.id, type: 'video', body, mediaPath });
   } else {
     return res.redirect(back(req, '/compose'));
   }
+  notifyMentions(body, user.id, postId);
   res.redirect(back(req, '/'));
 });
 
@@ -132,6 +134,7 @@ router.post('/:id/comment', (req, res) => {
   const body = String(req.body.body || '').trim();
   if (body) {
     const commentId = addComment(ctx.user.id, ctx.content.id, body.slice(0, 1000));
+    notifyMentions(body, ctx.user.id, ctx.content.id);
     if (ctx.content.user_id !== ctx.user.id) {
       createNotification({ userId: ctx.content.user_id, type: 'comment', actorId: ctx.user.id, postId: ctx.content.id });
     }

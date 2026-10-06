@@ -204,6 +204,25 @@ function run() {
   assert(renderMarkdown('') === '', 'empty string returns empty');
   assert(renderMarkdown(null) === '', 'null returns empty');
 
+  console.log('\nTEST 11: @mention parsing & linkification');
+  const { parseMentions } = require('../src/markdown');
+  const m1 = parseMentions('hi @alice and @bob');
+  assert(m1.length === 2 && m1[0] === 'alice' && m1[1] === 'bob', 'parses multiple mentions');
+  const m2 = parseMentions('@Alice and @alice');
+  assert(m2.length === 1 && m2[0] === 'Alice', 'dedupes mentions case-insensitively');
+  assert(parseMentions('mail me at foo@bar.com').length === 0, 'ignores email addresses');
+  assert(parseMentions('path /@name and single @x').length === 0, 'ignores path refs and short names');
+  assert(parseMentions('no mentions here').length === 0, 'no mentions yields empty');
+
+  const mentionHtml = renderMarkdown('hey @alice and @bob_1!');
+  assert(/<a href="\/u\/alice"[^>]*>@alice<\/a>/.test(mentionHtml), 'mention links to the profile');
+  assert(/<a href="\/u\/bob_1"[^>]*>@bob_1<\/a>/.test(mentionHtml), 'mention with underscore links');
+  assert(!/target="_blank"/.test(mentionHtml), 'mention links stay in the same tab');
+  const mixed = renderMarkdown('mail foo@bar.com or read `@alice`');
+  assert(!/href="\/u\/(bar|alice)"/.test(mixed), 'emails and code spans never linkify');
+  const mentionXss = renderMarkdown('@alice<script>alert(1)</script>');
+  assert(!/<script/i.test(mentionXss), 'mention rendering stays XSS-safe');
+
   console.log(process.exitCode ? '\nSOME TESTS FAILED' : '\nALL TESTS PASSED');
 }
 

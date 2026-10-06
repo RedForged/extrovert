@@ -48,7 +48,7 @@ const bobAppId = db.createOAuthApp({
 
 const bobToken = crypto.randomBytes(32).toString('hex');
 const bobRefresh = crypto.randomBytes(32).toString('hex');
-db.createOAuthToken(bobToken, bobRefresh, bobAppId, bobId, 'read write follow', Date.now() + 86400000);
+db.createOAuthToken(bobToken, bobRefresh, bobAppId, bobId, 'read write follow notifications', Date.now() + 86400000);
 
 // Create a limited-scope (read-only) token
 const readonlyToken = crypto.randomBytes(32).toString('hex');
@@ -358,6 +358,27 @@ describe('Extrovert REST API', () => {
       assert.strictEqual(resp.status, 200);
       const json = await resp.json();
       assert(Array.isArray(json.data));
+    });
+
+    it('delivers mention notifications for @mentions in posts', async () => {
+      const resp = await fetchJson('/api/v1/statuses', {
+        method: 'POST', token: aliceToken,
+        body: { type: 'text', body: 'ping @bob from the mention test' },
+      });
+      assert.strictEqual(resp.status, 201);
+      const notif = await fetchJson('/api/v1/notifications', { token: bobToken });
+      assert.strictEqual(notif.status, 200);
+      const json = await notif.json();
+      assert(json.data.some(n => n.type === 'mention'), 'mentioned user must be notified');
+
+      const selfResp = await fetchJson('/api/v1/statuses', {
+        method: 'POST', token: aliceToken,
+        body: { type: 'text', body: 'note to @alice about herself' },
+      });
+      assert.strictEqual(selfResp.status, 201);
+      const self = await fetchJson('/api/v1/notifications', { token: aliceToken });
+      const selfJson = await self.json();
+      assert(!selfJson.data.some(n => n.type === 'mention'), 'self-mentions must not notify');
     });
 
     it('POST /notifications/clear marks as read', async () => {

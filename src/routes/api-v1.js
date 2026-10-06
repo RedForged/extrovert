@@ -1758,6 +1758,7 @@ router.post('/statuses', requireApiAuth('write'), upload.single('media'), (req, 
 
   const post = db.getPostById(postId);
   const author = db.getUserById(post.user_id);
+  db.notifyMentions(post.body, req.apiUser.id, postId);
 
   const response = serializePost(post, author, req.apiUser.id);
   const clientId = req.body.client_id || req.body.nonce || req.body.client_tx_id;
@@ -1904,6 +1905,7 @@ router.post(['/statuses/:id/comment', '/statuses/:id/comments'], requireApiAuth(
   const body = String(req.body.body || '').trim();
   if (!body) return errorResponse(res, 400, 'Bad Request', 'body is required.');
   const commentId = db.addComment(req.apiUser.id, post.id, body.slice(0, 1000));
+  db.notifyMentions(body, req.apiUser.id, post.id);
   if (post.user_id !== req.apiUser.id) {
     db.createNotification({ userId: post.user_id, type: 'comment', actorId: req.apiUser.id, postId: post.id });
   }

@@ -20,6 +20,7 @@
           <% if (n.type === 'share') { %><%- include('partials/icon', { name: 'share', size: 18 }) %><% } %>
           <% if (n.type === 'repost') { %><%- include('partials/icon', { name: 'repost', size: 18 }) %><% } %>
           <% if (n.type === 'message') { %><%- include('partials/icon', { name: 'chat', size: 18 }) %><% } %>
+          <% if (n.type === 'mention') { %><%- include('partials/icon', { name: 'at', size: 18 }) %><% } %>
           <% if (n.type === 'missed_call') { %><%- include('partials/icon', { name: 'phone', size: 18 }) %><% } %>
           <% if (n.type === 'security') { %><%- include('partials/icon', { name: 'shield', size: 18 }) %><% } %>
         </div>
@@ -34,6 +35,7 @@
             <% if (n.type === 'share') { %>shared your <a href="/posts/<%= n.post_id %>">post</a><% } %>
             <% if (n.type === 'repost') { %>reposted your <a href="/posts/<%= n.post_id %>">post</a><% } %>
             <% if (n.type === 'message') { %>sent you a <a href="/chats/<%= n.actor_username %>">message</a><% } %>
+            <% if (n.type === 'mention') { %>mentioned you in a <a href="/posts/<%= n.post_id %>">post</a><% } %>
             <% if (n.type === 'missed_call') { %>called you — <a href="/chats/<%= n.actor_username %>?call=1">call back</a><% } %>
           <% } %>
           <div class="muted" style="font-size:0.78rem"><%= locals.relTime(n.created_at) %></div>
