@@ -222,8 +222,16 @@
         emit('new_dm', msg);
         break;
 
+      case 'edit_dm':
+        emit('edit_dm', msg);
+        break;
+
       case 'delete_dm':
         emit('delete_dm', msg);
+        break;
+
+      case 'gateway_event':
+        emit('gateway_event', msg);
         break;
 
       case 'error':

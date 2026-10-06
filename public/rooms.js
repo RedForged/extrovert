@@ -11,6 +11,19 @@ document.addEventListener('DOMContentLoaded', function() {
 
   loadMessages(msgArea.dataset.channelId);
 
+  if (window.ExtrovertCall && window.ExtrovertCall.on) {
+    if (window.ExtrovertCall.connect) window.ExtrovertCall.connect();
+    window.ExtrovertCall.on('gateway_event', function (ev) {
+      try {
+        if (!ev || ev.topic !== 'room:' + roomId()) return;
+        if (ev.event !== 'message_create' && ev.event !== 'message_update' && ev.event !== 'message_delete') return;
+        var cid = sendForm ? sendForm.dataset.channelId : msgArea.dataset.channelId;
+        if (ev.data && ev.data.channel_id && String(ev.data.channel_id) !== String(cid)) return;
+        loadMessages(cid);
+      } catch (e) {}
+    });
+  }
+
   channelList.addEventListener('click', function(e) {
     var link = e.target.closest('.room-channel');
     if (!link) return;

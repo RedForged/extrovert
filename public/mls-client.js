@@ -303,6 +303,8 @@
     }).then(function () {
       return loadBackupKey();
     }).then(function () {
+      return loadDeletedMsgIds();
+    }).then(function () {
       return resumeBackupUnlock();
     }).then(function () {
       return syncBackup();
@@ -1296,6 +1298,7 @@
   var PBKDF2_ITERATIONS = 310000;
   var BACKUP_SESSION_KEY = 'extrovert_pending_backup';
   var historyStates = {};
+  var deletedMsgIds = [];
   var backupKey = null;
   var backupKeyId = null;
   var backupKek = null;
@@ -1313,6 +1316,38 @@
         return computeBackupKeyId();
       });
     }).catch(function () { return null; });
+  }
+
+  function loadDeletedMsgIds() {
+    return idbGet(STORE_CRYPTO, 'deletedMsgIds').then(function (arr) {
+      if (Array.isArray(arr)) deletedMsgIds = arr;
+    }).catch(function () {});
+  }
+
+  function isDeletedKey(key) {
+    var k = String(key);
+    for (var i = 0; i < deletedMsgIds.length; i++) {
+      if (k === deletedMsgIds[i] || k.indexOf(deletedMsgIds[i] + ':') === 0) return true;
+    }
+    return false;
+  }
+
+  function noteMessageDeleted(msgId) {
+    var id = String(msgId);
+    if (deletedMsgIds.indexOf(id) === -1) deletedMsgIds.push(id);
+    return idbSet(STORE_CRYPTO, 'deletedMsgIds', deletedMsgIds).then(function () {
+      return idbGetAll(STORE_MSG_CACHE);
+    }).then(function (rows) {
+      var chain = Promise.resolve();
+      (rows || []).forEach(function (row) {
+        if (isDeletedKey(row.key)) {
+          chain = chain.then(function () { return idbDelete(STORE_MSG_CACHE, String(row.key)); });
+        }
+      });
+      return chain;
+    }).then(function () {
+      return backupNow();
+    }).catch(function () {});
   }
 
   function computeBackupKeyId() {
@@ -1399,8 +1434,11 @@
           });
           return chain.then(function () {
             var msgCache = {};
-            cacheRows.forEach(function (row) { msgCache[String(row.key)] = row.value; });
-            return { updatedAt: Date.now(), devices: devices, msgCache: msgCache };
+            cacheRows.forEach(function (row) {
+              if (isDeletedKey(row.key)) return;
+              msgCache[String(row.key)] = row.value;
+            });
+            return { updatedAt: Date.now(), devices: devices, msgCache: msgCache, deleted: deletedMsgIds.slice() };
           });
         });
       });
@@ -1439,10 +1477,20 @@
 
         return serverPayloadP.then(function (serverPayload) {
           return packBackupPayload().then(function (localPayload) {
+            var deleted = {};
+            ((serverPayload && serverPayload.deleted) || []).forEach(function (id) { deleted[String(id)] = true; });
+            (localPayload.deleted || []).forEach(function (id) { deleted[String(id)] = true; });
+            deletedMsgIds = Object.keys(deleted);
+            var merged = Object.assign({}, serverPayload ? serverPayload.msgCache : {}, localPayload.msgCache);
+            var msgCache = {};
+            Object.keys(merged).forEach(function (k) {
+              if (!isDeletedKey(k)) msgCache[k] = merged[k];
+            });
             var payload = {
               updatedAt: Date.now(),
               devices: Object.assign({}, serverPayload ? serverPayload.devices : {}),
-              msgCache: Object.assign({}, serverPayload ? serverPayload.msgCache : {}, localPayload.msgCache)
+              msgCache: msgCache,
+              deleted: deletedMsgIds.slice(),
             };
             payload.devices[deviceId] = localPayload.devices[deviceId] || {};
             return encryptWithKey(backupKey, new TextEncoder().encode(JSON.stringify(payload)));
@@ -1494,10 +1542,27 @@
   }
 
   function importBackupPayload(payload) {
-    var chain = Promise.resolve();
+    var deleted = {};
+    deletedMsgIds.forEach(function (id) { deleted[String(id)] = true; });
+    (payload.deleted || []).forEach(function (id) { deleted[String(id)] = true; });
+    deletedMsgIds = Object.keys(deleted);
+
+    var chain = idbSet(STORE_CRYPTO, 'deletedMsgIds', deletedMsgIds).then(function () {
+      return idbGetAll(STORE_MSG_CACHE);
+    }).then(function (rows) {
+      var inner = Promise.resolve();
+      (rows || []).forEach(function (row) {
+        if (isDeletedKey(row.key)) {
+          inner = inner.then(function () { return idbDelete(STORE_MSG_CACHE, String(row.key)); });
+        }
+      });
+      return inner;
+    });
+
     var msgIds = Object.keys(payload.msgCache || {});
     msgIds.forEach(function (id) {
       chain = chain.then(function () {
+        if (isDeletedKey(id)) return null;
         return idbGet(STORE_MSG_CACHE, String(id)).then(function (existing) {
           if (existing) return null;
           return idbSet(STORE_MSG_CACHE, String(id), payload.msgCache[id]);
@@ -1620,6 +1685,7 @@
     unlockBackup: unlockBackup,
     backupNow: backupNow,
     syncBackup: syncBackup,
+    noteMessageDeleted: noteMessageDeleted,
     getDeviceId: function () { return deviceId; },
     ready: function () { return !!(ciphersuiteImpl && deviceId); },
   };

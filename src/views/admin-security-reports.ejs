@@ -1,4 +1,4 @@
-<%- include('../partials/header') %>
+<%- include('partials/header') %>
   <div style="max-width:820px;margin:0 auto">
     <h2>Admin · Security reports (<%= reports.filter(r => r.status === 'open').length %> open)</h2>
     <p class="muted" style="margin-top:-6px">Private responsible-disclosure submissions from the public <a href="/security">/security</a> page. Never shown publicly.</p>
@@ -31,4 +31,4 @@
       <% }); %>
     <% } %>
   </div>
-<%- include('../partials/footer') %>
+<%- include('partials/footer') %>

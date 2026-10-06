@@ -23,6 +23,7 @@ const router = express.Router();
 
 // Native clients (OAuth Bearer) use the same E2EE routes as the web app.
 const { bearerOrSession } = require('../bearer-auth');
+const { broadcastGatewayEvent } = require('../webrtc-signaling');
 router.use(bearerOrSession);
 
 const { getVoiceChannelMembers, pushRoomSessionKeyToRecipient } = require('../webrtc-signaling');
@@ -402,7 +403,19 @@ router.post('/:id/channels/:cid/send', (req, res) => {
     }
   }
   const ciphertext = ciphertextRaw || null;
-  const msgId = sendRoomMessage(channel.id, res.locals.currentUser.id, isSticker ? body : '', 'mls', ciphertext, null);
+  const user = res.locals.currentUser;
+  const msgId = sendRoomMessage(channel.id, user.id, isSticker ? body : '', 'mls', ciphertext, null);
+  broadcastGatewayEvent('room:' + room.id, 'message_create', {
+    id: String(msgId),
+    room_id: String(room.id),
+    channel_id: String(channel.id),
+    user_id: String(user.id),
+    author: { id: String(user.id), username: user.username, display_name: user.display_name },
+    proto: isSticker ? 'plain' : 'mls',
+    body: isSticker ? body : '',
+    ciphertext: isSticker ? null : ciphertext,
+    created_at: new Date().toISOString(),
+  });
   res.json({ id: msgId });
 });
 
@@ -423,6 +436,11 @@ router.post('/:id/channels/:cid/messages/:mid/delete', (req, res) => {
   const canModerate = checkPerm(room.id, userId, PERM.MANAGE_MESSAGES);
   if (!canDeleteOwn && !canModerate && !res.locals.currentUser.is_admin) return res.status(403).json({ error: 'No permission' });
   deleteRoomMessage(msgId);
+  broadcastGatewayEvent('room:' + room.id, 'message_delete', {
+    id: String(msgId),
+    room_id: String(room.id),
+    channel_id: String(channel.id),
+  });
   res.json({ ok: true });
 });
 
@@ -454,6 +472,15 @@ router.post('/:id/channels/:cid/messages/:mid/edit', (req, res) => {
   const ciphertext = ciphertextRaw || null;
   const ok = editRoomMessage(Number(req.params.mid), userId, isSticker ? body : '', 'mls', ciphertext, null);
   if (!ok) return res.status(403).json({ error: 'Not your message' });
+  broadcastGatewayEvent('room:' + room.id, 'message_update', {
+    id: String(req.params.mid),
+    room_id: String(room.id),
+    channel_id: String(channel.id),
+    proto: isSticker ? 'plain' : 'mls',
+    body: isSticker ? body : '',
+    ciphertext: isSticker ? null : ciphertext,
+    edited_at: new Date().toISOString(),
+  });
   res.json({ ok: true });
 });
 

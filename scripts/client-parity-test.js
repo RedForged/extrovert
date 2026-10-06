@@ -10,6 +10,7 @@
  * - Post Editing & Revision History (PATCH & GET /api/v1/statuses/:id/history)
  * - Follow Attribution (POST /api/v1/statuses/:id/follow_from)
  * - Comment Edit & Delete (PATCH & DELETE /api/v1/statuses/:id/comments/:cid)
+ * - DM Message Edit & Delete (PATCH & DELETE /api/v1/messages/:id)
  * - Full Room Management (create, patch, channels, roles, assign, leave, delete)
  * - Stickers REST API (GET, POST, DELETE /api/v1/stickers)
  * - FoF Discover (GET /api/v1/discover)
@@ -309,6 +310,62 @@ describe('Extrovert Client Developer Experience & Parity Suite', () => {
   // ----------------------------------------------------
   // 5. Room Full Management REST API
   // ----------------------------------------------------
+  describe('DM Message Edit & Delete (MLS)', () => {
+    let msgId = null;
+
+    it('sends an MLS DM message', async () => {
+      const res = await fetchJson('/api/v1/conversations/bob/messages', {
+        method: 'POST',
+        token: aliceOAuthToken,
+        body: { proto: 'mls', body: 'bWxzX2NpcGhlcnRleHRfMQ==' },
+      });
+      assert.strictEqual(res.status, 201);
+      const d = await res.json();
+      msgId = String((d.data && d.data.id) || d.id);
+      assert.ok(msgId && msgId !== 'undefined', 'send must return the message id');
+    });
+
+    it('edits an MLS message without sender_ciphertext', async () => {
+      const res = await fetchJson('/api/v1/messages/' + msgId, {
+        method: 'PATCH',
+        token: aliceOAuthToken,
+        body: { proto: 'mls', body: 'bWxzX2NpcGhlcnRleHRfMg==' },
+      });
+      assert.strictEqual(res.status, 200);
+    });
+
+    it("rejects editing someone else's message", async () => {
+      const res = await fetchJson('/api/v1/messages/' + msgId, {
+        method: 'PATCH',
+        token: bobOAuthToken,
+        body: { proto: 'mls', body: 'aGF4' },
+      });
+      assert.strictEqual(res.status, 404);
+    });
+
+    it('rejects legacy plaintext edits', async () => {
+      const res = await fetchJson('/api/v1/messages/' + msgId, {
+        method: 'PATCH',
+        token: aliceOAuthToken,
+        body: { proto: 'rsa', body: 'plaintext' },
+      });
+      assert.strictEqual(res.status, 400);
+    });
+
+    it('deletes the message', async () => {
+      const res = await fetchJson('/api/v1/messages/' + msgId, {
+        method: 'DELETE',
+        token: aliceOAuthToken,
+      });
+      assert.strictEqual(res.status, 200);
+      const gone = await fetchJson('/api/v1/messages/' + msgId, {
+        method: 'DELETE',
+        token: aliceOAuthToken,
+      });
+      assert.strictEqual(gone.status, 404, 'double delete must not succeed');
+    });
+  });
+
   describe('Room Full Management REST API', () => {
     let roomId = null;
     let channelId = null;

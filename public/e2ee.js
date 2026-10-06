@@ -54,15 +54,26 @@
     return cacheDbPromise;
   }
 
-  function getCachedMessage(msgId) {
-    if (memCache[msgId]) return Promise.resolve(memCache[msgId]);
+  function cacheKey(msgId, body) {
+    var s = String(msgId) + '|' + String(body || '');
+    var h = 0x811c9dc5;
+    for (var i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+    }
+    return String(msgId) + ':' + h.toString(16);
+  }
+
+  function getCachedMessage(msgId, body) {
+    var key = cacheKey(msgId, body);
+    if (memCache[key]) return Promise.resolve(memCache[key]);
     return openCacheDB().then(function (db) {
       return new Promise(function (resolve) {
         var tx = db.transaction(STORE_MSG_CACHE, 'readonly');
-        var req = tx.objectStore(STORE_MSG_CACHE).get(String(msgId));
+        var req = tx.objectStore(STORE_MSG_CACHE).get(key);
         req.onsuccess = function () {
           var res = req.result || null;
-          if (res) memCache[msgId] = res;
+          if (res) memCache[key] = res;
           resolve(res);
         };
         req.onerror = function () { resolve(null); };
@@ -70,18 +81,29 @@
     }).catch(function () { return null; });
   }
 
-  function cacheMessage(msgId, plaintext) {
+  function cacheMessage(msgId, plaintext, body) {
     if (!msgId || !plaintext) return Promise.resolve();
-    memCache[msgId] = plaintext;
+    var key = cacheKey(msgId, body);
+    memCache[key] = plaintext;
     if (window.ExtrovertMLS && window.ExtrovertMLS.backupNow) window.ExtrovertMLS.backupNow();
     return openCacheDB().then(function (db) {
       return new Promise(function (resolve) {
         var tx = db.transaction(STORE_MSG_CACHE, 'readwrite');
-        tx.objectStore(STORE_MSG_CACHE).put(plaintext, String(msgId));
+        tx.objectStore(STORE_MSG_CACHE).put(plaintext, key);
         tx.oncomplete = function () { resolve(); };
         tx.onerror = function () { resolve(); };
       });
     }).catch(function () {});
+  }
+
+  function purgeLocalMessage(msgId) {
+    var id = String(msgId);
+    Object.keys(memCache).forEach(function (k) {
+      if (k === id || k.indexOf(id + ':') === 0) delete memCache[k];
+    });
+    if (window.ExtrovertMLS && window.ExtrovertMLS.noteMessageDeleted) {
+      window.ExtrovertMLS.noteMessageDeleted(id);
+    }
   }
 
   function csrfToken() {
@@ -107,11 +129,45 @@
     if (container) container.scrollTop = container.scrollHeight;
   }
 
+  function appendMsgControls(timeEl, msgId, otherUsername) {
+    var baseStyle = 'font-size:0.7rem;color:var(--text-muted);background:none;border:none;cursor:pointer;padding:0 2px;margin-left:4px;text-decoration:underline';
+    var editBtn = document.createElement('button');
+    editBtn.className = 'edit-msg-btn';
+    editBtn.style.cssText = baseStyle;
+    editBtn.textContent = 'Edit';
+    var delBtn = document.createElement('button');
+    delBtn.className = 'delete-msg-btn';
+    delBtn.setAttribute('data-msg-id', String(msgId));
+    delBtn.setAttribute('data-csrf', csrfToken());
+    delBtn.setAttribute('data-action', '/chats/' + encodeURIComponent(otherUsername) + '/delete/' + encodeURIComponent(msgId));
+    delBtn.style.cssText = baseStyle;
+    delBtn.textContent = 'Delete';
+    var data = document.createElement('input');
+    data.type = 'hidden';
+    data.className = 'edit-msg-data';
+    data.value = '';
+    data.setAttribute('data-csrf', csrfToken());
+    data.setAttribute('data-action', '/chats/' + encodeURIComponent(otherUsername) + '/edit/' + encodeURIComponent(msgId));
+    timeEl.appendChild(editBtn);
+    timeEl.appendChild(delBtn);
+    timeEl.parentNode.appendChild(data);
+  }
+
+  function ensureEditedIndicator(msgEl) {
+    var meta = msgEl.querySelector('.muted');
+    if (!meta || meta.querySelector('.edited-indicator')) return;
+    var span = document.createElement('span');
+    span.className = 'edited-indicator';
+    span.title = new Date().toLocaleString();
+    span.textContent = '· edited';
+    meta.insertBefore(span, meta.firstChild);
+  }
+
   function addOwnMsg(plaintext, msg, otherUsername) {
     var container = document.querySelector('.chat-messages');
     if (!container) return;
 
-    if (msg.id) cacheMessage(msg.id, plaintext);
+    if (msg.id) cacheMessage(msg.id, plaintext, msg.body);
 
     var div = document.createElement('div');
     div.className = 'chat-msg own';
@@ -134,14 +190,7 @@
     time.textContent = window.relTime ? window.relTime(msg.created_at || Date.now()) : new Date(msg.created_at || Date.now()).toLocaleString();
 
     if (msg.id) {
-      var delBtn = document.createElement('button');
-      delBtn.className = 'delete-msg-btn';
-      delBtn.setAttribute('data-msg-id', String(msg.id));
-      delBtn.setAttribute('data-csrf', csrfToken());
-      delBtn.setAttribute('data-action', '/chats/' + encodeURIComponent(otherUsername) + '/delete/' + encodeURIComponent(msg.id));
-      delBtn.style.cssText = 'font-size:0.7rem;color:var(--text-muted);background:none;border:none;cursor:pointer;padding:0 2px;margin-left:4px;text-decoration:underline';
-      delBtn.textContent = 'Delete';
-      time.appendChild(delBtn);
+      appendMsgControls(time, msg.id, otherUsername);
     }
 
     div.appendChild(time);
@@ -160,17 +209,17 @@
   }
 
   function resolveMsgText(msgId, isOwn, body, decryptFn) {
-    return getCachedMessage(msgId).then(function (cached) {
+    return getCachedMessage(msgId, body).then(function (cached) {
       if (cached) return cached;
       return syncBackupOnce().then(function () {
-        return getCachedMessage(msgId);
+        return getCachedMessage(msgId, body);
       }).then(function (cached2) {
         if (cached2) return cached2;
         if (!window.ExtrovertMLS || !window.ExtrovertMLS.ready() || !body) {
           return isOwn ? '[sent message]' : '[unable to decrypt]';
         }
         return decryptFn().then(function (plain) {
-          cacheMessage(msgId, plain);
+          cacheMessage(msgId, plain, body);
           return plain;
         }).catch(function () {
           return isOwn ? '[sent message]' : '[unable to decrypt]';
@@ -293,32 +342,148 @@
       });
     });
 
-    // Start Live Updates via SSE
+    // Start Live Updates
+    initMsgControls(otherId, otherUsername);
     initLiveUpdates(otherId, otherUsername);
   }
 
-  function initLiveUpdates(otherId, otherUsername) {
-    if (typeof EventSource === 'undefined') return;
-    var es = new EventSource('/chats/events');
+  function initMsgControls(otherId, otherUsername) {
+    document.addEventListener('click', function (e) {
+      var delBtn = e.target.closest('.delete-msg-btn');
+      if (delBtn) {
+        e.preventDefault();
+        if (!confirm('Delete this message?')) return;
+        var msgEl = delBtn.closest('.chat-msg');
+        var msgId = delBtn.getAttribute('data-msg-id');
+        var tok = delBtn.getAttribute('data-csrf');
+        fetch(delBtn.getAttribute('data-action'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': tok, 'X-Requested-With': 'XMLHttpRequest' },
+          body: '_csrf=' + encodeURIComponent(tok),
+        }).then(function (r) { return r.json(); }).then(function (d) {
+          if (d.ok) {
+            if (msgEl) msgEl.remove();
+            purgeLocalMessage(msgId);
+          } else {
+            alert('Delete failed: ' + (d.error || 'unknown error'));
+          }
+        });
+        return;
+      }
 
-    es.addEventListener('dm', function (e) {
+      var editBtn = e.target.closest('.edit-msg-btn');
+      if (editBtn) {
+        e.preventDefault();
+        var msgEl = editBtn.closest('.chat-msg');
+        if (!msgEl || msgEl.querySelector('.inline-edit-input')) return;
+        var bubble = msgEl.querySelector('.chat-bubble');
+        var dataEl = msgEl.querySelector('.edit-msg-data');
+        if (!bubble || !dataEl) return;
+        var body = msgEl.getAttribute('data-body') || '';
+        var msgId = msgEl.getAttribute('data-msg-id');
+        var tok = dataEl.getAttribute('data-csrf');
+        var isOwn = msgEl.classList.contains('own');
+        var delEl = msgEl.querySelector('.delete-msg-btn');
+        var meta = msgEl.querySelector('.muted');
+
+        resolveMsgText(msgId, isOwn, body, function () {
+          return window.ExtrovertMLS.decryptDmMessage(otherId, body);
+        }).then(function (currentText) {
+          if (currentText.indexOf('[') === 0) currentText = '';
+          var oldHtml = bubble.innerHTML;
+          var input = document.createElement('input');
+          input.type = 'text';
+          input.className = 'inline-edit-input';
+          input.value = currentText;
+          input.style.cssText = 'width:100%;box-sizing:border-box;font:inherit';
+          bubble.textContent = '';
+          bubble.appendChild(input);
+          editBtn.style.display = 'none';
+          if (delEl) delEl.style.display = 'none';
+
+          var baseStyle = 'font-size:0.7rem;color:var(--text-muted);background:none;border:none;cursor:pointer;padding:0 2px;margin-left:4px;text-decoration:underline';
+          var saveBtn = document.createElement('button');
+          saveBtn.className = 'inline-save-btn';
+          saveBtn.style.cssText = baseStyle;
+          saveBtn.textContent = 'Save';
+          var cancelBtn = document.createElement('button');
+          cancelBtn.className = 'inline-cancel-btn';
+          cancelBtn.style.cssText = baseStyle;
+          cancelBtn.textContent = 'Cancel';
+          if (meta) { meta.appendChild(saveBtn); meta.appendChild(cancelBtn); }
+
+          var done = false;
+          function cleanup() {
+            if (done) return;
+            done = true;
+            if (input.parentNode) input.parentNode.removeChild(input);
+            if (saveBtn.parentNode) saveBtn.parentNode.removeChild(saveBtn);
+            if (cancelBtn.parentNode) cancelBtn.parentNode.removeChild(cancelBtn);
+            editBtn.style.display = '';
+            if (delEl) delEl.style.display = '';
+          }
+          function cancel() {
+            if (done) return;
+            bubble.innerHTML = oldHtml;
+            cleanup();
+          }
+          function save() {
+            if (done) return;
+            var newText = input.value.trim();
+            if (!newText) { cancel(); return; }
+            input.disabled = true;
+            window.ExtrovertMLS.encryptDmMessage(otherId, newText).then(function (res) {
+              return fetch(dataEl.getAttribute('data-action'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': tok, 'X-Requested-With': 'XMLHttpRequest' },
+                body: 'body=' + encodeURIComponent(res.body) + '&proto=mls&_csrf=' + encodeURIComponent(tok),
+              }).then(function (r) { return r.json(); }).then(function (d) {
+                if (!d.message) throw new Error(d.error || 'edit failed');
+                bubble.textContent = newText;
+                msgEl.setAttribute('data-body', res.body);
+                cacheMessage(msgId, newText, res.body);
+                ensureEditedIndicator(msgEl);
+                cleanup();
+              });
+            }).catch(function (err) {
+              alert('Edit failed: ' + (err.message || err));
+              input.disabled = false;
+            });
+          }
+          saveBtn.addEventListener('click', save);
+          cancelBtn.addEventListener('click', cancel);
+          input.addEventListener('keydown', function (ev) {
+            if (ev.key === 'Enter') { ev.preventDefault(); save(); }
+            if (ev.key === 'Escape') { ev.preventDefault(); cancel(); }
+          });
+          input.focus();
+        });
+      }
+    });
+  }
+
+  function initLiveUpdates(otherId, otherUsername) {
+    var bus = window.ExtrovertCall;
+    if (!bus || !bus.on) return;
+    if (bus.connect) bus.connect();
+
+    bus.on('new_dm', function (data) {
       try {
-        var data = JSON.parse(e.data);
         if (!data || !data.message) return;
         var msg = data.message;
-        var myId = currentUserId();
-
-        if (String(msg.from_id) !== String(myId) && String(msg.from_id) !== String(otherId)) return;
+        if (data.to_username !== otherUsername && data.from_username !== otherUsername) return;
 
         var container = document.querySelector('.chat-messages');
         if (!container) return;
         if (container.querySelector('[data-msg-id="' + msg.id + '"]')) return;
 
+        var myId = currentUserId();
         var isOwn = String(msg.from_id) === String(myId);
         var div = document.createElement('div');
         div.className = isOwn ? 'chat-msg own' : 'chat-msg';
         div.setAttribute('data-msg-id', String(msg.id));
         div.setAttribute('data-proto', 'mls');
+        div.setAttribute('data-body', msg.body || '');
 
         var bubble = document.createElement('div');
         bubble.className = 'chat-bubble';
@@ -330,6 +495,7 @@
         time.style.cssText = 'font-size:0.7rem;padding:0 4px';
         time.textContent = window.relTime ? window.relTime(msg.created_at) : new Date(msg.created_at).toLocaleString();
         div.appendChild(time);
+        if (isOwn && msg.id) appendMsgControls(time, msg.id, otherUsername);
 
         container.appendChild(div);
         scrollChatBottom();
@@ -345,6 +511,30 @@
           bubble.textContent = text;
         });
       } catch (err) {}
+    });
+
+    bus.on('delete_dm', function (data) {
+      if (!data || data.message_id === undefined) return;
+      var el = document.querySelector('.chat-msg[data-msg-id="' + data.message_id + '"]');
+      if (el) el.remove();
+      purgeLocalMessage(String(data.message_id));
+    });
+
+    bus.on('edit_dm', function (data) {
+      if (!data || !data.message) return;
+      var msg = data.message;
+      var el = document.querySelector('.chat-msg[data-msg-id="' + msg.id + '"]');
+      if (!el) return;
+      el.setAttribute('data-body', msg.body || '');
+      var bubble = el.querySelector('.chat-bubble');
+      if (!bubble) return;
+      if (msg.body && msg.body.indexOf('/uploads/stickers/') === 0) return;
+      resolveMsgText(String(msg.id), el.classList.contains('own'), msg.body, function () {
+        return window.ExtrovertMLS.decryptDmMessage(otherId, msg.body);
+      }).then(function (text) {
+        bubble.textContent = text;
+        ensureEditedIndicator(el);
+      });
     });
   }
 

@@ -15,7 +15,7 @@
     <a href="/rooms" title="Rooms" class="<%= isActive('/rooms') ? 'active' : '' %>"><span class="nav-icon"><%- include('icon', { name: 'rooms', size: 18 }) %></span><span class="nav-text">Rooms</span></a>
     <a href="/settings" title="Settings" class="<%= isActive('/settings') ? 'active' : '' %>"><span class="nav-icon"><%- include('icon', { name: 'settings', size: 18 }) %></span><span class="nav-text">Settings</span></a>
     <% if (locals.currentUser && locals.currentUser.is_admin) { %><a href="/admin" title="Admin" class="<%= isActive('/admin') ? 'active' : '' %>"><span class="nav-icon"><%- include('icon', { name: 'shield', size: 18 }) %></span><span class="nav-text">Admin</span><% if (locals.pendingReports > 0 || (locals.securityReports || 0) > 0) { %><sup class="badge"><%= (locals.pendingReports || 0) + (locals.securityReports || 0) %></sup><% } %></a><% } %>
-    <% if (locals.currentUser && locals.currentUser.developer_mode) { %><a href="/security" title="Security &amp; responsible disclosure" class="<%= isActive('/security') ? 'active' : '' %>"><span class="nav-icon"><%- include('icon', { name: 'lock', size: 18 }) %></span><span class="nav-text">Security</span></a><% } %>
+    <% if (locals.currentUser) { %><a href="/security" title="Security &amp; responsible disclosure" class="<%= isActive('/security') ? 'active' : '' %>"><span class="nav-icon"><%- include('icon', { name: 'lock', size: 18 }) %></span><span class="nav-text">Security</span></a><% } %>
     <% if (locals.announcement) { %>
       <div class="ann" id="ann">
         <% if (locals.currentUser && locals.currentUser.is_admin) { %>

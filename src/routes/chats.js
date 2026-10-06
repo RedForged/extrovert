@@ -443,13 +443,21 @@ router.post('/:username/edit/:mid', (req, res) => {
     return req.xhr ? res.json({ error: 'Ciphertext too long.' }) : res.status(400).send('Ciphertext too long.');
   }
   const senderCiphertext = senderCiphertextRaw || null;
-  if (!body.startsWith('/uploads/stickers/') && ((proto !== 'olm' && proto !== 'mls') || !senderCiphertext)) {
+  if (!body.startsWith('/uploads/stickers/') && ((proto !== 'olm' && proto !== 'mls') || (proto === 'olm' && !senderCiphertext))) {
     return req.xhr ? res.json({ error: 'End-to-end encryption required. All messages must be Olm or MLS encrypted.' }) : res.status(400).send('E2EE required');
   }
   const ok = editMessage(Number(req.params.mid), user.id, body, keyForSender, keyForRecipient, proto, senderCiphertext);
   if (!ok) return req.xhr ? res.json({ error: 'not found or not yours' }) : res.status(404).send('Message not found or not yours.');
+  const msg = db.prepare(`SELECT id, from_id, body, created_at, edited_at, key_for_sender, key_for_recipient, proto, sender_ciphertext, secure FROM messages WHERE id = ?`).get(Number(req.params.mid));
+  const other = getUserByUsername(req.params.username);
+  if (other) {
+    const editEvent = { type: 'edit_dm', message: msg, from_username: user.username };
+    sendDmEvent(other.username, editEvent);
+    if (user.username !== other.username) {
+      sendDmEvent(user.username, editEvent);
+    }
+  }
   if (req.xhr) {
-    const msg = db.prepare(`SELECT id, from_id, body, created_at, edited_at, key_for_sender, key_for_recipient, proto, sender_ciphertext, secure FROM messages WHERE id = ?`).get(Number(req.params.mid));
     return res.json({ message: msg });
   }
   res.redirect('/chats/' + req.params.username);

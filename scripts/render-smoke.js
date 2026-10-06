@@ -31,6 +31,8 @@ async function main() {
   const bobId = db.createUser({ username: 'bob', passwordHash: bcrypt.hashSync('pw2', 10), displayName: 'Bob' });
   db.follow(aliceId, bobId); db.follow(bobId, aliceId);
   db.createPost({ userId: aliceId, type: 'text', body: 'hello world', createdAt: Date.now() });
+  db.promoteUser(aliceId);
+  db.createSecurityReport({ reporterName: 'whitehat', reporterContact: 'wh@example.com', summary: 'smoke-test finding', details: 'render smoke detail body' });
 
   async function session(username, password) {
     const jar = {};
@@ -85,6 +87,10 @@ async function main() {
     ['/developers/docs', 'developers docs'],
     ['/stickers', 'stickers'],
     ['/security', 'security'],
+    ['/admin', 'admin dashboard'],
+    ['/admin/reports', 'admin reports'],
+    ['/admin/security-reports', 'admin security reports'],
+    ['/admin/announcement', 'admin announcement'],
     ['/this-does-not-exist', '404 page'],
   ];
 
@@ -103,6 +109,11 @@ async function main() {
     const r = await bob.get(url);
     ok(r.status !== 500, label + ' status=' + r.status);
   }
+
+  const inbox = await alice.get('/admin/security-reports');
+  const inboxText = await inbox.text;
+  ok(inbox.status === 200 && inboxText.includes('smoke-test finding'),
+    'admin security inbox renders report contents');
 
   console.log('\nAnon pages:');
   const anon = await fetch(base + '/login');

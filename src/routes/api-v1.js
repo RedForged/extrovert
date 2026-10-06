@@ -3452,11 +3452,23 @@ router.patch('/messages/:id', requireApiAuth('write:direct'), (req, res) => {
   const senderCiphertextRaw = String(req.body.sender_ciphertext || '').trim();
   if (senderCiphertextRaw.length > 65536) return errorResponse(res, 400, 'Bad Request', 'sender_ciphertext is too long.');
   const senderCiphertext = senderCiphertextRaw || null;
-  if (!body.startsWith('/uploads/stickers/') && ((proto !== 'olm' && proto !== 'mls') || !senderCiphertext)) {
+  if (!body.startsWith('/uploads/stickers/') && ((proto !== 'olm' && proto !== 'mls') || (proto === 'olm' && !senderCiphertext))) {
     return errorResponse(res, 400, 'Bad Request', 'End-to-end encryption required. All messages must be Olm or MLS encrypted.');
   }
   const ok = dm.editMessage(parseInt(req.params.id, 10), req.apiUser.id, body, keyForSender, keyForRecipient, proto, senderCiphertext);
   if (!ok) return errorResponse(res, 404, 'Not Found', 'Message not found or not yours.');
+  const targetMsg = db.db.prepare(`
+    SELECT m.*, u.username AS from_username, u2.username AS to_username
+    FROM messages m
+    JOIN users u ON u.id = m.from_id
+    JOIN users u2 ON u2.id = m.to_id
+    WHERE m.id = ?
+  `).get(parseInt(req.params.id, 10));
+  if (targetMsg) {
+    const editEvent = { type: 'edit_dm', message: targetMsg, from_username: targetMsg.from_username };
+    sendDmEvent(targetMsg.to_username, editEvent);
+    sendDmEvent(targetMsg.from_username, editEvent);
+  }
   db.auditLog('dm_edited', req.apiUser.id, `Message ${req.params.id}`);
   res.json({ data: { ok: true } });
 });
