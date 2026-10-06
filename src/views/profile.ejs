@@ -1,26 +1,4 @@
-<!doctype html>
-<html lang="en" data-theme="<%= locals.theme || 'dark' %>">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="stylesheet" href="/static/theme.css?v=3">
-  <link rel="manifest" href="/static/manifest.webmanifest">
-  <meta name="csrf-token" content="<%= typeof csrfToken !== 'undefined' ? csrfToken : (locals.csrfToken || '') %>">
-  <script src="/static/lib/mls.js?v=1"></script>
-  <script src="/static/mls-client.js?v=7"></script>
-  <script src="/static/e2ee.js?v=36"></script>
-  <script src="/static/copy-ref.js?v=2"></script>
-  <script src="/static/stickers.js?v=1"></script>
-  <script src="/static/interact.js?v=4"></script>
-  <script src="/static/webrtc.js?v=3"></script>
-  <script src="/static/webrtc-ui.js?v=2"></script>
-  <script src="/static/announcement.js?v=1"></script>
-  <script src="/static/push-register.js?v=1"></script>
-  <style><%- css %></style>
-</head>
-<body>
-  <%- include('partials/nav') %>
-  <main class="wrap">
+<%- include('partials/header', { headCss: css }) %>
     <div class="profile-header">
       <% if (profileUser.avatar) { %><img src="<%= profileUser.avatar %>" alt="" style="width:72px;height:72px;border-radius:var(--radius-full);flex:none;object-fit:cover;border:1px solid var(--border-soft)"><% } else { %><div class="avatar" style="width:72px;height:72px;font-size:32px"><%= (profileUser.display_name || profileUser.username).slice(0,1).toUpperCase() %></div><% } %>
       <div>
@@ -66,6 +44,4 @@
     <div class="ev-custom">
       <%- finalHtml %>
     </div>
-  </main>
-</body>
-</html>
+<%- include('partials/footer') %>
