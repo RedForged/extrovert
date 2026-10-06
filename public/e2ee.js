@@ -178,6 +178,20 @@
 
     if (msg.id) cacheMessage(msg.id, plaintext, msg.body);
 
+    var existing = msg.id ? container.querySelector('[data-msg-id="' + msg.id + '"]') : null;
+    if (existing) {
+      var existingBubble = existing.querySelector('.chat-bubble');
+      if (existingBubble) {
+        if (plaintext.indexOf('/uploads/stickers/') === 0) {
+          existingBubble.innerHTML = '<img src="' + esc(plaintext) + '" class="sticker-inline" style="max-width:120px;max-height:120px;vertical-align:middle" alt="sticker">';
+        } else {
+          existingBubble.textContent = plaintext;
+        }
+      }
+      scrollChatBottom();
+      return;
+    }
+
     var div = document.createElement('div');
     div.className = 'chat-msg own';
     div.setAttribute('data-msg-id', String(msg.id || ''));
@@ -518,6 +532,15 @@
           return window.ExtrovertMLS.decryptDmMessage(otherId, msg.body);
         }).then(function (text) {
           bubble.textContent = text;
+          if (isOwn && text.indexOf('[') === 0) {
+            setTimeout(function () {
+              resolveMsgText(String(msg.id), isOwn, msg.body, function () {
+                return window.ExtrovertMLS.decryptDmMessage(otherId, msg.body);
+              }).then(function (text2) {
+                bubble.textContent = text2;
+              });
+            }, 800);
+          }
         });
       } catch (err) {}
     });
