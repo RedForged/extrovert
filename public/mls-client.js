@@ -162,12 +162,14 @@
     });
   }
 
-  // --- Device Registration & KeyPackages ---
+  var initPromise = null;
+
   function initDevice() {
+    if (initPromise) return initPromise;
     var uid = currentUserId();
     if (!uid) return Promise.resolve(null);
 
-    return Promise.all([
+    initPromise = Promise.all([
       initEngine(),
       getOrCreateDeviceKey(),
       idbGet(STORE_MLS_KEYS, 'deviceId'),
@@ -190,15 +192,42 @@
         identity: new TextEncoder().encode(credId)
       };
 
-      // Register device with server
-      return csrfFetch('/mls/device/register', {
-        method: 'POST',
-        body: JSON.stringify({
-          device_id: deviceId,
-          device_name: navigator.userAgent.slice(0, 30) || 'Web Browser',
-          signing_key_pub: 'ed25519_' + deviceId,
-        })
-      }).then(function (r) { return r.json(); }).then(function (regRes) {
+      function registerDevice() {
+        return csrfFetch('/mls/device/register', {
+          method: 'POST',
+          body: JSON.stringify({
+            device_id: deviceId,
+            device_name: (typeof navigator !== 'undefined' && navigator.userAgent) ? navigator.userAgent.slice(0, 30) : 'Web Browser',
+            signing_key_pub: 'ed25519_' + deviceId,
+          })
+        }).then(function (r) { return r.json(); }).then(function (regRes) {
+          if (!regRes.ok) {
+            if (regRes.code === 'QUOTA_EXCEEDED' || (regRes.error && regRes.error.indexOf('quota') !== -1)) {
+              // Automatically revoke oldest device to stay within quota
+              return csrfFetch('/mls/devices').then(function (r) { return r.json(); }).then(function (dRes) {
+                if (dRes && Array.isArray(dRes.devices) && dRes.devices.length) {
+                  var oldest = dRes.devices[0].device_id;
+                  return csrfFetch('/mls/devices/' + encodeURIComponent(oldest), { method: 'DELETE' }).then(function () {
+                    return csrfFetch('/mls/device/register', {
+                      method: 'POST',
+                      body: JSON.stringify({
+                        device_id: deviceId,
+                        device_name: (typeof navigator !== 'undefined' && navigator.userAgent) ? navigator.userAgent.slice(0, 30) : 'Web Browser',
+                        signing_key_pub: 'ed25519_' + deviceId,
+                      })
+                    }).then(function (r2) { return r2.json(); });
+                  });
+                }
+                return regRes;
+              });
+            }
+            throw new Error(regRes.error || 'Failed to register MLS device');
+          }
+          return regRes;
+        });
+      }
+
+      return registerDevice().then(function (regRes) {
         if (!regRes.ok) throw new Error(regRes.error || 'Failed to register MLS device');
         return Promise.all([
           idbSet(STORE_MLS_KEYS, 'deviceId', deviceId),
@@ -209,7 +238,12 @@
       });
     }).then(function () {
       return pollAndProcessWelcomes();
+    }).catch(function (err) {
+      initPromise = null;
+      throw err;
     });
+
+    return initPromise;
   }
 
   function checkAndReplenishKeyPackages() {
@@ -446,10 +480,11 @@
   }
 
   function ensureDmGroup(peerUserId) {
-    var mls = root.MLS;
-    var gid = getDmGroupId(peerUserId);
+    return initDevice().then(function () {
+      var mls = root.MLS;
+      var gid = getDmGroupId(peerUserId);
 
-    return loadGroupState(gid).then(function (existing) {
+      return loadGroupState(gid).then(function (existing) {
       if (existing) {
         var ep = existing.groupContext ? Number(existing.groupContext.epoch) : 0;
         return catchUpCommits(gid, existing, ep).then(function (finalState) {
@@ -537,7 +572,9 @@
         });
       });
     });
-  }
+  });
+});
+}
 
   function encryptDmMessage(peerUserId, plaintext) {
     var mls = root.MLS;
@@ -648,10 +685,11 @@
   }
 
   function ensureRoomGroup(roomId, memberUserIds) {
-    var mls = root.MLS;
-    var gid = getRoomGroupId(roomId);
+    return initDevice().then(function () {
+      var mls = root.MLS;
+      var gid = getRoomGroupId(roomId);
 
-    return loadGroupState(gid).then(function (existing) {
+      return loadGroupState(gid).then(function (existing) {
       if (existing) {
         var ep = existing.groupContext ? Number(existing.groupContext.epoch) : 0;
         return catchUpCommits(gid, existing, ep).then(function (finalState) {
@@ -780,7 +818,8 @@
         });
       });
     });
-  }
+  });
+}
 
   function addMemberToRoomGroup(roomId, targetUserId) {
     var mls = root.MLS;
@@ -1062,13 +1101,18 @@
 
   // Auto-init on page load if user is logged in
   if (typeof document !== 'undefined') {
-    document.addEventListener('DOMContentLoaded', function () {
+    var kickOff = function () {
       if (currentUserId()) {
         initDevice().catch(function (err) {
           console.warn('MLS auto-init background warning:', err);
         });
       }
-    });
+    };
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', kickOff);
+    } else {
+      kickOff();
+    }
   }
 
 })(typeof window !== 'undefined' ? window : global);

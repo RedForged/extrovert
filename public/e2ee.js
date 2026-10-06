@@ -219,13 +219,16 @@
       }
 
       // Pure MLS encryption
-      if (!window.ExtrovertMLS || !window.ExtrovertMLS.ready()) {
-        alert('MLS encryption engine is still initializing. Please try again in a moment.');
+      if (!window.ExtrovertMLS) {
+        alert('MLS encryption engine is not available. Please refresh the page.');
         input.disabled = false;
         return;
       }
 
-      window.ExtrovertMLS.encryptDmMessage(otherId, plaintext).then(function (res) {
+      var initP = window.ExtrovertMLS.ready() ? Promise.resolve() : window.ExtrovertMLS.init();
+      initP.then(function () {
+        return window.ExtrovertMLS.encryptDmMessage(otherId, plaintext);
+      }).then(function (res) {
         var usp = new URLSearchParams();
         usp.set('_csrf', csrfToken());
         usp.set('proto', 'mls');

@@ -74,10 +74,12 @@
   }
 
   function encryptMessage(plaintext) {
-    if (!window.ExtrovertMLS || !window.ExtrovertMLS.ready()) {
-      return Promise.reject(new Error('MLS engine not ready'));
+    if (!window.ExtrovertMLS) {
+      return Promise.reject(new Error('MLS library not loaded'));
     }
-    return window.ExtrovertMLS.encryptRoomMessage(roomId, plaintext, members).then(function (res) {
+    return (window.ExtrovertMLS.ready() ? Promise.resolve() : window.ExtrovertMLS.init()).then(function () {
+      return window.ExtrovertMLS.encryptRoomMessage(roomId, plaintext, members);
+    }).then(function (res) {
       return {
         proto: 'mls',
         ciphertext: res.body,
@@ -86,10 +88,12 @@
   }
 
   function decryptMessage(senderId, ciphertext) {
-    if (!window.ExtrovertMLS || !window.ExtrovertMLS.ready()) {
-      return Promise.reject(new Error('MLS engine not ready'));
+    if (!window.ExtrovertMLS) {
+      return Promise.reject(new Error('MLS library not loaded'));
     }
-    return window.ExtrovertMLS.decryptRoomMessage(roomId, ciphertext);
+    return (window.ExtrovertMLS.ready() ? Promise.resolve() : window.ExtrovertMLS.init()).then(function () {
+      return window.ExtrovertMLS.decryptRoomMessage(roomId, ciphertext);
+    });
   }
 
   function setSendDisabled(disabled) {
