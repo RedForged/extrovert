@@ -617,6 +617,43 @@ async function scenarioCrossDeviceMessageSync() {
   console.log('   [OK] send uploads promptly and the phone syncs newer messages without the password');
 }
 
+async function scenarioRoomFreshInit() {
+  console.log('7. Room fresh-init: first send to a room builds the group for all devices...');
+
+  const idb = makeMockIndexedDB();
+  const rec = idb.seed('extrovert_crypto', 1, ['crypto', 'mls_keys', 'mls_groups', 'mls_msg_cache', 'mls_history']);
+  const router = makeRouter();
+
+  const devKey = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  rec.stores.get('crypto').set('deviceKey', devKey);
+  rec.stores.get('mls_keys').set('deviceId', 'devLocal');
+  rec.stores.get('mls_keys').set('credential', {
+    credentialType: 'basic',
+    identity: new TextEncoder().encode('user:1:dev:devLocal'),
+  });
+
+  router.claimable['2'] = [await wireKp(await genKp('user:2:dev:devA'), 'devA')];
+  router.claimable['3'] = [
+    await wireKp(await genKp('user:3:dev:devB'), 'devB'),
+    await wireKp(await genKp('user:3:dev:devC'), 'devC'),
+  ];
+  router.claimable['1'] = [await wireKp(await genKp('user:1:dev:devOther'), 'devOther')];
+  router.claimable['4'] = [];
+
+  const client = loadClient(idb, router);
+  await client.init();
+
+  const sent = await client.encryptRoomMessage(1, 'hello room', [2, 3, 4]);
+  assert.ok(sent && sent.body, 'room message must encrypt on fresh init');
+
+  assert.strictEqual(router.inits.length, 1, 'room group must initialize once');
+  const initBody = router.inits[0];
+  const welcomeDevices = initBody.welcomes.map((w) => w.user_id + ':' + w.device_id).sort();
+  assert.deepStrictEqual(welcomeDevices, ['1:devOther', '2:devA', '3:devB', '3:devC'],
+    'all member devices and own other devices must receive Welcomes');
+  console.log('   [OK] room group created, welcomes queued for every device');
+}
+
 async function run() {
   console.log('=== Starting MLS Browser Client Regression Test Suite ===\n');
   const cs = mls.getCiphersuiteFromName('MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519');
@@ -628,6 +665,7 @@ async function run() {
   await scenarioStaleGroupResetRecovery();
   await scenarioPasswordBackupRestore();
   await scenarioCrossDeviceMessageSync();
+  await scenarioRoomFreshInit();
 
   console.log('\n=== All MLS Browser Client Regression Assertions PASSED ===');
 }

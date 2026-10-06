@@ -936,9 +936,6 @@
 
             var kpPromises = otherMembers.map(function (uid) {
               return claimKeyPackagesFor(uid).then(function (kps) {
-                if (!kps.length) {
-                  throw new Error('Room member ' + uid + ' has no available MLS devices or KeyPackages');
-                }
                 return { uid: uid, packages: kps };
               });
             });

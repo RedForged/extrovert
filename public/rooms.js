@@ -72,10 +72,13 @@ document.addEventListener('DOMContentLoaded', function() {
     };
 
     var e2ee = window.ExtrovertRoomE2EE;
-    if (e2ee && e2ee.ready()) {
+    if (e2ee) {
       e2ee.encryptMessage(body).then(function(r) {
         doPost('proto=mls&ciphertext=' + encodeURIComponent(r.ciphertext));
-      }).catch(function() { input.disabled = false; });
+      }).catch(function(err) {
+        alert('Could not encrypt message: ' + ((err && err.message) || 'MLS not ready yet — try again.'));
+        input.disabled = false;
+      });
       return;
     }
     doPost('body=' + encodeURIComponent(body));
@@ -144,9 +147,12 @@ document.addEventListener('DOMContentLoaded', function() {
         });
       };
       var e2ee = window.ExtrovertRoomE2EE;
-      if (e2ee && e2ee.ready()) {
+      if (e2ee) {
         e2ee.encryptMessage(newBody).then(function(r) {
           doEditPost('proto=mls&ciphertext=' + encodeURIComponent(r.ciphertext));
+        }).catch(function(err) {
+          alert('Could not encrypt edit: ' + ((err && err.message) || 'MLS not ready yet — try again.'));
+          cancelEditRoomMsg(msgDiv, saveBtn, newBody);
         });
         return;
       }
