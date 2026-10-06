@@ -21,7 +21,7 @@
         <% users.forEach(function(u) { %>
           <tr>
             <td>
-              <a href="/u/<%= u.username %>"><%= u.display_name %></a>
+              <a href="/u/<%= encodeURIComponent(u.username) %>"><%= u.display_name %></a>
               <small class="muted">@<%= u.username %></small>
             </td>
             <td><%= u.referral_count %><% if (u.referral_count > 0) { %> <%- include('partials/icon', { name: 'starFilled', size: 12, cls: 'flash-ico' }) %><% } %></td>

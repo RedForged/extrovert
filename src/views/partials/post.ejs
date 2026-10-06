@@ -8,10 +8,10 @@
     <div class="post-repost"><%- include('icon', { name: 'repost', size: 14 }) %> <%= item.reposterName %> reposted</div>
   <% } %>
   <header class="post-head">
-    <% if (item.authorAvatar) { %><a class="post-avatar-link" href="/u/<%= item.authorUsername %>"><img src="<%= item.authorAvatar %>" alt="" class="post-avatar-img"></a><% } else { %><a class="post-avatar" href="/u/<%= item.authorUsername %>"><%= (item.authorName || '?').slice(0,1).toUpperCase() %></a><% } %>
+    <% if (item.authorAvatar) { %><a class="post-avatar-link" href="/u/<%= encodeURIComponent(item.authorUsername) %>"><img src="<%= item.authorAvatar %>" alt="" class="post-avatar-img"></a><% } else { %><a class="post-avatar" href="/u/<%= encodeURIComponent(item.authorUsername) %>"><%= (item.authorName || '?').slice(0,1).toUpperCase() %></a><% } %>
     <div>
       <div style="display:flex;align-items:center;gap:6px">
-        <a href="/u/<%= item.authorUsername %>" class="post-name"><%= item.authorName %></a>
+        <a href="/u/<%= encodeURIComponent(item.authorUsername) %>" class="post-name"><%= item.authorName %></a>
         <% if (u && !item.isOwn) { %>
           <% if (item.mutual) { %>
             <a href="/chats/<%= item.authorUsername %>" class="chat-icon" title="Send a message"><%- include('icon', { name: 'chat', size: 15 }) %></a>

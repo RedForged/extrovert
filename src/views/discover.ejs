@@ -14,7 +14,7 @@
           <b><%= r.display_name %></b>
           <small>@<%= r.username %></small>
         </div>
-        <a class="btn ghost small" href="/u/<%= r.username %>">View</a>
+        <a class="btn ghost small" href="/u/<%= encodeURIComponent(r.username) %>">View</a>
         <form method="post" action="/follow/<%= r.username %>"><input type="hidden" name="_csrf" value="<%= csrfToken %>"><button class="btn small"><%- include('partials/icon', { name: 'plus', size: 14 }) %> Follow</button></form>
       </div>
     <% }) %>
@@ -37,7 +37,7 @@
           <b><%= r.display_name %></b>
           <small>@<%= r.username %></small>
         </div>
-        <a class="btn ghost small" href="/u/<%= r.username %>">View</a>
+        <a class="btn ghost small" href="/u/<%= encodeURIComponent(r.username) %>">View</a>
         <form method="post" action="/follow/<%= r.username %>"><input type="hidden" name="_csrf" value="<%= csrfToken %>"><button class="btn small"><%- include('partials/icon', { name: 'plus', size: 14 }) %> Follow</button></form>
       </div>
     <% }) %>

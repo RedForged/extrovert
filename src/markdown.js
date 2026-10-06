@@ -3,10 +3,10 @@
 const MarkdownIt = require('markdown-it');
 const sanitizeHtml = require('sanitize-html');
 
-// @mentions: @ followed by a valid username (3-20 [a-zA-Z0-9_]), at a boundary
-// never preceded by a word character, @ or / — so emails (foo@bar.com) and
-// paths (/@name) never match.
-const MENTION_RE = /(^|[^\w@/])@([a-zA-Z0-9_]{3,20})\b/g;
+// Mentions: @username (human) or %botname (bot namespace) — 3-20 [a-zA-Z0-9_],
+// at a boundary never preceded by a word character, @, % or / — so emails
+// (foo@bar.com) and paths never match. The sigil is part of the handle.
+const MENTION_RE = /(^|[^\w@\/%])([@%])([a-zA-Z0-9_]{3,20})\b/g;
 
 const md = new MarkdownIt({
   html: false,        // Escape HTML tags in source
@@ -40,7 +40,7 @@ md.core.ruler.after('linkify', 'mentions', function (state) {
     if (block.type !== 'inline' || !block.children) continue;
     const out = [];
     for (const child of block.children) {
-      if (child.type !== 'text' || child.content.indexOf('@') === -1) {
+      if (child.type !== 'text' || !/[@%]/.test(child.content)) {
         out.push(child);
         continue;
       }
@@ -55,14 +55,17 @@ md.core.ruler.after('linkify', 'mentions', function (state) {
           before.content = text.slice(last, start);
           out.push(before);
         }
+        const handle = m[2] + m[3];
+        // Humans link to their bare username; bots live at their %handle.
+        const lookupName = m[2] === '%' ? handle : m[3];
         const open = new state.Token('link_open', 'a', 1);
-        open.attrs = [['href', '/u/' + m[2]], ['class', 'mention']];
+        open.attrs = [['href', '/u/' + encodeURIComponent(lookupName)], ['class', 'mention']];
         out.push(open);
         const label = new state.Token('text', '', 0);
-        label.content = '@' + m[2];
+        label.content = handle;
         out.push(label);
         out.push(new state.Token('link_close', 'a', -1));
-        last = start + 1 + m[2].length;
+        last = start + handle.length;
       }
       if (last === 0) {
         out.push(child);
@@ -115,11 +118,11 @@ function renderMarkdown(content) {
 }
 
 /**
- * Extract unique @mentions from raw text (case-insensitive dedupe, first
- * spelling preserved).
+ * Extract unique mentions from raw text as full handles ("@alice", "%echo_bot"
+ * — the sigil is the namespace), case-insensitive dedupe, first spelling kept.
  *
  * @param {string} content
- * @returns {string[]} mentioned usernames
+ * @returns {string[]} mentioned handles with sigil
  */
 function parseMentions(content) {
   if (!content || typeof content !== 'string') return [];
@@ -127,8 +130,9 @@ function parseMentions(content) {
   const re = new RegExp(MENTION_RE.source, 'g');
   let m;
   while ((m = re.exec(content)) !== null) {
-    const key = m[2].toLowerCase();
-    if (!found.has(key)) found.set(key, m[2]);
+    const handle = m[2] + m[3];
+    const key = handle.toLowerCase();
+    if (!found.has(key)) found.set(key, handle);
   }
   return [...found.values()];
 }

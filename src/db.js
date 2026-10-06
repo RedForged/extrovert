@@ -701,6 +701,12 @@ try { db.exec(`CREATE INDEX IF NOT EXISTS idx_pat_user ON personal_access_tokens
 // ---------- Bots (planned.md F5) ----------
 try { db.exec(`ALTER TABLE users ADD COLUMN is_bot INTEGER NOT NULL DEFAULT 0`); } catch {}
 try { db.exec(`ALTER TABLE users ADD COLUMN bot_owner_id INTEGER`); } catch {}
+// Bot namespace migration: bots live in their own %handle namespace and never
+// consume @usernames — the '%' sigil is stored as part of users.username, so
+// the existing UNIQUE constraint keeps both namespaces collision-free.
+try {
+  db.prepare(`UPDATE users SET username = '%' || username WHERE is_bot = 1 AND username NOT LIKE '\\%%' ESCAPE '\\'`).run();
+} catch (e) {}
 try {
   db.exec(`CREATE TABLE IF NOT EXISTS bot_tokens (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1036,12 +1042,14 @@ function setCustomization(userId, html, css) {
 // ---------- notifications ----------
 const { notify } = require('./notif-broadcaster');
 
-// Notify users @mentioned in a post or comment body. Mentions are matched
-// case-insensitively; the author never notifies themselves.
+// Notify users @mentioned or %mentioned (bots) in a post or comment body.
+// The sigil is the namespace: @alice -> user "alice", %echo_bot -> bot
+// "%echo_bot". Case-insensitive; the author never notifies themselves.
 function notifyMentions(body, actorId, postId = null) {
   const { parseMentions } = require('./markdown');
-  for (const name of parseMentions(body)) {
-    const u = db.prepare(`SELECT id FROM users WHERE username = ? COLLATE NOCASE`).get(name);
+  for (const handle of parseMentions(body)) {
+    const lookup = handle.charAt(0) === '%' ? handle : handle.slice(1);
+    const u = db.prepare(`SELECT id FROM users WHERE username = ? COLLATE NOCASE`).get(lookup);
     if (!u || u.id === actorId) continue;
     createNotification({ userId: u.id, type: 'mention', actorId, postId });
   }
@@ -2750,11 +2758,13 @@ function generateBotTokenValue() {
 
 // Bots are users with no usable password: the random hash never verifies and
 // login additionally rejects is_bot outright. Bots authenticate only with
-// long-lived bot tokens. Every bot is owned by the user who created it.
+// long-lived bot tokens. Every bot is owned by the user who created it, and
+// lives in the %handle namespace ("%echo_bot") so it never takes a username.
 function createBotUser({ username, displayName, ownerId }) {
+  const handle = '%' + String(username).replace(/^%/, '');
   const res = db.prepare(
     `INSERT INTO users (username, password_hash, display_name, created_at, is_bot, bot_owner_id) VALUES (?,?,?,?,1,?)`
-  ).run(username, '!' + crypto.randomBytes(24).toString('hex'), displayName || username, Date.now(), ownerId || null);
+  ).run(handle, '!' + crypto.randomBytes(24).toString('hex'), displayName || username, Date.now(), ownerId || null);
   return res.lastInsertRowid;
 }
 

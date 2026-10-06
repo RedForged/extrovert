@@ -49,7 +49,7 @@
           <h3 style="margin:0"><%= b.display_name %></h3>
           <span class="badge" title="Automated account">bot</span>
           <span class="muted">@<%= b.username %></span>
-          <a class="btn ghost small" href="/u/<%= b.username %>" style="margin-left:auto">View profile</a>
+          <a class="btn ghost small" href="/u/<%= encodeURIComponent(b.username) %>" style="margin-left:auto">View profile</a>
         </div>
 
         <h4 style="margin:14px 0 6px;font-size:var(--fs-sm)">Tokens</h4>

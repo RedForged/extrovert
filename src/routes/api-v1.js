@@ -2137,7 +2137,7 @@ router.post('/bots', requireApiAuth('write'), (req, res) => {
   if (db.countBotsByOwner(req.apiUser.id) >= BOT_LIMIT_PER_USER) {
     return errorResponse(res, 403, 'Forbidden', `Bot limit reached (${BOT_LIMIT_PER_USER}).`);
   }
-  if (db.getUserByUsername(username)) return errorResponse(res, 409, 'Conflict', 'That username is taken.');
+  if (db.getUserByUsername('%' + username)) return errorResponse(res, 409, 'Conflict', 'That bot name is taken.');
   const botId = db.createBotUser({ username, displayName, ownerId: req.apiUser.id });
   const token = db.generateBotTokenValue();
   const tokenId = db.createBotToken(botId, 'default', token);

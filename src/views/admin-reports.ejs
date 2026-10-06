@@ -11,7 +11,7 @@
       <div style="display:flex;justify-content:space-between;align-items:start;gap:12px;flex-wrap:wrap">
         <div style="font-size:var(--fs-sm)">
           <strong>Room:</strong> <%= r.room_name %> ·
-          <strong>Reported:</strong> <a href="/u/<%= r.username %>"><%= r.display_name %></a> @<%= r.username %>
+          <strong>Reported:</strong> <a href="/u/<%= encodeURIComponent(r.username) %>"><%= r.display_name %></a> @<%= r.username %>
           · <strong>By:</strong> <%= r.reporter_name %> @<%= r.reporter_username %>
         </div>
         <small class="muted"><%= new Date(r.created_at).toLocaleString() %></small>

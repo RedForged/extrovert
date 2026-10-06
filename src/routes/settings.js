@@ -480,7 +480,7 @@ router.post('/bots', (req, res) => {
   const fail = (msg) => res.redirect('/settings/bots?error=' + encodeURIComponent(msg));
   if (!/^[a-zA-Z0-9_]{3,20}$/.test(username)) return fail('Username must be 3-20 letters, numbers, or underscores.');
   if (db.countBotsByOwner(user.id) >= BOT_LIMIT_PER_USER) return fail('Bot limit reached (' + BOT_LIMIT_PER_USER + ').');
-  if (db.getUserByUsername(username)) return fail('That username is taken.');
+  if (db.getUserByUsername('%' + username)) return fail('That bot name is taken.');
   const botId = db.createBotUser({ username, displayName, ownerId: user.id });
   const token = db.generateBotTokenValue();
   const tokenId = db.createBotToken(botId, 'default', token);

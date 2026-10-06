@@ -71,7 +71,7 @@
                 <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600"><%= r.display_name %></div>
                 <small class="muted">@<%= r.username %></small>
               </div>
-              <a class="btn small" href="/u/<%= r.username %>">View</a>
+              <a class="btn small" href="/u/<%= encodeURIComponent(r.username) %>">View</a>
             </div>
           <% }) %>
         </div>
@@ -88,7 +88,7 @@
               <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600"><%= r.display_name %></div>
               <small class="muted">@<%= r.username %></small>
             </div>
-            <a class="btn ghost small" href="/u/<%= r.username %>">View</a>
+            <a class="btn ghost small" href="/u/<%= encodeURIComponent(r.username) %>">View</a>
           </div>
         <% }) %>
       <% } else { %>

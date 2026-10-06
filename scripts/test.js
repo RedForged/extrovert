@@ -43,6 +43,11 @@ function run() {
   assert(canView(alice, carol), 'alice can see carol (friend-of-friend)');
   assert(!canView(alice, dave), 'alice cannot see dave (disconnected)');
 
+  const eveId = db.createUser({ username: 'eve', passwordHash: 'x', displayName: 'Eve' });
+  db.follow(eveId, alice);
+  assert(canView(alice, eveId), 'alice can see eve (eve follows alice)');
+  assert(!canView(eveId, dave), 'eve still cannot see dave (disconnected)');
+
   const bobP   = db.createPost({ userId: bob,   type: 'text', body: 'B', createdAt: T });
   const carolP = db.createPost({ userId: carol, type: 'text', body: 'C', createdAt: T });
   db.createPost({ userId: dave,  type: 'text', body: 'D', createdAt: T });
@@ -204,19 +209,23 @@ function run() {
   assert(renderMarkdown('') === '', 'empty string returns empty');
   assert(renderMarkdown(null) === '', 'null returns empty');
 
-  console.log('\nTEST 11: @mention parsing & linkification');
+  console.log('\nTEST 11: @mention & %bot parsing & linkification');
   const { parseMentions } = require('../src/markdown');
-  const m1 = parseMentions('hi @alice and @bob');
-  assert(m1.length === 2 && m1[0] === 'alice' && m1[1] === 'bob', 'parses multiple mentions');
+  const m1 = parseMentions('hi @alice and %echo_bot');
+  assert(m1.length === 2 && m1[0] === '@alice' && m1[1] === '%echo_bot', 'parses human and bot handles with sigils');
   const m2 = parseMentions('@Alice and @alice');
-  assert(m2.length === 1 && m2[0] === 'Alice', 'dedupes mentions case-insensitively');
+  assert(m2.length === 1 && m2[0] === '@Alice', 'dedupes mentions case-insensitively');
+  const m3 = parseMentions('@echo_bot and %echo_bot');
+  assert(m3.length === 2, 'the @ and % namespaces are distinct handles');
   assert(parseMentions('mail me at foo@bar.com').length === 0, 'ignores email addresses');
   assert(parseMentions('path /@name and single @x').length === 0, 'ignores path refs and short names');
-  assert(parseMentions('no mentions here').length === 0, 'no mentions yields empty');
+  assert(parseMentions('100% pure').length === 0, 'ignores bare percentages');
 
   const mentionHtml = renderMarkdown('hey @alice and @bob_1!');
-  assert(/<a href="\/u\/alice"[^>]*>@alice<\/a>/.test(mentionHtml), 'mention links to the profile');
+  assert(/<a href="\/u\/alice"[^>]*>@alice<\/a>/.test(mentionHtml), 'human mention links to the profile');
   assert(/<a href="\/u\/bob_1"[^>]*>@bob_1<\/a>/.test(mentionHtml), 'mention with underscore links');
+  const botHtml = renderMarkdown('ping %echo_bot now');
+  assert(/<a href="\/u\/%25echo_bot"[^>]*>%echo_bot<\/a>/.test(botHtml), 'bot mention links to its %handle profile');
   assert(!/target="_blank"/.test(mentionHtml), 'mention links stay in the same tab');
   const mixed = renderMarkdown('mail foo@bar.com or read `@alice`');
   assert(!/href="\/u\/(bar|alice)"/.test(mixed), 'emails and code spans never linkify');

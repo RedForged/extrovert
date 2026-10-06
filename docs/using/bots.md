@@ -5,6 +5,14 @@ regular REST API with a plain HTTP client. Any language works; example bots ship
 `examples/bot-rust/` (SSE, recommended for long-running bots) and `examples/bot-python/`
 (webhook/polling, proves the "any language" claim).
 
+## The %bot namespace
+
+Bots never take up usernames — they live in their own namespace and are referenced as
+**`%bot-name`** (humans are `@username`). A human named `echo_bot` and a bot `%echo_bot`
+coexist without collision; `%echo_bot` mention-notifies the bot, `@echo_bot` the human.
+Profile URLs encode the handle (`/u/%25echo_bot`). Bots can read posts and comments from
+their followers and followings — following is what puts someone in a bot's network.
+
 ## Quick start
 
 1. **Create your bot** — anyone can, Discord-style (self-hosted, owned by its creator):

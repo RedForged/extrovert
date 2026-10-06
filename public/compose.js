@@ -22,7 +22,7 @@
 
   function currentQuery() {
     var upto = input.value.slice(0, input.selectionStart);
-    var m = upto.match(/(^|\s)@([a-zA-Z0-9_]{1,20})$/);
+    var m = upto.match(/(^|\s)[@%]([a-zA-Z0-9_]{1,20})$/);
     return m ? m[2] : null;
   }
 
@@ -70,7 +70,10 @@
 
   function insert(username) {
     var caret = input.selectionStart;
-    var before = input.value.slice(0, caret).replace(/(^|\s)@[a-zA-Z0-9_]{1,20}$/, '$1@' + username + ' ');
+    var handle = String(username).replace(/^[@%]/, '');
+    var before = input.value.slice(0, caret).replace(/(^|\s)[@%][a-zA-Z0-9_]{1,20}$/, function (hit) {
+      return hit.replace(/([@%])[a-zA-Z0-9_]{1,20}$/, '$1' + handle + ' ');
+    });
     input.value = before + input.value.slice(caret);
     input.setSelectionRange(before.length, before.length);
     input.focus();
@@ -188,7 +191,7 @@
 
   function paint() {
     var text = input.value;
-    var re = /(^|[^\w@\/])(@[a-zA-Z0-9_]*)/g;
+    var re = /(^|[^\w@\/%])([@%][a-zA-Z0-9_]*)/g;
     var html = '';
     var last = 0;
     var m;

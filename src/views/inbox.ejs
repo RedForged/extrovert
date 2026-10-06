@@ -28,7 +28,7 @@
           <% if (n.type === 'security') { %>
             <b>Security notice:</b> New login to your account from a new client or device.
           <% } else { %>
-            <a href="/u/<%= n.actor_username %>"><b><%= n.actor_name %></b></a>
+            <a href="/u/<%= encodeURIComponent(n.actor_username) %>"><b><%= n.actor_name %></b></a>
             <% if (n.type === 'follow') { %>followed you<% } %>
             <% if (n.type === 'like') { %>liked your <a href="/posts/<%= n.post_id %>">post</a><% } %>
             <% if (n.type === 'comment') { %>commented on your <a href="/posts/<%= n.post_id %>">post</a><% } %>

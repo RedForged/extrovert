@@ -10,6 +10,15 @@ function friendIds(userId) {
   return new Set(rows.map(r => r.id));
 }
 
+// Followers: people who follow you. Their content is readable by you —
+// following you puts them in your network.
+function followerIds(userId) {
+  const rows = db.prepare(
+    `SELECT follower_id AS id FROM follows WHERE followee_id = ?`
+  ).all(userId);
+  return new Set(rows.map(r => r.id));
+}
+
 // Friends of friends: people followed by your friends, excluding you and your
 // direct friends. These are the only other people whose content you can see.
 function foafIds(userId) {
@@ -27,10 +36,12 @@ function foafIds(userId) {
 }
 
 // The full set of user ids whose content is visible to `viewerId`:
-// the viewer themself, their friends, and their friends-of-friends.
+// the viewer themself, people they follow, people who follow them, and
+// friends-of-friends.
 function visibleUserIds(viewerId) {
   const set = new Set([viewerId]);
   for (const id of friendIds(viewerId)) set.add(id);
+  for (const id of followerIds(viewerId)) set.add(id);
   for (const id of foafIds(viewerId)) set.add(id);
   return set;
 }
@@ -45,4 +56,4 @@ function isFoaf(viewerId, authorId) {
   return foafIds(viewerId).has(authorId);
 }
 
-module.exports = { friendIds, foafIds, visibleUserIds, canView, isFoaf };
+module.exports = { friendIds, followerIds, foafIds, visibleUserIds, canView, isFoaf };
