@@ -48,6 +48,9 @@
       <input type="hidden" name="_csrf" value="<%= _token %>">
       <button class="<%= item.liked ? 'active' : '' %>"><%- include('icon', { name: item.liked ? 'heartFilled' : 'heart', size: 15, cls: 'ico' }) %> <%= item.liked ? 'Liked' : 'Like' %></button>
     </form>
+    <details class="menu-dd" open>
+      <summary title="More actions"><%- include('icon', { name: 'more', size: 15 }) %></summary>
+      <div class="menu-dd-pop">
     <form method="post" action="/posts/<%= item.interactId %>/share">
       <input type="hidden" name="_csrf" value="<%= _token %>">
       <button class="<%= item.shared ? 'active' : '' %>"><%- include('icon', { name: 'share', size: 15, cls: 'ico' }) %> <%= item.shared ? 'Shared' : 'Share' %></button>
@@ -66,6 +69,8 @@
       <button class="btn ghost edit-post-btn" data-post-id="<%= item.id %>" style="margin-left:auto"><%- include('icon', { name: 'edit', size: 15 }) %> Edit</button>
       <a class="btn ghost danger" href="/posts/<%= item.interactId %>/delete"><%- include('icon', { name: 'trash', size: 15 }) %> Delete</a>
     <% } %>
+      </div>
+    </details>
   </div>
   <% if (item.isOwn) { %>
     <input type="hidden" class="edit-post-data" value="<%= item.body %>" data-csrf="<%= _token %>" data-action="/posts/<%= item.interactId %>/edit">

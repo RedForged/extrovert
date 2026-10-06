@@ -673,6 +673,93 @@ label { display: block; font-size: var(--fs-sm); color: var(--text-secondary); m
   font-weight: 600;
 }
 
+/* ── Overflow menus: identical layout on desktop, ⋯ dropdown on mobile ──
+   On desktop the details/pop use display: contents so children flow in the
+   parent layout untouched; under 600px secondary items collapse behind a
+   small round ⋯ button. */
+
+.menu-dd { display: contents; }
+.menu-dd > summary { display: none; }
+.nav-more { display: none; }
+
+@media (max-width: 600px) {
+  .menu-dd {
+    display: block;
+    position: relative;
+    flex: none;
+  }
+  .menu-dd > summary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    background: var(--surface-2);
+    border: 1px solid var(--border-soft);
+    color: var(--text-secondary);
+    cursor: pointer;
+    list-style: none;
+    flex: none;
+  }
+  .menu-dd > summary::-webkit-details-marker { display: none; }
+  .menu-dd > summary:hover { color: var(--text); }
+  .menu-dd > .menu-dd-pop {
+    display: flex;
+    position: absolute;
+    right: 0;
+    top: calc(100% + 6px);
+    z-index: 80;
+    min-width: 175px;
+    padding: 6px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+  }
+  .menu-dd:not([open]) > .menu-dd-pop { display: none; }
+  .menu-dd > .menu-dd-pop > *,
+  .menu-dd > .menu-dd-pop > form {
+    width: 100%;
+    margin: 0;
+  }
+  .menu-dd > .menu-dd-pop a,
+  .menu-dd > .menu-dd-pop button,
+  .menu-dd > .menu-dd-pop form button {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    text-align: left;
+    padding: 9px 10px;
+    border-radius: var(--radius-sm);
+    background: none;
+    border: none;
+    color: var(--text);
+    font: inherit;
+    cursor: pointer;
+    text-decoration: none;
+    white-space: nowrap;
+    margin: 0;
+  }
+  .menu-dd > .menu-dd-pop a:hover,
+  .menu-dd > .menu-dd-pop button:hover,
+  .menu-dd > .menu-dd-pop form button:hover {
+    background: var(--surface-2);
+    color: var(--text);
+  }
+  .menu-dd > .menu-dd-pop .danger,
+  .menu-dd > .menu-dd-pop .account-switcher-signout {
+    color: var(--danger);
+  }
+
+  .nav-overflow { display: none !important; }
+  .nav-more { display: block; }
+}
+
 /* ── Post card ────────────────────────────────────────────────────── */
 
 .post {

@@ -31,11 +31,16 @@
       <% }) %>
     </nav>
     <div class="room-sidebar-actions">
+      <details class="menu-dd" open>
+        <summary title="Room menu"><%- include('../partials/icon', { name: 'more', size: 18 }) %></summary>
+        <div class="menu-dd-pop">
       <% if (role && (role.permissions & 64)) { %><a href="/rooms/<%= room.id %>/settings" class="room-sidebar-link">Settings</a><% } %>
       <% if (role && (role.permissions & 4)) { %><a href="/rooms/<%= room.id %>/channels" class="room-sidebar-link">Channels</a><% } %>
       <% if (role && (role.permissions & 8)) { %><a href="/rooms/<%= room.id %>/roles" class="room-sidebar-link">Roles</a><% } %>
       <% if (role && (role.permissions & 32)) { %><a href="/rooms/<%= room.id %>/members" class="room-sidebar-link">Members</a><% } %>
       <% if (role && (role.is_founder || locals.currentUser && locals.currentUser.is_admin)) { %><a href="/rooms/<%= room.id %>/settings" class="room-sidebar-link danger">Delete Room</a><% } else { %><form method="post" action="/rooms/<%= room.id %>/leave" style="margin:0" data-confirm="Leave this room?"><input type="hidden" name="_csrf" value="<%= csrfToken %>"><button class="room-sidebar-link danger" style="background:none;border:none;cursor:pointer">Leave</button></form><% } %>
+        </div>
+      </details>
     </div>
   </aside>
   <main class="room-main">

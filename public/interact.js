@@ -388,4 +388,22 @@ document.addEventListener('DOMContentLoaded', function(){
     requestAnimationFrame(function(){ el.style.opacity = '1'; });
     setTimeout(function(){ el.style.opacity = '0'; setTimeout(function(){ el.remove(); }, 300); }, 1500);
   }
+
+  // Mobile overflow menus (details.menu-dd): collapsed under 600px, one at a
+  // time, and closed on outside clicks. Desktop keeps them open and static.
+  var overflowMenus = document.querySelectorAll('details.menu-dd');
+  if (window.matchMedia && window.matchMedia('(max-width: 600px)').matches) {
+    Array.prototype.forEach.call(overflowMenus, function(d) { d.open = false; });
+  }
+  Array.prototype.forEach.call(overflowMenus, function(d) {
+    d.addEventListener('toggle', function() {
+      if (!d.open) return;
+      Array.prototype.forEach.call(overflowMenus, function(o) { if (o !== d) o.open = false; });
+    });
+  });
+  document.addEventListener('click', function(e) {
+    Array.prototype.forEach.call(overflowMenus, function(d) {
+      if (d.open && !d.contains(e.target)) d.open = false;
+    });
+  });
 });

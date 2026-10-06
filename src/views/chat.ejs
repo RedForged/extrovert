@@ -12,6 +12,9 @@
       <% } %>
     </div>
     <div style="display:flex;gap:8px;align-items:center">
+      <details class="menu-dd" open>
+        <summary title="Conversation menu"><%- include('partials/icon', { name: 'more', size: 18 }) %></summary>
+        <div class="menu-dd-pop">
       <button class="btn ghost" id="dm-security-toggle" type="button"
               data-username="<%= other.username %>"
               data-enabled="<%= security.mine ? '1' : '0' %>"
@@ -22,6 +25,8 @@
       </button>
       <button class="btn ghost call-btn" data-username="<%= other.username %>" data-display="<%= other.display_name %>"><%- include('partials/icon', { name: 'phone', size: 15 }) %> Call</button>
       <a class="btn ghost" href="/u/<%= other.username %>"><%- include('partials/icon', { name: 'user', size: 15 }) %> Profile</a>
+        </div>
+      </details>
     </div>
   </div>
 
