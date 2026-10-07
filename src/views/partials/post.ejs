@@ -75,6 +75,8 @@
         <button class="edit-post-btn" data-post-id="<%= item.id %>"><%- include('icon', { name: 'edit', size: 15 }) %> Edit</button>
         <a class="post-danger" href="/posts/<%= item.interactId %>/delete"><%- include('icon', { name: 'trash', size: 15 }) %> Delete</a>
       </div>
+    <% } else { %>
+      <button type="button" class="report-item" data-report="post" data-report-id="<%= item.interactId %>"><%- include('icon', { name: 'flag', size: 15 }) %> Report</button>
     <% } %>
       </div>
     </details>
@@ -101,6 +103,13 @@
                   <input type="hidden" name="_csrf" value="<%= _token %>">
                   <button class="delete-comment-btn"><%- include('icon', { name: 'trash', size: 14 }) %> Delete</button>
                 </form>
+              </div>
+            </div>
+          <% } else if (u) { %>
+            <div class="comment-menu-container">
+              <button class="comment-menu-btn" title="More"><%- include('icon', { name: 'more', size: 16 }) %></button>
+              <div class="comment-menu" style="display:none">
+                <button type="button" class="report-item" data-report="comment" data-report-id="<%= c.id %>"><%- include('icon', { name: 'flag', size: 14 }) %> Report</button>
               </div>
             </div>
           <% } %>

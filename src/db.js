@@ -368,6 +368,92 @@ try { db.exec(`ALTER TABLE oauth_tokens ADD COLUMN refresh_expires_at INTEGER`);
 // with revoked_at set instead of deleted, so replaying it is detectable.
 try { db.exec(`ALTER TABLE oauth_tokens ADD COLUMN revoked_at INTEGER`); } catch {}
 try { db.exec(`CREATE TABLE IF NOT EXISTS reports (id INTEGER PRIMARY KEY AUTOINCREMENT, reporter_id INTEGER NOT NULL REFERENCES users(id), reported_user_id INTEGER NOT NULL REFERENCES users(id), message_id INTEGER NOT NULL, message_body TEXT NOT NULL, channel_id INTEGER NOT NULL, room_id INTEGER NOT NULL, reason TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at INTEGER NOT NULL)`); } catch {}
+// Content reports: one queue for everything a user can report. The reporter is
+// always the signed-in user; target_user_id is whoever posted the thing.
+// `snapshot` only matters for end-to-end encrypted content (room/DM messages),
+// where the server can't read the text and the reporter's own view is the only
+// copy a moderator can see.
+try { db.exec(`
+  CREATE TABLE IF NOT EXISTS content_reports (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    reporter_id    INTEGER NOT NULL REFERENCES users(id),
+    target_user_id INTEGER,
+    target_type    TEXT NOT NULL,
+    target_id      INTEGER NOT NULL,
+    context        TEXT NOT NULL DEFAULT '',
+    snapshot       TEXT NOT NULL DEFAULT '',
+    reason         TEXT NOT NULL,
+    status         TEXT NOT NULL DEFAULT 'pending',
+    created_at     INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_content_reports_status ON content_reports(status, created_at);
+`); } catch {}
+
+// Legacy room-only reports are migrated into content_reports once.
+try {
+  const done = db.prepare(`SELECT value FROM app_meta WHERE key = 'content_reports_migration_v1'`).get();
+  if (!done) {
+    const legacy = db.prepare(`SELECT * FROM reports`).all();
+    const insert = db.prepare(`
+      INSERT INTO content_reports (reporter_id, target_user_id, target_type, target_id, context, snapshot, reason, status, created_at)
+      VALUES (?,?,?,?,?,?,?,?,?)
+    `);
+    let moved = 0;
+    for (const r of legacy) {
+      const room = db.prepare(`SELECT name FROM rooms WHERE id = ?`).get(r.room_id);
+      insert.run(r.reporter_id, r.reported_user_id, 'room_message', r.message_id,
+        room ? room.name : '', r.message_body || '', r.reason, r.status, r.created_at);
+      moved++;
+    }
+    db.prepare(`INSERT OR REPLACE INTO app_meta (key, value) VALUES ('content_reports_migration_v1', '1')`).run();
+    if (moved) console.log(`[Reports] Migrated ${moved} legacy room report(s) into content_reports.`);
+  }
+} catch (err) { console.error('Report migration error:', err); }
+
+const REPORT_TARGET_TYPES = new Set(['post', 'comment', 'user', 'room_message', 'dm_message']);
+
+function createContentReport({ reporterId, targetUserId, targetType, targetId, context, snapshot, reason }) {
+  if (!REPORT_TARGET_TYPES.has(targetType)) return null;
+  return db.prepare(`
+    INSERT INTO content_reports (reporter_id, target_user_id, target_type, target_id, context, snapshot, reason, created_at)
+    VALUES (?,?,?,?,?,?,?,?)
+  `).run(reporterId, targetUserId || null, targetType, targetId, context || '', snapshot || '', reason, Date.now()).lastInsertRowid;
+}
+
+function getPendingContentReports() {
+  return db.prepare(`
+    SELECT c.*,
+           u.username      AS reported_username,
+           u.display_name  AS reported_name,
+           rp.username     AS reporter_username,
+           rp.display_name AS reporter_name
+    FROM content_reports c
+    LEFT JOIN users u  ON u.id = c.target_user_id
+    LEFT JOIN users rp ON rp.id = c.reporter_id
+    WHERE c.status = 'pending'
+    ORDER BY c.created_at DESC
+    LIMIT 200
+  `).all();
+}
+
+function countPendingContentReports() {
+  return db.prepare(`SELECT COUNT(*) AS n FROM content_reports WHERE status = 'pending'`).get().n;
+}
+
+// action: 'actioned' (content removed and/or the author banned) or 'dismissed'.
+function resolveContentReport(id, action) {
+  const status = action === 'actioned' ? 'actioned' : 'dismissed';
+  return db.prepare(`UPDATE content_reports SET status = ? WHERE id = ? AND status = 'pending'`).run(status, id).changes;
+}
+
+function getContentReport(id) {
+  return db.prepare(`SELECT * FROM content_reports WHERE id = ?`).get(id);
+}
+
+function getCommentById(id) {
+  return db.prepare(`SELECT * FROM comments WHERE id = ?`).get(id);
+}
+
 // Private security reports from the responsible-disclosure form (/security).
 // Visible only to admins — never rendered on public pages.
 try { db.exec(`CREATE TABLE IF NOT EXISTS security_reports (
@@ -3594,6 +3680,9 @@ module.exports = {
   FILE_ROOTS, fileDiskPath, splitStoredPath, createUserFile, getUserFiles, getUserFileById, getUserFileUsage,
   getAllUserFileUsage, getTotalUserFileUsage, deleteUserFile, deleteUserFileByPath, removeStoredFile,
   getUserFileByPath, countPostsUsingMedia, setUserFont, clearUserFontByPath,
+  // content reports
+  createContentReport, getPendingContentReports, countPendingContentReports, resolveContentReport,
+  getContentReport, getCommentById, REPORT_TARGET_TYPES,
   backfillDriveFiles, pruneOrphanDriveFiles, getDriveQuotaBytes, setDriveQuotaBytes, DRIVE_QUOTA_DEFAULT_BYTES,
   // idempotency
   getIdempotencyKey, setIdempotencyKey,

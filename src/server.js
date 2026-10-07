@@ -368,10 +368,10 @@ app.use(optionalAuth);
 // Expose user data to all templates.
 app.use((req, res, next) => {
   if (res.locals.currentUser) {
-    const { countUnreadNotifications, countUnreadMessages, getUserTheme, getPendingReports, getPendingSecurityReports, getAnnouncement, requireVerifiedEmail, getReferralCode } = require('./db');
+    const { countUnreadNotifications, countUnreadMessages, getUserTheme, countPendingContentReports, getPendingSecurityReports, getAnnouncement, requireVerifiedEmail, getReferralCode } = require('./db');
     res.locals.unreadCount = countUnreadNotifications(res.locals.currentUser.id);
     res.locals.unreadMessages = countUnreadMessages(res.locals.currentUser.id);
-    res.locals.pendingReports = res.locals.currentUser.is_admin ? getPendingReports().length : 0;
+    res.locals.pendingReports = res.locals.currentUser.is_admin ? countPendingContentReports() : 0;
     res.locals.securityReports = res.locals.currentUser.is_admin ? getPendingSecurityReports().length : 0;
     res.locals.theme = getUserTheme(res.locals.currentUser.id);
     res.locals.announcement = getAnnouncement();
@@ -434,6 +434,7 @@ app.use('/admin', require('./routes/admin'));
 app.use('/stickers', require('./routes/stickers'));
 app.use('/rooms', require('./routes/rooms'));
 app.use('/drive', require('./routes/drive'));
+app.use('/report', require('./routes/report'));
 app.use('/', require('./routes/security')); // /security, /security/report, /security.txt
 
 // REST API v1.

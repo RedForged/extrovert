@@ -31,6 +31,12 @@
         <% } else { %>
           <form method="post" action="/follow/<%= profileUser.username %>"><input type="hidden" name="_csrf" value="<%= csrfToken %>"><button class="btn"><%- include('partials/icon', { name: 'plus', size: 15 }) %> Follow</button></form>
         <% } %>
+        <div class="comment-menu-container">
+          <button class="comment-menu-btn" title="More actions" aria-label="More actions"><%- include('partials/icon', { name: 'more', size: 18 }) %></button>
+          <div class="comment-menu" style="display:none">
+            <button type="button" class="report-item" data-report="user" data-report-id="<%= profileUser.id %>"><%- include('partials/icon', { name: 'flag', size: 14 }) %> Report profile</button>
+          </div>
+        </div>
       <% } %>
     </div>
 

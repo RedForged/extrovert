@@ -3857,24 +3857,24 @@ router.post('/admin/users/:id/remove_admin', requireApiAdmin, (req, res) => {
 
 // GET /api/v1/admin/reports
 router.get('/admin/reports', requireApiAdmin, (req, res) => {
-  const reports = db.getPendingReports();
+  const reports = db.getPendingContentReports();
   responseEnvelope(res, reports);
 });
 
 // POST /api/v1/admin/reports/:id/resolve
 router.post('/admin/reports/:id/resolve', requireApiAdmin, (req, res) => {
-  const report = db.getReport(Number(req.params.id));
+  const report = db.getContentReport(Number(req.params.id));
   if (!report) return errorResponse(res, 404, 'Not Found', 'Report not found.');
-  db.resolveReport(report.id);
+  db.resolveContentReport(report.id, 'actioned');
   db.auditLog('report_resolved', req.apiUser.id, `Report #${report.id}`, req.ip);
   responseEnvelope(res, { ok: true, report_id: report.id });
 });
 
 // POST /api/v1/admin/reports/:id/dismiss
 router.post('/admin/reports/:id/dismiss', requireApiAdmin, (req, res) => {
-  const report = db.getReport(Number(req.params.id));
+  const report = db.getContentReport(Number(req.params.id));
   if (!report) return errorResponse(res, 404, 'Not Found', 'Report not found.');
-  db.dismissReport(report.id);
+  db.resolveContentReport(report.id, 'dismissed');
   db.auditLog('report_dismissed', req.apiUser.id, `Report #${report.id}`, req.ip);
   responseEnvelope(res, { ok: true, report_id: report.id });
 });

@@ -1,7 +1,7 @@
 'use strict';
 
 const express = require('express');
-const { getAllUsers, getUserById, removeReferralBadge, banUser, unbanUser, deleteUser, getAllRooms, deleteRoom, getPendingReports, getReport, resolveReport, dismissReport, promoteUser, getAnnouncement, setAnnouncement, clearAnnouncement, getSecurityReports, markSecurityReportHandled, getSetting, revokeAllOAuthTokensForUser, auditLog, getDriveQuotaBytes, setDriveQuotaBytes, getTotalUserFileUsage, getAllUserFileUsage, DRIVE_QUOTA_DEFAULT_BYTES } = require('../db');
+const { getAllUsers, getUserById, removeReferralBadge, banUser, unbanUser, deleteUser, getAllRooms, deleteRoom, getPendingReports, getReport, resolveReport, dismissReport, promoteUser, getAnnouncement, setAnnouncement, clearAnnouncement, getSecurityReports, markSecurityReportHandled, getSetting, revokeAllOAuthTokensForUser, auditLog, getDriveQuotaBytes, setDriveQuotaBytes, getTotalUserFileUsage, getAllUserFileUsage, DRIVE_QUOTA_DEFAULT_BYTES, getPendingContentReports, countPendingContentReports, getContentReport, resolveContentReport, deletePost, deleteComment, deleteRoomMessage, getPostById, getCommentById, splitStoredPath, removeStoredFile } = require('../db');
 const { destroySessionsForUser } = require('../session-store');
 const { fmt } = require('../drive');
 
@@ -16,7 +16,7 @@ function requireAdmin(req, res, next) {
 router.get('/', requireAdmin, (req, res) => {
   const users = getAllUsers();
   const rooms = getAllRooms();
-  const reports = getPendingReports();
+  const reports = getPendingContentReports();
   res.render('admin', { users, rooms, reports });
 });
 
@@ -72,29 +72,61 @@ router.post('/rooms/:id/delete', requireAdmin, (req, res) => {
 
 // Admin: reports
 router.get('/reports', requireAdmin, (req, res) => {
-  const reports = getPendingReports();
+  const reports = getPendingContentReports();
   res.render('admin-reports', { reports });
 });
 
 router.post('/reports/:id/ban', requireAdmin, (req, res) => {
-  const report = getReport(Number(req.params.id));
+  const report = getContentReport(Number(req.params.id));
   if (!report) return res.status(404).send('Report not found');
   if (report.status !== 'pending') return res.status(400).send('Report already resolved');
-  const target = getUserById(report.reported_user_id);
+  const target = report.target_user_id ? getUserById(report.target_user_id) : null;
   if (!target) return res.status(404).send('User not found');
   if (target.is_admin) return res.status(403).send('Cannot ban another admin');
   banUser(target.id);
   try { destroySessionsForUser(target.id); } catch (err) { console.error('ban: session teardown failed', err); }
   revokeAllOAuthTokensForUser(target.id);
   auditLog('user_banned', req.session.userId, target.username);
-  resolveReport(report.id);
+  resolveContentReport(report.id, 'actioned');
+  res.redirect('/admin/reports');
+});
+
+// Remove the reported content itself. Encrypted content has no server-side copy,
+// so a room/DM message can only be actioned by banning (or by the author).
+router.post('/reports/:id/delete', requireAdmin, (req, res) => {
+  const report = getContentReport(Number(req.params.id));
+  if (!report) return res.status(404).send('Report not found');
+  if (report.status !== 'pending') return res.status(400).send('Report already resolved');
+  try {
+    if (report.target_type === 'post') {
+      const post = getPostById(report.target_id);
+      if (post) {
+        deletePost(post.id, post.user_id);
+        const media = post.media_path ? splitStoredPath(post.media_path) : null;
+        if (media) removeStoredFile(media.root, media.path);
+      }
+    } else if (report.target_type === 'comment') {
+      const comment = getCommentById(report.target_id);
+      if (comment) deleteComment(comment.id, comment.user_id);
+    } else if (report.target_type === 'room_message') {
+      deleteRoomMessage(report.target_id);
+    } else {
+      return res.status(400).send('Nothing to remove for this report type — ban the author instead.');
+    }
+    auditLog('report_content_removed', req.session.userId, `${report.target_type} ${report.target_id}`);
+    resolveContentReport(report.id, 'actioned');
+  } catch (err) {
+    console.error('report content removal failed', err);
+    return res.status(500).send('Could not remove that content.');
+  }
+  res.redirect('/admin/reports');
 });
 
 router.post('/reports/:id/dismiss', requireAdmin, (req, res) => {
-  const report = getReport(Number(req.params.id));
+  const report = getContentReport(Number(req.params.id));
   if (!report) return res.status(404).send('Report not found');
   if (report.status !== 'pending') return res.status(400).send('Report already resolved');
-  dismissReport(report.id);
+  resolveContentReport(report.id, 'dismissed');
   res.redirect('/admin/reports');
 });
 

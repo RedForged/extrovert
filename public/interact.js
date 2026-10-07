@@ -126,7 +126,11 @@ document.addEventListener('DOMContentLoaded', function(){
     var t = typeof timeFn === 'function' ? timeFn(c.created_at) : new Date(c.created_at).toLocaleString();
     var sticker = c.body && c.body.indexOf('/uploads/stickers/') !== -1;
     var editedHtml = c.edited_at ? ' <a href="/posts/' + c.id + '/history?type=comment&post_id=' + postIdVal + '" class="edited-link">(edited)</a>' : '';
-    var ownMenuHtml = '<div class="comment-menu-container"><button class="comment-menu-btn" title="More"></button><div class="comment-menu" style="display:none"><button class="edit-comment-btn">Edit</button><form method="post" action="/posts/' + postIdVal + '/comments/' + c.id + '/delete" class="delete-comment-form"><input type="hidden" name="_csrf" value="' + csrfToken + '"><button class="delete-comment-btn">Delete</button></form></div></div>';
+    var myId = (document.querySelector('meta[name="current-user-id"]') || {}).content || '';
+    var isMine = String(c.user_id) === String(myId);
+    var ownMenuHtml = isMine
+      ? '<div class="comment-menu-container"><button class="comment-menu-btn" title="More"></button><div class="comment-menu" style="display:none"><button class="edit-comment-btn">Edit</button><form method="post" action="/posts/' + postIdVal + '/comments/' + c.id + '/delete" class="delete-comment-form"><input type="hidden" name="_csrf" value="' + csrfToken + '"><button class="delete-comment-btn">Delete</button></form></div></div>'
+      : (myId ? '<div class="comment-menu-container"><button class="comment-menu-btn" title="More"></button><div class="comment-menu" style="display:none"><button type="button" class="report-item" data-report="comment" data-report-id="' + c.id + '">Report</button></div></div>' : '');
     var dataHtml = '<input type="hidden" class="edit-comment-data" value="' + esc(c.body) + '" data-csrf="' + csrfToken + '" data-action="/posts/' + postIdVal + '/comments/' + c.id + '/edit">';
     div.innerHTML = '<div class="comment-head"><div><b>' + esc(c.display_name) + '</b> <span class="post-handle">@' + esc(c.username) + '</span> <span class="post-time">· ' + t + '</span>' + editedHtml + '</div>' + ownMenuHtml + '</div><span class="comment-body">' + (sticker ? '<img src="' + esc(c.body) + '" class="sticker-inline" style="max-width:120px;max-height:120px;vertical-align:middle" alt="sticker">' : esc(c.body)) + '</span>' + dataHtml;
     var menuBtn = div.querySelector('.comment-menu-btn');

@@ -1398,6 +1398,27 @@ a.conv-row:hover { color: var(--primary); }
 .comment-menu .delete-comment-btn { color: var(--danger); }
 .comment-menu .delete-comment-btn:hover { background: var(--danger-soft); }
 .comment-menu form { margin: 0; }
+.comment-menu .report-item {
+  background: none; border: none; padding: 8px 12px; cursor: pointer; text-align: left;
+  font-size: var(--fs-sm); color: var(--text); width: 100%; border-radius: var(--radius-sm);
+  display: flex; align-items: center; gap: 8px;
+}
+.comment-menu .report-item:hover { background: var(--surface-2); }
+
+/* ── Report modal ─────────────────────────────────────────────────── */
+
+.report-overlay {
+  position: fixed; inset: 0; z-index: 1200; padding: 16px;
+  background: rgba(0, 0, 0, 0.6); display: flex; align-items: center; justify-content: center;
+}
+.report-overlay[hidden] { display: none; }
+.report-card { max-width: 420px; width: 100%; margin: 0; }
+.report-preview {
+  font-style: italic; padding: 8px 10px; margin: 0 0 12px;
+  background: var(--surface-2); border: 1px solid var(--border-soft); border-radius: var(--radius);
+}
+.report-actions { display: flex; gap: 8px; margin-top: 14px; }
+.report-status { margin: 10px 0 0; font-size: 0.85rem; }
 
 /* ── Utilities ─────────────────────────────────────────────────────── */
 

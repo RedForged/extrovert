@@ -8,6 +8,12 @@ release: the codebase carries its version in `package.json`, and the sections
 ## [Unreleased]
 
 ### Features
+- **Report anything**: a single report flow reachable from a **⋯ menu** on posts, comments and
+  profiles, plus the existing Report chip on room messages. Reports land in one admin queue
+  (`/admin/reports`) that shows the type, context, the content (or the reporter's copy for encrypted
+  messages) and the reason, with **Ban author**, **Remove content** and **Dismiss** actions. The
+  content_reports table replaces the room-only reports table (existing rows migrated), the API admin
+  endpoints use the same queue, and the ToS now describes reporting accurately.
 - **Terms of Service & rules**: a ToS at `/docs/terms` covering accounts, uploads (including the
   "you confirm you have the right to share this" declaration), a narrow conduct-based set of
   prohibited content (illegal material, violent extremism, genocide denial/glorification, hate,

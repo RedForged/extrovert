@@ -90,16 +90,18 @@
     <h2>Admin · Reports (<%= reports.length %>)</h2>
     <% if (reports.length) { %>
       <table class="admin-table">
-        <thead><tr><th>Message</th><th>From</th><th>Room</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Type</th><th>Reported</th><th>By</th><th>Reason</th><th>Actions</th></tr></thead>
         <tbody>
           <% reports.forEach(function(r) { %>
             <tr>
-              <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><%= r.message_body %></td>
-              <td><%= r.reporter_username %></td>
-              <td><%= r.room_name %></td>
+              <td><%= r.target_type.replace('_', ' ') %><%= r.context ? ' · ' + r.context : '' %></td>
+              <td><% if (r.reported_username) { %><a href="/u/<%= encodeURIComponent(r.reported_username) %>">@<%= r.reported_username %></a><% } else { %><span class="muted">—</span><% } %></td>
+              <td>@<%= r.reporter_username %></td>
+              <td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><%= r.reason %></td>
               <td class="actions">
-                <form method="post" action="/admin/reports/<%= r.id %>/ban"><input type="hidden" name="_csrf" value="<%= csrfToken %>"><button class="btn ghost danger small">Ban author</button></form>
+                <form method="post" action="/admin/reports/<%= r.id %>/ban"><input type="hidden" name="_csrf" value="<%= csrfToken %>"><button class="btn ghost danger small" <%= r.reported_username ? '' : 'disabled' %>>Ban author</button></form>
                 <form method="post" action="/admin/reports/<%= r.id %>/dismiss"><input type="hidden" name="_csrf" value="<%= csrfToken %>"><button class="btn ghost small">Dismiss</button></form>
+                <a class="btn ghost small" href="/admin/reports">Open queue</a>
               </td>
             </tr>
           <% }) %>

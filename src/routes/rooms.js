@@ -9,7 +9,7 @@ const {
   createRoomRole, getRoomRole, getRoomRoles, updateRoomRole, deleteRoomRole, transferFounder,
   createRoomChannel, getRoomChannel, getRoomChannels, updateRoomChannel, deleteRoomChannel,
   getRoomMessages, sendRoomMessage, joinDefaultRole, hasRoomPermission, getUserById, getUserByUsername, db,
-  createReport,
+  createContentReport,
   createJoinRequest, getJoinRequests, getJoinRequestById, approveJoinRequest, rejectJoinRequest, hasPendingRequest,
   publishRoomGroupSession, getRoomGroupSession, isRoomGroupSessionUsable, saveRoomSessionKeys, ensureRoomSessionRecipient, getPendingRoomSessionKeys, getRoomSessionKeyById, markRoomSessionKeyDelivered, getRoomSessionRecipients, getRoomSessionEmptyKeyRecipients,
   getOlmIdentity, getAllDeviceBundlesForUser, claimAllDevicePrekeysForUser,
@@ -498,7 +498,16 @@ router.post('/:id/channels/:cid/report', (req, res) => {
   const msgs = getRoomMessages(channel.id);
   const msg = msgs.find(m => m.id === messageId);
   if (!msg) return res.status(404).json({ error: 'Message not found' });
-  createReport(res.locals.currentUser.id, msg.user_id, msg.id, msg.body, channel.id, room.id, reason);
+  // Reports go through the shared queue (the legacy reports table is no longer read).
+  createContentReport({
+    reporterId: res.locals.currentUser.id,
+    targetUserId: msg.user_id,
+    targetType: 'room_message',
+    targetId: msg.id,
+    context: 'room "' + room.name + '"',
+    snapshot: msg.body || '',
+    reason,
+  });
   res.json({ ok: true });
 });
 
