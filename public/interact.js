@@ -275,9 +275,8 @@ document.addEventListener('DOMContentLoaded', function(){
       if (!bodyEl || !dataEl) return;
       var action = dataEl.dataset.action;
       var csrf = dataEl.dataset.csrf;
-      editPostBtn.style.display = 'none';
-      var deleteBtn = postEl.querySelector('.post-actions .btn.ghost.danger');
-      if (deleteBtn) deleteBtn.style.display = 'none';
+      var ownersGroup = postEl.querySelector('.post-owners');
+      if (ownersGroup) ownersGroup.style.display = 'none';
       var postActions = postEl.querySelector('.post-actions');
       var editActions = document.createElement('span');
       editActions.className = 'inline-edit-btns';
@@ -294,8 +293,7 @@ document.addEventListener('DOMContentLoaded', function(){
       editActions.appendChild(cancelBtn);
       postActions.appendChild(editActions);
       function showEditBtn() {
-        editPostBtn.style.display = '';
-        if (deleteBtn) deleteBtn.style.display = '';
+        if (ownersGroup) ownersGroup.style.display = '';
         if (editActions.parentNode) editActions.remove();
       }
       var editState = replaceWithInput(bodyEl, 'post-body-edit', true,

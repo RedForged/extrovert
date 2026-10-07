@@ -66,8 +66,10 @@
       </form>
     <% } %>
     <% if (item.isOwn) { %>
-      <button class="btn ghost edit-post-btn" data-post-id="<%= item.id %>" style="margin-left:auto"><%- include('icon', { name: 'edit', size: 15 }) %> Edit</button>
-      <a class="btn ghost danger" href="/posts/<%= item.interactId %>/delete"><%- include('icon', { name: 'trash', size: 15 }) %> Delete</a>
+      <div class="post-owners">
+        <button class="edit-post-btn" data-post-id="<%= item.id %>"><%- include('icon', { name: 'edit', size: 15 }) %> Edit</button>
+        <a class="post-danger" href="/posts/<%= item.interactId %>/delete"><%- include('icon', { name: 'trash', size: 15 }) %> Delete</a>
+      </div>
     <% } %>
       </div>
     </details>
@@ -108,7 +110,7 @@
       <input type="hidden" name="_csrf" value="<%= _token %>">
       <input type="text" name="body" id="sticker-input-<%= item.interactId %>" placeholder="Add a comment…" maxlength="1000" required>
       <button><%- include('icon', { name: 'comment', size: 15 }) %> Comment</button>
-      <button class="btn ghost sticker-btn" data-target="sticker-popup-<%= item.interactId %>" type="button" style="font-size:18px;padding:6px 10px" title="Stickers"><%- include('icon', { name: 'smile', size: 18 }) %></button>
+      <button class="sticker-btn" data-target="sticker-popup-<%= item.interactId %>" type="button" title="Stickers"><%- include('icon', { name: 'smile', size: 18 }) %></button>
       <div id="sticker-popup-<%= item.interactId %>" style="display:none;position:absolute;bottom:100%;right:0;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);z-index:100;box-shadow:var(--shadow)"></div>
     </form>
   </div>
