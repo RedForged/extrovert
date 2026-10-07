@@ -11,6 +11,7 @@ Every user has a profile page at `/u/<username>` and, more importantly, **full c
 | **Profile HTML** | Profile editor | sanitized, no JS |
 | **Profile CSS** | Profile editor | sanitized, no JS |
 | Avatar | Profile editor (upload) | JPEG/PNG/WebP, ≤10 MB |
+| Profile effect | Profile editor | `Matrix` or `Glitch` — plays once when someone opens your profile (1 s max) |
 | Theme (light/dark) | `/settings` | global |
 | Referral code | Account sheet (your avatar in the navbar) | one per account |
 
@@ -58,8 +59,26 @@ Modern CSS is safe by itself (it can't run JavaScript); these rules keep profile
 .hero h1 { font-family: var(--font-display); }
 ```
 
-## Avatars
+## Profile effects
 
+Pick one in the profile editor; it plays **once** when someone opens your profile, then the page
+settles into its normal state.
+
+- **Matrix** — the page goes black-green, glyphs rain down a canvas, and the page's text flies in
+  from all four sides before the layer lifts.
+- **Glitch** — the page jitters with chromatic offsets and glowing horizontal slices.
+
+Rules that apply to every effect:
+
+- Hard cap of **1 second**. A timer always removes the effect's layers and any inline styles it set,
+  so a slow or interrupted frame can't leave your page broken.
+- Never blocks interaction — the effect layers are `pointer-events: none`, so clicks and scrolling
+  work throughout.
+- Skipped entirely when the visitor's system requests reduced motion (`prefers-reduced-motion`).
+- Only the two built-in effects exist; the server allowlists the value, so nothing else can be
+  stored or rendered on someone's page.
+
+## Avatars
 - Upload from the profile editor: JPEG / PNG / WebP, max 10 MB.
 - Processed with `sharp`: resized to **200×200 px center-crop**, re-encoded as **JPEG quality 85**, stored at `uploads/avatars/<random>.jpg`.
 - Served at `/uploads/avatars/…`. You can also remove your avatar.

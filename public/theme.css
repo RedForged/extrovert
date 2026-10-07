@@ -1129,6 +1129,60 @@ a.conv-row:hover { color: var(--primary); }
 .notif-body { flex: 1; }
 .notif-body a { color: var(--primary); font-weight: 600; }
 
+/* ── Profile effects (opt-in per profile, 1 second max) ───────────── */
+
+.pfx-overlay {
+  position: fixed; inset: 0; z-index: 9990; pointer-events: none;
+  background: #000; opacity: 0; transition: opacity 160ms linear;
+}
+.pfx-overlay.pfx-in { opacity: 1; }
+
+.pfx-canvas {
+  position: fixed; inset: 0; z-index: 9991; pointer-events: none;
+  opacity: 0; transition: opacity 160ms linear;
+}
+.pfx-canvas.pfx-in { opacity: 0.85; }
+
+.pfx-page.pfx-flying > * { animation: pfx-fly 380ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+@keyframes pfx-fly {
+  from {
+    opacity: 0; filter: blur(4px);
+    transform: translate3d(var(--pfx-x, 0), var(--pfx-y, 0), 0) scale(0.97);
+    color: #7dffb8; text-shadow: 0 0 10px rgba(60, 255, 160, 0.5);
+  }
+  to { opacity: 1; filter: none; transform: none; color: inherit; text-shadow: none; }
+}
+
+.pfx-page.pfx-glitching { animation: pfx-glitch 700ms steps(2, end) both; }
+@keyframes pfx-glitch {
+  0% { transform: none; filter: none; }
+  10% { transform: translate3d(-5px, 1px, 0) skewX(-1.4deg); filter: hue-rotate(45deg) saturate(1.7); }
+  25% { transform: translate3d(4px, -1px, 0); filter: hue-rotate(-45deg) saturate(1.5); }
+  40% { transform: translate3d(-3px, 2px, 0) skewX(1deg); filter: none; }
+  55% { transform: translate3d(6px, 0, 0); filter: hue-rotate(30deg) saturate(1.6); }
+  70% { transform: translate3d(-4px, -2px, 0); filter: none; }
+  85% { transform: translate3d(2px, 1px, 0); filter: hue-rotate(-20deg); }
+  100% { transform: none; filter: none; }
+}
+
+.pfx-slice {
+  position: fixed; left: 0; right: 0; height: var(--pfx-h, 8px);
+  z-index: 9992; pointer-events: none; opacity: 0; mix-blend-mode: screen;
+  background: linear-gradient(90deg, rgba(126, 255, 178, 0.16), rgba(92, 223, 224, 0.14), rgba(255, 92, 138, 0.12));
+  animation: pfx-slice 300ms steps(3, end) both;
+}
+.pfx-slice.pfx-in { opacity: 1; }
+@keyframes pfx-slice {
+  0% { transform: translate3d(var(--pfx-dx, 8px), 0, 0); opacity: 0.9; }
+  50% { transform: translate3d(calc(var(--pfx-dx, 8px) * -1), 0, 0); opacity: 0.55; }
+  100% { transform: none; opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pfx-overlay, .pfx-canvas, .pfx-slice { display: none !important; }
+  .pfx-page.pfx-flying > *, .pfx-page.pfx-glitching { animation: none !important; }
+}
+
 /* ── Online dot / call ────────────────────────────────────────────── */
 
 .online-dot {

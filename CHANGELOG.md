@@ -8,6 +8,10 @@ release: the codebase carries its version in `package.json`, and the sections
 ## [Unreleased]
 
 ### Features
+- **Profile effects**: a profile can opt into a **Matrix** or **Glitch** effect that plays once
+  when someone opens the page — black-green glyph rain with the page's text flying in from all
+  sides, or a chromatic glitch. Both are allowlisted server-side, hard-capped at one second,
+  never block clicks or scrolling, and are skipped when the visitor prefers reduced motion.
 - **Account sheet**: the avatar chip in the navbar opens a bottom sheet with Edit profile,
   Create/Copy invite link, Settings and Sign out (the account switcher rows appear there too
   when several accounts are signed in). Settings and Security are no longer top-bar items,

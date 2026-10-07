@@ -32,6 +32,13 @@
       <label for="edit-bio">Bio</label>
       <textarea name="bio" id="edit-bio" rows="2" maxlength="280"><%= bio %></textarea>
 
+      <label for="edit-effect">Profile effect <span class="muted">(plays once when someone opens your profile — 1 second, max)</span></label>
+      <select name="effect" id="edit-effect">
+        <option value="" <%= !effect ? 'selected' : '' %>>None</option>
+        <option value="matrix" <%= effect === 'matrix' ? 'selected' : '' %>>Matrix</option>
+        <option value="glitch" <%= effect === 'glitch' ? 'selected' : '' %>>Glitch</option>
+      </select>
+
       <label for="edit-html">Profile HTML <span class="muted">(no &lt;script&gt;, no JS — stripped automatically)</span></label>
       <textarea name="html" id="edit-html" rows="10" spellcheck="false" style="font-family:ui-monospace,monospace;font-size:13px"><%= html %></textarea>
       <small class="muted">Put <code>&lt;!--POSTS--&gt;</code> where you want your posts to appear. If omitted, posts are shown at the end.</small>

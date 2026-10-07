@@ -1,4 +1,5 @@
 <%- include('partials/header', { headCss: css }) %>
+<div class="pfx-page" data-profile-effect="<%= effect || '' %>">
     <div class="profile-header">
       <% if (profileUser.avatar) { %><img src="<%= profileUser.avatar %>" alt="" style="width:72px;height:72px;border-radius:var(--radius-full);flex:none;object-fit:cover;border:1px solid var(--border-soft)"><% } else { %><div class="avatar" style="width:72px;height:72px;font-size:32px"><%= (profileUser.display_name || profileUser.username).slice(0,1).toUpperCase() %></div><% } %>
       <div>
@@ -36,4 +37,6 @@
     <div class="ev-custom">
       <%- finalHtml %>
     </div>
+</div>
+<script src="/static/profile-effects.js?v=1"></script>
 <%- include('partials/footer') %>

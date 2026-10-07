@@ -320,6 +320,7 @@ try { db.exec(`
 // Migrations.
 try { db.exec(`ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT 'default'`); } catch {}
 try { db.exec(`ALTER TABLE users ADD COLUMN bio TEXT NOT NULL DEFAULT ''`); } catch {}
+try { db.exec(`ALTER TABLE profile_customization ADD COLUMN effect TEXT NOT NULL DEFAULT ''`); } catch {}
 try { db.exec(`ALTER TABLE users ADD COLUMN developer_mode INTEGER NOT NULL DEFAULT 0`); } catch {}
 try { db.exec(`ALTER TABLE messages ADD COLUMN key_for_sender TEXT`); } catch {}
 try { db.exec(`ALTER TABLE messages ADD COLUMN key_for_recipient TEXT`); } catch {}
@@ -1029,14 +1030,22 @@ function hasReposted(userId, originalId) {
 function getCustomization(userId) {
   return db.prepare(
     `SELECT * FROM profile_customization WHERE user_id = ?`
-  ).get(userId) || { user_id: userId, html: '', css: '' };
+  ).get(userId) || { user_id: userId, html: '', css: '', effect: '' };
 }
 
-function setCustomization(userId, html, css) {
+function setCustomization(userId, html, css, effect) {
+  // Callers that don't mention an effect (e.g. the API profile route) leave it untouched.
+  if (effect === undefined) {
+    db.prepare(
+      `INSERT INTO profile_customization (user_id, html, css) VALUES (?,?,?)
+       ON CONFLICT(user_id) DO UPDATE SET html = excluded.html, css = excluded.css`
+    ).run(userId, html, css);
+    return;
+  }
   db.prepare(
-    `INSERT INTO profile_customization (user_id, html, css) VALUES (?,?,?)
-     ON CONFLICT(user_id) DO UPDATE SET html = excluded.html, css = excluded.css`
-  ).run(userId, html, css);
+    `INSERT INTO profile_customization (user_id, html, css, effect) VALUES (?,?,?,?)
+     ON CONFLICT(user_id) DO UPDATE SET html = excluded.html, css = excluded.css, effect = excluded.effect`
+  ).run(userId, html, css, effect || '');
 }
 
 // ---------- notifications ----------

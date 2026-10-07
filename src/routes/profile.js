@@ -156,6 +156,7 @@ router.get('/:username', (req, res) => {
       followingCount: countFollowing(profileUser.id),
       mutual: viewer && viewer.id !== profileUser.id && areMutualFollowers(viewer.id, profileUser.id),
       referralCount,
+      effect: custom.effect || '',
     });
   }
 });
@@ -174,6 +175,7 @@ router.get('/:username/edit', (req, res) => {
     css: custom.css || DEFAULT_PROFILE_CSS,
     displayName: viewer.display_name,
     bio: viewer.bio,
+    effect: custom.effect || '',
   });
 });
 
@@ -189,7 +191,11 @@ router.post('/:username/edit', (req, res) => {
   const displayName = String(req.body.displayName || '').trim().slice(0, 60) || viewer.username;
   const bio = String(req.body.bio || '').trim().slice(0, 280);
 
-  setCustomization(viewer.id, html, css);
+  const PROFILE_EFFECTS = ['matrix', 'glitch'];
+  const rawEffect = String(req.body.effect || '').trim();
+  const effect = PROFILE_EFFECTS.includes(rawEffect) ? rawEffect : '';
+
+  setCustomization(viewer.id, html, css, effect);
   updateUserProfile(viewer.id, { displayName, bio });
   res.redirect('/u/' + profileUser.username);
 });
