@@ -39,10 +39,10 @@ function mockWs() {
     close() {
       if (this._closed) return;
       this._closed = true;
-      this._handlers.close && this._handlers.close();
+      (this._handlers.close || []).forEach(fn => fn());
     },
-    on(ev, fn) { this._handlers[ev] = fn; },
-    emit(ev, arg) { if (ev === 'close') { this.close(); return; } if (this._handlers[ev]) this._handlers[ev](arg); },
+    on(ev, fn) { (this._handlers[ev] = this._handlers[ev] || []).push(fn); },
+    emit(ev, arg) { if (ev === 'close') { this.close(); return; } (this._handlers[ev] || []).forEach(fn => fn(arg)); },
   };
   return ws;
 }
@@ -61,6 +61,11 @@ function connect(userToken) {
   const req = { url: '/ws?token=' + encodeURIComponent(userToken), headers: {} };
   wss._connHandler(ws, req);
   liveSockets.push(ws);
+  // Clients register lazily on their first message; the browser client pings
+  // on open, so mirror that here. Keep any messages the ping triggers (e.g.
+  // ring-on-reconnect) and only drop the pong.
+  ws.emit('message', JSON.stringify({ type: 'ping' }));
+  ws._sent = ws._sent.filter(s => { try { return JSON.parse(s).type !== 'pong'; } catch { return true; } });
   return ws;
 }
 // Force every currently-connected socket closed (mimics everyone going offline),
@@ -88,10 +93,7 @@ const appRow = db.db.prepare(
 const appId = appRow.lastInsertRowid;
 function makeToken(userId) {
   const tok = 'tok-' + userId + '-' + Date.now() + '-' + Math.random().toString(36).slice(2);
-  db.db.prepare(
-    `INSERT INTO oauth_tokens (token, refresh_token, app_id, user_id, scopes, expires_at, created_at)
-     VALUES (?,?,?,?,?,?,?)`
-  ).run(tok, null, appId, userId, 'read write notifications', Date.now() + 3600000, Date.now());
+  db.createOAuthToken(tok, null, appId, userId, 'read write notifications', Date.now() + 3600000, null);
   return tok;
 }
 const aliceTok = makeToken(alice.id);
@@ -181,8 +183,8 @@ console.log('\n=== TEST 6: callee busy (online + inCall) -> user_busy ===');
   const aWs = connect(aliceTok);
   const bWs = connect(bobTok);
   aWs._sent.length = 0; bWs._sent.length = 0;
-  // Put bob in a call by having him join a voice channel.
-  bWs.emit('message', JSON.stringify({ type: 'join_channel', channel_id: 'room-x-vc1' }));
+  // Put bob in a call: offering a 1:1 call marks the caller as in-call.
+  bWs.emit('message', JSON.stringify({ type: 'call_offer', to: 'alice', sdp: '{"type":"offer","sdp":"FAKE"}' }));
   aWs.emit('message', JSON.stringify({ type: 'call_request', to: 'bob' }));
   const got = lastSent(aWs);
   assert(got && got.type === 'user_busy', 'busy online callee -> user_busy (got ' + (got && got.type) + ')');

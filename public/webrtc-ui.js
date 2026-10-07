@@ -27,6 +27,7 @@
     ExtrovertCall.on('user_online', onUserOnline);
     ExtrovertCall.on('user_offline', onUserOffline);
     ExtrovertCall.on('remote_stream', onRemoteStream);
+    ExtrovertCall.on('speaking', onSelfSpeaking);
     ExtrovertCall.on('error', onError);
 
     ExtrovertCall.connect();
@@ -64,6 +65,27 @@
     });
   }
 
+  var micMuted = false;
+  var selfSpeaking = false;
+
+  function updateMicState() {
+    var el = document.getElementById('call-mic-state');
+    if (!el) return;
+    el.innerHTML = '';
+    if (window.DSHIcons) el.appendChild(window.DSHIcons.icon(selfSpeaking && !micMuted ? 'speaker' : 'mic', 13));
+    var span = document.createElement('span');
+    span.textContent = micMuted ? 'Muted' : (selfSpeaking ? 'Speaking' : 'Mic on');
+    el.appendChild(span);
+    el.style.color = micMuted ? 'var(--danger)' : (selfSpeaking ? 'var(--secondary)' : 'var(--text-secondary)');
+    el.style.borderColor = micMuted ? 'var(--danger)' : (selfSpeaking ? 'var(--secondary)' : 'var(--border)');
+  }
+
+  function onSelfSpeaking(username, active) {
+    if (username !== null) return;
+    selfSpeaking = !!active;
+    updateMicState();
+  }
+
   function createActiveCallBar() {
     activeCallBar = document.createElement('div');
     activeCallBar.id = 'call-active-bar';
@@ -77,16 +99,21 @@
         '</div>' +
       '</div>' +
       '<div style="display:flex;align-items:center;gap:8px">' +
+        '<span id="call-mic-state" style="display:inline-flex;align-items:center;gap:5px;padding:5px 11px;border:1px solid var(--border);border-radius:var(--radius-full);font-size:0.8rem;font-weight:600;background:var(--surface-2);color:var(--text-secondary)"></span>' +
         '<button id="call-mute-btn" style="padding:8px 16px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;font-size:0.9rem">Mute</button>' +
         '<button id="call-hangup-btn" style="padding:8px 24px;background:var(--danger);color:#fff;border:none;border-radius:var(--radius);cursor:pointer;font-size:0.9rem;font-weight:600">Hang Up</button>' +
       '</div>';
     document.body.appendChild(activeCallBar);
     var barIco = document.getElementById('call-bar-ico');
     if (barIco && window.DSHIcons) barIco.appendChild(window.DSHIcons.icon('speaker', 18));
+    updateMicState();
 
     var muted = false;
     document.getElementById('call-mute-btn').addEventListener('click', function () {
       muted = ExtrovertCall.toggleMute();
+      micMuted = muted;
+      selfSpeaking = false;
+      updateMicState();
       this.textContent = muted ? 'Unmute' : 'Mute';
       this.style.background = muted ? 'var(--danger)' : 'var(--surface-2)';
       this.style.color = muted ? '#fff' : '';
@@ -269,7 +296,17 @@
   }
 
   function showConnectedBar(username) {
-    document.getElementById('call-bar-label').textContent = 'Call with ' + username;
+    var st = ExtrovertCall.getState();
+    if (!st.channelId) {
+      document.getElementById('call-bar-label').textContent = 'Call with ' + username;
+    }
+    micMuted = false;
+    selfSpeaking = false;
+    updateMicState();
+    var muteBtn = document.getElementById('call-mute-btn');
+    muteBtn.textContent = 'Mute';
+    muteBtn.style.background = 'var(--surface-2)';
+    muteBtn.style.color = '';
     activeCallBar.style.display = 'flex';
     startCallTimer();
   }

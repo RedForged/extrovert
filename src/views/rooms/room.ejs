@@ -17,8 +17,8 @@
           <div class="voice-members active" id="voice-members-<%= ch.id %>">
             <% if (voiceChannelMembers && voiceChannelMembers[ch.id]) { %>
               <% voiceChannelMembers[ch.id].forEach(function(m) { %>
-                <div class="voice-member" id="voice-member-<%= ch.id %>-<%= m.username %>">
-                  <span class="voice-member-speaking"><%- include('../partials/icon', { name: 'speaker', size: 12 }) %></span><span class="voice-member-name"><%= m.display_name || m.username %></span>
+                <div class="voice-member" id="voice-member-<%= ch.id %>-<%= m.username %>"<% if (m.username === locals.currentUser.username) { %> data-self="1"<% } %>>
+                  <span class="voice-member-speaking"><%- include('../partials/icon', { name: 'speaker', size: 12 }) %></span><span class="voice-member-name"><%= m.display_name || m.username %></span><% if (m.username === locals.currentUser.username) { %> <span class="voice-member-you">you</span><% } %>
                 </div>
               <% }) %>
             <% } %>
@@ -107,5 +107,5 @@
   <div id="room-e2ee-status" class="muted" style="font-size:0.75rem;text-align:center"></div>
   <script src="/static/rooms.js?v=8"></script>
   <script src="/static/room-e2ee.js?v=2"></script>
-  <script src="/static/webrtc-room.js?v=2"></script>
+  <script src="/static/webrtc-room.js?v=3"></script>
 <%- include('../partials/footer') %>

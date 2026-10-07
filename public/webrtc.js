@@ -240,11 +240,72 @@
     }
   }
 
+  var SELF_KEY = '__self__';
+  var audioCtx = null;
+  var audioWatch = {};
+  var audioTimer = null;
+
+  function watchAudio(key, stream) {
+    unwatchAudio(key);
+    try {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      var src = audioCtx.createMediaStreamSource(stream);
+      var analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 512;
+      src.connect(analyser);
+      audioWatch[key] = { src: src, analyser: analyser, buf: new Uint8Array(analyser.fftSize), active: false, quietSince: 0 };
+      if (!audioTimer) audioTimer = setInterval(tickAudio, 100);
+    } catch (e) {}
+  }
+
+  function unwatchAudio(key) {
+    var entry = audioWatch[key];
+    if (!entry) return;
+    try { entry.src.disconnect(); } catch (e) {}
+    delete audioWatch[key];
+    if (entry.active) emit('speaking', key === SELF_KEY ? null : key, false);
+    if (!Object.keys(audioWatch).length && audioTimer) {
+      clearInterval(audioTimer);
+      audioTimer = null;
+    }
+  }
+
+  function tickAudio() {
+    if (audioCtx.state === 'suspended') { audioCtx.resume().catch(function () {}); }
+    var now = Date.now();
+    Object.keys(audioWatch).forEach(function (key) {
+      var entry = audioWatch[key];
+      entry.analyser.getByteTimeDomainData(entry.buf);
+      var sum = 0;
+      for (var i = 0; i < entry.buf.length; i++) {
+        var v = (entry.buf[i] - 128) / 128;
+        sum += v * v;
+      }
+      var rms = Math.sqrt(sum / entry.buf.length);
+      if (rms > 0.025) {
+        entry.quietSince = 0;
+        if (!entry.active) {
+          entry.active = true;
+          emit('speaking', key === SELF_KEY ? null : key, true);
+        }
+      } else if (entry.active) {
+        if (!entry.quietSince) {
+          entry.quietSince = now;
+        } else if (now - entry.quietSince > 700) {
+          entry.active = false;
+          entry.quietSince = 0;
+          emit('speaking', key === SELF_KEY ? null : key, false);
+        }
+      }
+    });
+  }
+
   function getMedia() {
     if (state.localStream) return Promise.resolve(state.localStream);
     return navigator.mediaDevices.getUserMedia({ audio: true, video: false })
       .then(function (stream) {
         state.localStream = stream;
+        watchAudio(SELF_KEY, stream);
         return stream;
       });
   }
@@ -262,6 +323,7 @@
     };
 
     pc.ontrack = function (e) {
+      watchAudio(username, e.streams[0]);
       emit('remote_stream', username, e.streams[0]);
     };
 
@@ -289,6 +351,7 @@
 
   function closePeerConnection(username) {
     var pc = state.peerConnections[username];
+    unwatchAudio(username);
     if (pc) {
       pc.close();
       delete state.peerConnections[username];
@@ -365,6 +428,7 @@
           type: 'call_answer',
           to: username,
           sdp: JSON.stringify(pc.localDescription),
+          channel_id: state.channelId || undefined,
         });
         emit('call_connected', username);
       });
@@ -411,6 +475,7 @@
     if (state.callWaitTimeout) { clearTimeout(state.callWaitTimeout); state.callWaitTimeout = null; }
     Object.keys(state.peerConnections).forEach(closePeerConnection);
     state.peerConnections = {};
+    Object.keys(audioWatch).forEach(unwatchAudio);
     if (state.localStream) {
       state.localStream.getTracks().forEach(function (t) { t.stop(); });
       state.localStream = null;
@@ -454,7 +519,7 @@
     var audioTrack = state.localStream.getAudioTracks()[0];
     if (!audioTrack) return true;
     audioTrack.enabled = !audioTrack.enabled;
-    return audioTrack.enabled;
+    return !audioTrack.enabled;
   }
 
   function getState() { return state; }
