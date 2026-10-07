@@ -102,7 +102,10 @@
     <% } %>
   </div>
 
-  <a href="/settings" class="btn ghost full">Back to settings</a>
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <a href="/security" class="btn ghost full" style="flex:1 1 220px"><%- include('partials/icon', { name: 'shield', size: 15 }) %> Security &amp; responsible disclosure</a>
+    <a href="/settings" class="btn ghost full" style="flex:1 1 220px">Back to settings</a>
+  </div>
 </div>
 
 <script src="/static/passkeys.js?v=1" defer></script>

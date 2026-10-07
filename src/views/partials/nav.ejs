@@ -14,14 +14,12 @@
     <a href="/u/<%= currentUser.username %>" title="Profile" class="<%= _cp === '/u/' + currentUser.username ? 'active' : '' %> nav-overflow"><span class="nav-icon"><%- include('icon', { name: 'user', size: 18 }) %></span><span class="nav-text">Profile</span></a>
     <a href="/rooms" title="Rooms" class="<%= isActive('/rooms') ? 'active' : '' %> nav-overflow"><span class="nav-icon"><%- include('icon', { name: 'rooms', size: 18 }) %></span><span class="nav-text">Rooms</span></a>
     <% if (locals.currentUser && locals.currentUser.is_admin) { %><a href="/admin" title="Admin" class="<%= isActive('/admin') ? 'active' : '' %> nav-overflow"><span class="nav-icon"><%- include('icon', { name: 'shield', size: 18 }) %></span><span class="nav-text">Admin</span><% if (locals.pendingReports > 0 || (locals.securityReports || 0) > 0) { %><sup class="badge"><%= (locals.pendingReports || 0) + (locals.securityReports || 0) %></sup><% } %></a><% } %>
-    <% if (locals.currentUser) { %><a href="/security" title="Security &amp; responsible disclosure" class="<%= isActive('/security') ? 'active' : '' %> nav-overflow"><span class="nav-icon"><%- include('icon', { name: 'lock', size: 18 }) %></span><span class="nav-text">Security</span></a><% } %>
     <details class="menu-dd nav-more" open>
       <summary title="More"><%- include('icon', { name: 'more', size: 18 }) %></summary>
       <div class="menu-dd-pop">
         <a href="/u/<%= currentUser.username %>"><%- include('icon', { name: 'user', size: 15 }) %> Profile</a>
         <a href="/rooms"><%- include('icon', { name: 'rooms', size: 15 }) %> Rooms</a>
         <% if (locals.currentUser && locals.currentUser.is_admin) { %><a href="/admin"><%- include('icon', { name: 'shield', size: 15 }) %> Admin<% if (locals.pendingReports > 0 || (locals.securityReports || 0) > 0) { %> <sup class="badge"><%= (locals.pendingReports || 0) + (locals.securityReports || 0) %></sup><% } %></a><% } %>
-        <a href="/security"><%- include('icon', { name: 'lock', size: 15 }) %> Security</a>
         <form method="post" action="/logout"><input type="hidden" name="_csrf" value="<%= locals.csrfToken %>"><button><%- include('icon', { name: 'logout', size: 15 }) %> Log out</button></form>
       </div>
     </details>
