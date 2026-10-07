@@ -54,13 +54,48 @@ Security researchers may test the software under the conditions on the in-app **
 
 ```
 default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' http: https: blob:;
-media-src 'self' blob:; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self';
+media-src 'self' blob:; font-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self';
 connect-src 'self' ws: wss:; frame-ancestors 'none'
 ```
 
 `blob:` is allowed for images and media only so decrypted chat attachments can be previewed from
 memory — a sealed attachment is fetched as ciphertext and decrypted in the browser, never written to
-disk or served in the clear.
+disk or served in the clear. `font-src 'self'` keeps custom profile fonts same-origin.
+
+## User-uploaded files
+
+Uploads live in the Drive (`data/drive/`) under server-generated names and count against the owner's
+quota. What keeps them from becoming an attack surface:
+
+- **Extensions are allowlisted.** A file whose extension a browser could interpret as active content
+  (`.html`, `.svg`, `.js`) is stored **without any extension** and served as `application/octet-stream`,
+  so it can only ever download. `scripts/asvs-test.js` walks `uploads/` and `data/drive/` asserting no
+  such file is ever stored.
+- **Correct MIME types plus `nosniff`** on every response. A file that is simultaneously a valid font
+  and a valid HTML document is still served as `font/ttf` and, thanks to `nosniff`, can never be sniffed
+  into a document or a script.
+- **Serving is traversal-safe.** Stored paths are resolved against a fixed root and prefix-checked, and
+  only `/uploads/`, `/api-uploads/` and `/drive/f/` paths are recognised — anything else 404s. The
+  profile-font route was probed with `/drive/f/../../../data/extrovert.db` and returned 404 without
+  exposing a byte of the database.
+- **Custom fonts are validated** by container signature (wOF2, wOFF, OTTO, TrueType, `true`, `ttcf`) and
+  capped at 8 MB, so a renamed image is rejected; they are only ever served as `font/*`.
+- **The server never parses uploads.** No image or font decoding happens at request time — only a 4-byte
+  signature read — so parser bugs stay in the visitor's browser rather than here.
+- **Profile CSS/HTML is sanitized at render**: `@import` is removed and external `url(...)` is rewritten
+  to `url()`. Together with `default-src 'self'`/`font-src 'self'`, a profile can't pull fonts, scripts
+  or tracking pixels from third-party hosts.
+- **Sealed chat attachments are client-encrypted** (AES-256-GCM); the server stores opaque blobs with no
+  name, type or extension, and the key only exists inside the E2EE message.
+
+Residual risk worth knowing: a deliberately malformed font is still parsed by the *visitor's* font
+engine, so a font-parser bug in their browser is the one thing this feature cannot defend against. The
+size cap limits the payload and everything is same-origin, but a stricter deployment could re-encode
+uploads server-side before storing them.
+
+Also note that anything in the Drive is **public to anyone with its URL** (a 32-hex name), and a profile
+font is deliberately public at `/u/<username>/font` — so users should only upload files they have the
+right to share.
 
 `script-src 'self'` means profile pages can't load external scripts even if HTML injection slipped through. Swagger UI is served from the same origin (`/developers/swagger-ui/*` — vendored `swagger-ui-dist`, no CDN) under this same CSP, so no route loosens it.
 

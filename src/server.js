@@ -56,6 +56,8 @@ app.use(helmet({
       styleSrc: ["'self'", "'unsafe-inline'"],
       imgSrc: ["'self'", "http:", "https:", "blob:"],
       mediaSrc: ["'self'", "blob:"],
+      // Same-origin fonts only (custom profile fonts are served from /u/<name>/font).
+      fontSrc: ["'self'"],
       scriptSrc: ["'self'", "'wasm-unsafe-eval'"],
       workerSrc: ["'self'"],
       connectSrc: ["'self'", "ws:", "wss:"],

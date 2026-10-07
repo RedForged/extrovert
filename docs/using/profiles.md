@@ -120,6 +120,8 @@ everyone who opens your profile gets it.
   rejected, and the file is served with the correct `font/*` content type and `nosniff`.
 - One font per profile. Uploading a new one replaces the file and frees the old space; removing it
   (here or from the Drive) clears the pointer and `/u/<username>/font` returns 404.
+- The font is **public**: anyone can fetch that URL, so only upload fonts you have the right to share
+  (many commercial licences don't allow redistribution).
 
 ## Avatars
 - Upload from the profile editor: JPEG / PNG / WebP, max 10 MB.
