@@ -36,7 +36,7 @@ router.post('/', (req, res) => {
     const post = db.getPostById(targetId);
     if (!post || !canView(user.id, post.user_id)) return res.status(404).json({ error: 'Post not found.' });
     targetUserId = post.user_id;
-    context = 'post';
+    context = '#' + post.id;
     snapshot = String(post.body || '').slice(0, MAX_SNAPSHOT);
   } else if (type === 'comment') {
     const comment = db.getCommentById(targetId);
@@ -44,14 +44,14 @@ router.post('/', (req, res) => {
     const post = db.getPostById(comment.post_id);
     if (!post || !canView(user.id, post.user_id)) return res.status(404).json({ error: 'Comment not found.' });
     targetUserId = comment.user_id;
-    context = 'comment on post ' + comment.post_id;
+    context = 'on post #' + comment.post_id;
     snapshot = String(comment.body || '').slice(0, MAX_SNAPSHOT);
   } else if (type === 'user') {
     const target = db.getUserById(targetId);
     if (!target) return res.status(404).json({ error: 'User not found.' });
     if (target.id === user.id) return res.status(400).json({ error: 'You cannot report yourself.' });
     targetUserId = target.id;
-    context = 'profile';
+    context = '@' + target.username;
   } else if (type === 'room_message') {
     // The room and channel come from the message itself, so the client only
     // needs to send the message id.

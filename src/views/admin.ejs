@@ -87,21 +87,26 @@
   </div>
 
   <div class="card" style="max-width:820px;margin:16px auto" id="reports">
-    <h2>Admin · Reports (<%= reports.length %>)</h2>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <h2 style="margin:0">Admin · Reports (<%= reports.length %>)</h2>
+      <a class="btn ghost small" href="/admin/reports">Open full queue</a>
+    </div>
     <% if (reports.length) { %>
       <table class="admin-table">
         <thead><tr><th>Type</th><th>Reported</th><th>By</th><th>Reason</th><th>Actions</th></tr></thead>
         <tbody>
           <% reports.forEach(function(r) { %>
+            <% var typeLabel = r.target_type.replace('_', ' ').replace(/^./, function(c) { return c.toUpperCase(); }); %>
+            <% var removable = ['post','comment','room_message'].indexOf(r.target_type) > -1; %>
             <tr>
-              <td><%= r.target_type.replace('_', ' ') %><%= r.context ? ' · ' + r.context : '' %></td>
-              <td><% if (r.reported_username) { %><a href="/u/<%= encodeURIComponent(r.reported_username) %>">@<%= r.reported_username %></a><% } else { %><span class="muted">—</span><% } %></td>
-              <td>@<%= r.reporter_username %></td>
-              <td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><%= r.reason %></td>
+              <td style="white-space:nowrap"><%= typeLabel %><% if (r.context) { %> <span class="muted"><%= r.context %></span><% } %></td>
+              <td style="white-space:nowrap"><% if (r.reported_username) { %><a href="/u/<%= encodeURIComponent(r.reported_username) %>">@<%= r.reported_username %></a><% } else { %><span class="muted">—</span><% } %></td>
+              <td style="white-space:nowrap">@<%= r.reporter_username %></td>
+              <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><%= r.reason %></td>
               <td class="actions">
-                <form method="post" action="/admin/reports/<%= r.id %>/ban"><input type="hidden" name="_csrf" value="<%= csrfToken %>"><button class="btn ghost danger small" <%= r.reported_username ? '' : 'disabled' %>>Ban author</button></form>
+                <% if (r.reported_username) { %><form method="post" action="/admin/reports/<%= r.id %>/ban"><input type="hidden" name="_csrf" value="<%= csrfToken %>"><button class="btn ghost danger small">Ban</button></form><% } %>
+                <% if (removable) { %><form method="post" action="/admin/reports/<%= r.id %>/delete"><input type="hidden" name="_csrf" value="<%= csrfToken %>"><button class="btn ghost small">Remove</button></form><% } %>
                 <form method="post" action="/admin/reports/<%= r.id %>/dismiss"><input type="hidden" name="_csrf" value="<%= csrfToken %>"><button class="btn ghost small">Dismiss</button></form>
-                <a class="btn ghost small" href="/admin/reports">Open queue</a>
               </td>
             </tr>
           <% }) %>

@@ -1453,6 +1453,10 @@ a.conv-row:hover { color: var(--primary); }
 .post-actions .menu-dd > .menu-dd-pop .post-danger:hover { background: var(--danger-soft); }
 .post-actions .post-owners { display: contents; }
 
+/* Report rows carry three small actions; let them wrap rather than push the
+   table past the card. */
+.admin-table .actions { flex-wrap: wrap; }
+
 /* ── Report modal ─────────────────────────────────────────────────── */
 
 .report-overlay {

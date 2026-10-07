@@ -10,8 +10,8 @@
     <div class="card" style="max-width:820px;margin:12px auto;border-left:3px solid var(--danger)">
       <div style="display:flex;justify-content:space-between;align-items:start;gap:12px;flex-wrap:wrap">
         <div style="font-size:var(--fs-sm)">
-          <strong><%= r.target_type.replace('_', ' ') %></strong><%= r.target_id ? ' #' + r.target_id : '' %>
-          <% if (r.context) { %> · <%= r.context %><% } %>
+          <strong><%= r.target_type.replace('_', ' ').replace(/^./, function(c) { return c.toUpperCase(); }) %></strong><%= r.target_id ? ' #' + r.target_id : '' %>
+          <% if (r.context) { %> <span class="muted"><%= r.context %></span><% } %>
           <% if (r.reported_username) { %> · <strong>Reported:</strong> <a href="/u/<%= encodeURIComponent(r.reported_username) %>"><%= r.reported_name || r.reported_username %></a> @<%= r.reported_username %><% } %>
           · <strong>By:</strong> <%= r.reporter_name %> @<%= r.reporter_username %>
         </div>
