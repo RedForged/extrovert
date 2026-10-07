@@ -1,22 +1,22 @@
-Olm (libolm) — The Matrix.org Foundation C.I.C.
-https://gitlab.matrix.org/matrix-org/olm
+ts-mls — the Messaging Layer Security (RFC 9420) implementation
+https://www.npmjs.com/package/ts-mls
 
-Version: 3.2.15 (vendored browser build: olm.js + olm.wasm)
-License: Apache License, Version 2.0
+Version: 1.6.4
+License: MIT
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use these files except in compliance with the License.
-You may obtain a copy of the License at:
+Extrovert uses ts-mls for end-to-end encryption. The browser bundle is built
+from src/client-mls/ with esbuild (`npm run build:mls`) into
+public/lib/mls.js — no external CDN is involved.
 
-    http://www.apache.org/licenses/LICENSE-2.0
+The bundle also contains these MIT-licensed dependencies (see the license
+banner at the top of mls.js):
 
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on anAS IS" BASIS, WITHOUT
-WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+  @noble/ciphers — MIT License (c) 2023 Paul Miller (paulmillr.com)
+  @noble/hashes  — MIT License (c) 2022 Paul Miller (paulmillr.com)
+  @noble/curves  — MIT License (c) 2022 Paul Miller (paulmillr.com)
 
-Olm implements the Olm/Megolm double-ratchet end-to-end encryption
-used by Matrix. extrovert uses Olm sessions (not Megolm) for 1:1 DMs
-to provide forward secrecy, post-compromise security, and sender
-authentication via identity keys.
+Licensed under the MIT License: permission is hereby granted, free of charge,
+to any person obtaining a copy of this software and associated documentation
+files to deal in the Software without restriction. The software is provided
+"as is", without warranty of any kind. Full license texts ship with the
+packages under node_modules/ and in the bundle banner.
