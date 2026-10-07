@@ -85,13 +85,13 @@
         if (y > canvas.height && Math.random() > 0.96) drops[i] = 0;
         drops[i] += 1;
       }
-      if (Date.now() - start < 560) raf = requestAnimationFrame(draw);
+      if (Date.now() - start < 900) raf = requestAnimationFrame(draw);
     }
     raf = requestAnimationFrame(draw);
 
-    // Text flies in from all four sides, staggered so the last line lands ~630ms.
+    // Text flies in from all four sides, staggered so the last line settles ~920ms.
     var blocks = textBlocks();
-    var step = blocks.length ? Math.min(10, 240 / blocks.length) : 0;
+    var step = blocks.length ? Math.min(9, 260 / blocks.length) : 0;
     blocks.forEach(function (el, i) {
       var jitter = function () { return (Math.random() * 12 - 6).toFixed(1) + 'px'; };
       var edge = Math.floor(Math.random() * 4);
@@ -108,13 +108,15 @@
         el.style.setProperty('--pfx-x', jitter());
         el.style.setProperty('--pfx-y', 'calc(42vh + ' + jitter() + ')');
       }
-      el.style.animationDelay = Math.round(i * step) + 'ms';
+      el.style.animationDelay = (140 + Math.round(i * step)) + 'ms';
     });
     page.classList.add('pfx-flying');
 
+    // Blend the layer out on the same one-second budget as everything else,
+    // so the effect finishes by fading instead of being cut off.
     setTimeout(function () {
       nodes.forEach(function (n) { n.classList.remove('pfx-in'); });
-    }, 620);
+    }, 760);
   }
 
   function runGlitch() {
@@ -125,7 +127,7 @@
       bar.style.setProperty('--pfx-h', (4 + Math.round(Math.random() * 26)) + 'px');
       bar.style.top = Math.round(Math.random() * 92) + 'vh';
       bar.style.setProperty('--pfx-dx', ((Math.random() < 0.5 ? -1 : 1) * (6 + Math.round(Math.random() * 26))) + 'px');
-      bar.style.animationDelay = Math.round(i * 70) + 'ms';
+      bar.style.animationDelay = Math.round(i * 60) + 'ms';
       fadeIn(bar);
     }
   }

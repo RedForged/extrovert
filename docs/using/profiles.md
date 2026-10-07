@@ -70,8 +70,9 @@ settles into its normal state.
 
 Rules that apply to every effect:
 
-- Hard cap of **1 second**. A timer always removes the effect's layers and any inline styles it set,
-  so a slow or interrupted frame can't leave your page broken.
+- Hard cap of **1 second** — the animation is timed so it *finishes* inside that budget, blending
+  out over its last ~220 ms instead of snapping away. A timer then removes the already-invisible
+  layers and any inline styles they set, so a slow or interrupted frame can't leave the page broken.
 - Never blocks interaction — the effect layers are `pointer-events: none`, so clicks and scrolling
   work throughout.
 - Skipped entirely when the visitor's system requests reduced motion (`prefers-reduced-motion`).
