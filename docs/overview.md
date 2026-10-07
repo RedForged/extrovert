@@ -71,7 +71,8 @@ Realtime features (presence, calls, live DM delivery, native push) run over a si
 | `data/sessions.db` | Session cookies |
 | `data/oidc-keys.json` | The OIDC signing keypair (private key — keep safe) |
 | `data/api-uploads/` | Media uploaded through the REST API |
-| `uploads/` | Post media, avatars (`uploads/avatars/`), stickers (`uploads/stickers/`) |
+| `data/drive/` | Drive files: post media, chat attachments (sealed blobs), Drive uploads |
+| `uploads/` | Avatars (`uploads/avatars/`), stickers (`uploads/stickers/`) |
 
 To reset everything, stop the server and delete `data/` and `uploads/`.
 

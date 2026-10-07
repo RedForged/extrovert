@@ -15,6 +15,7 @@ const { signIdToken, ISSUER } = require('../oidc');
 const { getAccountIds } = require('../accounts');
 const bcrypt = require('bcryptjs');
 const { sanitizeProfileHTML, sanitizeCSS, parsePronouns, sanitizePronouns } = require('../sanitize');
+const drive = require('../drive');
 const { getOnlineUsers, getUserPresence, sendDmEvent, cancelPendingCallByToken, broadcastGatewayEvent, getGatewayLatestSeq, updateUserRoomSubscriptions, pushRoomSessionKeyToRecipient } = require('../webrtc-signaling');
 const { onNotification } = require('../notif-broadcaster');
 const dm = require('../dm');
@@ -1554,6 +1555,12 @@ router.post('/accounts/avatar', requireApiAuth('profile'), avatarUpload.single('
   if (!req.file) return errorResponse(res, 400, 'Bad Request', 'No file uploaded. Use multipart/form-data with field "avatar".');
 
   const inputPath = req.file.path;
+  const space = drive.quotaState(req.apiUser.id);
+  if (space.used + req.file.size > space.quota) {
+    drive.discardUpload(req);
+    return errorResponse(res, 413, 'Payload Too Large', drive.fullMessage(space));
+  }
+  const previousAvatar = req.apiUser.avatar;
   const outputName = crypto.randomBytes(12).toString('hex') + '.jpg';
   const outputPath = path.join(AVATAR_DIR, outputName);
 
@@ -1561,6 +1568,14 @@ router.post('/accounts/avatar', requireApiAuth('profile'), avatarUpload.single('
     await sharp(inputPath).resize(200, 200, { fit: 'cover', position: 'center' }).jpeg({ quality: 85 }).toFile(outputPath);
     fs.unlinkSync(inputPath);
     db.setAvatar(req.apiUser.id, '/uploads/avatars/' + outputName);
+    db.createUserFile({
+      userId: req.apiUser.id, kind: 'avatar', root: 'uploads', path: 'avatars/' + outputName,
+      mime: 'image/jpeg', size: fs.statSync(outputPath).size,
+    });
+    if (previousAvatar) {
+      const prev = db.splitStoredPath(previousAvatar);
+      if (prev) db.removeStoredFile(prev.root, prev.path);
+    }
   } catch (e) {
     try { fs.unlinkSync(inputPath); } catch {}
     return errorResponse(res, 400, 'Bad Request', 'Failed to process image.');
@@ -1731,7 +1746,7 @@ router.post('/accounts/:id/unfollow', requireApiAuth('follow'), (req, res) => {
 
 // ======== Statuses ========
 
-router.post('/statuses', requireApiAuth('write'), upload.single('media'), (req, res) => {
+router.post('/statuses', requireApiAuth('write'), drive.quotaGuard(), drive.single('media'), (req, res) => {
   // Policy gate: 'required' instances block posting until the email is verified.
   if (db.requireVerifiedEmail(req.apiUser)) {
     return errorResponse(res, 403, 'Forbidden', 'Email verification required before posting. Use PATCH /api/v1/accounts/email to set and verify an address.');
@@ -1751,7 +1766,21 @@ router.post('/statuses', requireApiAuth('write'), upload.single('media'), (req, 
   let mediaPath = null;
 
   if ((postType === 'photo' || postType === 'video') && req.file) {
-    mediaPath = '/api-uploads/' + req.file.filename;
+    const mime = String(req.file.mimetype || '');
+    if (!mime.startsWith('image/') && !mime.startsWith('video/')) {
+      drive.discardUpload(req);
+      return errorResponse(res, 400, 'Bad Request', 'media must be an image or a video.');
+    }
+    const stored = drive.acceptUpload(req, res, { kind: 'post', userId: req.apiUser.id });
+    if (!stored.ok) {
+      if (stored.exceeded) {
+        return errorResponse(res, 413, 'Payload Too Large', drive.fullMessage(stored.state));
+      }
+      return errorResponse(res, 400, 'Bad Request', 'Upload failed.');
+    }
+    mediaPath = stored.url;
+  } else if (req.file) {
+    drive.discardUpload(req);
   }
 
   if (postType === 'text' && !postBody) return errorResponse(res, 400, 'Bad Request', 'body is required for text posts.');
@@ -1839,9 +1868,9 @@ router.delete('/statuses/:id', requireApiAuth('write'), (req, res) => {
   const post = db.getPostById(parseInt(req.params.id, 10));
   const deleted = db.deletePost(parseInt(req.params.id, 10), req.apiUser.id);
   if (!deleted) return errorResponse(res, 404, 'Not Found', 'Post not found or not yours.');
-  if (post && post.media_path && post.media_path.startsWith('/uploads/')) {
-    fs.unlink(path.join(__dirname, '..', '..', post.media_path), () => {});
-  }
+  // Free the stored file, whatever root it lives in (Drive, uploads, api-uploads).
+  const media = post && post.media_path ? db.splitStoredPath(post.media_path) : null;
+  if (media) db.removeStoredFile(media.root, media.path);
   db.auditLog('post_deleted', req.apiUser.id, `Post ${req.params.id}`);
   broadcastGatewayEvent('timeline:home', 'post_delete', { id: String(req.params.id) });
   res.json({ data: { ok: true } });
@@ -2251,16 +2280,14 @@ router.get('/bot/me', requireApiAuth('read'), (req, res) => {
 
 // ======== Media ========
 
-router.post('/media', requireApiAuth('media.write'), upload.single('file'), async (req, res) => {
+router.post('/media', requireApiAuth('media.write'), drive.quotaGuard(), upload.single('file'), async (req, res) => {
   if (!req.file) return errorResponse(res, 400, 'Bad Request', 'No file uploaded. Use multipart/form-data with field "file".');
 
-  // Per-account disk quota: reject uploads that would exceed 2 GiB of
-  // stored media so a single account can't grow uploads/ without bound.
-  const MEDIA_QUOTA_BYTES = 2 * 1024 * 1024 * 1024;
-  const existing = db.getUserMediaUsage(req.apiUser.id);
-  if (existing + req.file.size > MEDIA_QUOTA_BYTES) {
-    try { fs.unlink(req.file.path, () => {}); } catch {}
-    return errorResponse(res, 413, 'Payload Too Large', 'Media storage quota exceeded (2 GiB per account).');
+  // Every upload shares the account's Drive quota — no per-file limit beyond it.
+  const space = drive.quotaState(req.apiUser.id);
+  if (space.used + req.file.size > space.quota) {
+    drive.discardUpload(req);
+    return errorResponse(res, 413, 'Payload Too Large', drive.fullMessage(space));
   }
 
   const mimeType = req.file.mimetype;
@@ -2268,6 +2295,10 @@ router.post('/media', requireApiAuth('media.write'), upload.single('file'), asyn
   const filePath = req.file.filename;
 
   const id = db.createMediaAttachment(req.apiUser.id, filePath, mimeType, fileSize);
+  db.createUserFile({
+    userId: req.apiUser.id, kind: 'api', root: 'api-uploads', path: filePath,
+    mime: mimeType, size: fileSize, name: req.file.originalname || null,
+  });
 
   // Read image dimensions with sharp (skip for video).
   if (mimeType.startsWith('image/')) {
@@ -3689,7 +3720,16 @@ router.post('/stickers', requireApiAuth('write'), requireVerifiedApiWrite, (req,
         return errorResponse(res, 400, 'Bad Request', 'Invalid image file.');
       }
       const filePath = '/uploads/stickers/' + req.file.filename;
+      const space = drive.quotaState(req.apiUser.id);
+      if (space.used + req.file.size > space.quota) {
+        try { fs.unlinkSync(path.join(__dirname, '..', '..', 'uploads', 'stickers', req.file.filename)); } catch (e) {}
+        return errorResponse(res, 413, 'Payload Too Large', drive.fullMessage(space));
+      }
       const stickerId = db.addSticker(req.apiUser.id, filePath);
+      db.createUserFile({
+        userId: req.apiUser.id, kind: 'sticker', root: 'uploads', path: 'stickers/' + req.file.filename,
+        mime: req.file.mimetype || null, size: req.file.size, name: req.file.originalname || null,
+      });
       res.status(201).json({
         data: {
           id: String(stickerId || ''),
@@ -3724,6 +3764,9 @@ router.delete('/stickers/:id', requireApiAuth('write'), (req, res) => {
   if (!deleted) {
     return errorResponse(res, 404, 'Not Found', 'Sticker not found.');
   }
+  // Drop the stored file and free its space.
+  const stickerFile = db.splitStoredPath(sticker.file_path);
+  if (stickerFile) db.removeStoredFile(stickerFile.root, stickerFile.path);
   res.json({ data: { ok: true } });
 });
 

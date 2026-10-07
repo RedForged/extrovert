@@ -1,19 +1,6 @@
 'use strict';
 
 const express = require('express');
-const multer = require('multer');
-const path = require('node:path');
-const crypto = require('node:crypto');
-const fs = require('node:fs');
-
-// Best-effort unlink of a deleted post's media file (ENOENT is fine — the
-// file may already be gone). Keeps deleted posts from leaking up-to-60MB
-// files on disk forever.
-function unlinkPostMedia(post) {
-  if (post && post.media_path && post.media_path.startsWith('/uploads/')) {
-    fs.unlink(path.join(__dirname, '..', '..', post.media_path), () => {});
-  }
-}
 
 const {
   db, createPost, notifyMentions, getPostById, getDisplayPost, getUserById,
@@ -22,41 +9,13 @@ const {
   createNotification, deletePost,
   editPost, editComment, getEditHistory,
   deleteComment,
+  splitStoredPath, removeStoredFile,
 } = require('../db');
 const { canView } = require('../network');
 const { renderMarkdown } = require('../markdown');
+const drive = require('../drive');
 
 const router = express.Router();
-
-const UPLOAD_DIR = path.join(__dirname, '..', '..', 'uploads');
-
-const ALLOWED_EXTENSIONS = new Set([
-  '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp',
-  '.mp4', '.webm', '.mov', '.avi', '.mkv',
-]);
-
-const upload = multer({
-  storage: multer.diskStorage({
-    destination: UPLOAD_DIR,
-    filename: (_req, file, cb) => {
-      const ext = path.extname(file.originalname).toLowerCase();
-      const safeExt = ALLOWED_EXTENSIONS.has(ext) ? ext : '';
-      cb(null, crypto.randomBytes(12).toString('hex') + safeExt);
-    },
-  }),
-  limits: { fileSize: 60 * 1024 * 1024 },
-  fileFilter: (_req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase();
-    if (!ALLOWED_EXTENSIONS.has(ext)) {
-      return cb(null, false);
-    }
-    if (file.mimetype.startsWith('image/') || file.mimetype.startsWith('video/')) {
-      cb(null, true);
-    } else {
-      cb(null, false);
-    }
-  },
-});
 
 function back(req, fallback = '/') {
   const ref = req.get('referer');
@@ -65,13 +24,14 @@ function back(req, fallback = '/') {
 }
 
 // Create a post (text / photo / video).
-router.post('/', upload.single('media'), (req, res) => {
+router.post('/', drive.quotaGuard(), drive.single('media'), (req, res) => {
   const user = res.locals.currentUser;
   if (!user) return res.redirect('/login');
   const { requireVerifiedEmail: gate } = require('../db');
   if (gate(user)) return res.status(403).send('Your email address must be verified before you can post. Visit /settings to verify it.');
   const token = req.body._csrf || req.headers['x-csrf-token'];
   if (!token || token !== req.session.csrfToken) {
+    drive.discardUpload(req);
     return res.status(403).send('CSRF validation failed');
   }
   const type = req.body.type;
@@ -79,7 +39,21 @@ router.post('/', upload.single('media'), (req, res) => {
 
   let mediaPath = null;
   if ((type === 'photo' || type === 'video') && req.file) {
-    mediaPath = '/uploads/' + req.file.filename;
+    // Post media is public, so it is stored as-is (never sealed).
+    const mime = String(req.file.mimetype || '');
+    if (!mime.startsWith('image/') && !mime.startsWith('video/')) {
+      drive.discardUpload(req);
+      return res.status(400).send('Attach an image or a video.');
+    }
+    const stored = drive.acceptUpload(req, res, { kind: 'post', userId: user.id });
+    if (!stored.ok) {
+      if (stored.exceeded) return drive.rejectFull(req, res, stored.state);
+      return res.redirect(back(req, '/compose'));
+    }
+    mediaPath = stored.url;
+  } else if (req.file) {
+    // A file was sent for a post type that doesn't carry one.
+    drive.discardUpload(req);
   }
 
   let postId = null;
@@ -291,7 +265,9 @@ router.post('/:id/delete', (req, res) => {
   const post = getPostById(Number(req.params.id));
   const deleted = deletePost(Number(req.params.id), user.id);
   if (!deleted) return req.xhr ? res.json({ error: 'not found' }) : res.status(404).send('Post not found or not yours.');
-  unlinkPostMedia(post);
+  // Free the space its media used, whichever root it lives in.
+  const media = post && post.media_path ? splitStoredPath(post.media_path) : null;
+  if (media) removeStoredFile(media.root, media.path);
   if (req.xhr) return res.json({ ok: true });
   res.redirect('/u/' + user.username);
 });

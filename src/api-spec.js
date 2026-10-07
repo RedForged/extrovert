@@ -1011,6 +1011,7 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
     '/api/v1/media': {
       post: {
         summary: 'Upload a media file',
+        description: 'Stores the file in the account\'s Drive. Uploads share one per-user storage quota (50 MB by default, set by an admin at /admin/storage or with EXTV_DRIVE_QUOTA_BYTES); there is no separate per-file limit. A full Drive answers 413.',
         tags: ['Media'],
         security: [{ oauth2: ['media.write'] }],
         requestBody: {

@@ -4,6 +4,7 @@ const express = require('express');
 const crypto = require('node:crypto');
 const QRCode = require('qrcode');
 const db = require('../db');
+const drive = require('../drive');
 const { getUserTheme, setUserTheme, getUserDeveloperMode, setUserDeveloperMode, deleteUser, isValidEmail, getUserByEmail, getEmailPolicy } = db;
 const { VALID_SCOPES } = require('../api-auth');
 const { removeAccount } = require('../accounts');
@@ -22,12 +23,16 @@ function emailStatusFor(user) {
 }
 
 function renderSettings(res, user, { mailError = null, mailSent = false } = {}) {
+  const usage = drive.quotaState(user.id);
   res.render('settings', {
     theme: getUserTheme(user.id),
     developerMode: getUserDeveloperMode(user.id),
     devices: db.getUserDevices(user.id),
     version: require('../../package.json').version,
     emailStatus: emailStatusFor(user),
+    usage,
+    usedPercent: usage.quota ? Math.min(100, Math.round((usage.used / usage.quota) * 100)) : 0,
+    fmt: drive.fmt,
     mailError,
     mailSent,
   });

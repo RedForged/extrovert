@@ -8,6 +8,13 @@ release: the codebase carries its version in `package.json`, and the sections
 ## [Unreleased]
 
 ### Features
+- **Drive**: every upload (chat attachments, post media, stickers, avatars, API media) now lands in one
+  per-user storage pool with a **50 MB default quota** that admins change at `/admin/storage`
+  (`EXTV_DRIVE_QUOTA_BYTES` as the fallback). There is no per-file limit — a file only has to fit in
+  the user's remaining space — and all seven upload endpoints enforce the same quota. Usage is shown in
+  `/settings`, files are listable and deletable at `/drive`, deletions refund their space, and existing
+  files are counted by a one-time backfill. Files for posts stay public; files for DMs/rooms are sealed
+  in the browser.
 - **Pronouns**: profiles can list pronouns as free text — two fields by default, up to six — shown
   next to the handle and exposed through the API (`pronouns` on account objects, and accepted by
   `PATCH /api/v1/accounts/update_credentials`). Values are length-capped, stripped of control

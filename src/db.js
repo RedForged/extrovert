@@ -318,6 +318,25 @@ try { db.exec(`
   );
 `); } catch {}
 
+// Per-user file storage accounting ("the Drive"). Every uploaded file gets a
+// row here so a user's total stored bytes can be summed against their quota.
+try { db.exec(`
+  CREATE TABLE IF NOT EXISTS user_files (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL REFERENCES users(id),
+    kind       TEXT NOT NULL,
+    root       TEXT NOT NULL,
+    path       TEXT NOT NULL,
+    mime       TEXT,
+    size       INTEGER NOT NULL,
+    sealed     INTEGER NOT NULL DEFAULT 0,
+    name       TEXT,
+    created_at INTEGER NOT NULL,
+    UNIQUE(root, path)
+  );
+  CREATE INDEX IF NOT EXISTS idx_user_files_user ON user_files(user_id);
+`); } catch {}
+
 // Migrations.
 try { db.exec(`ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT 'default'`); } catch {}
 try { db.exec(`ALTER TABLE users ADD COLUMN bio TEXT NOT NULL DEFAULT ''`); } catch {}
@@ -2340,6 +2359,9 @@ function deleteUserRows(userId) {
   db.prepare(`DELETE FROM user_public_keys WHERE user_id = ?`).run(userId);
   db.prepare(`DELETE FROM stickers WHERE user_id = ?`).run(userId);
   db.prepare(`DELETE FROM dm_security WHERE user_id = ? OR other_id = ?`).run(userId, userId);
+  // Unlink every file this account stored (avatars, stickers, API media, Drive).
+  db.prepare(`SELECT root, path FROM user_files WHERE user_id = ?`).all(userId)
+    .forEach((f) => { try { removeStoredFile(f.root, f.path); } catch (e) { /* best effort */ } });
   db.prepare(`DELETE FROM media_attachments WHERE user_id = ?`).run(userId);
   db.prepare(`DELETE FROM edit_history WHERE edited_by = ?`).run(userId);
   db.prepare(`DELETE FROM push_subscriptions WHERE user_id = ?`).run(userId);
@@ -3017,6 +3039,157 @@ function updateMediaAttachmentDimensions(id, width, height) {
   db.prepare(`UPDATE media_attachments SET width = ?, height = ? WHERE id = ?`).run(width, height, id);
 }
 
+// ---------- Drive / user files ----------
+// Stored paths are relative to a root:
+//   uploads     -> <repo>/uploads            (post media, avatars, stickers)
+//   api-uploads -> <repo>/data/api-uploads   (legacy API media)
+//   drive       -> <repo>/data/drive         (the Drive itself)
+const FILE_ROOTS = {
+  uploads: path.join(__dirname, '..', 'uploads'),
+  'api-uploads': path.join(__dirname, '..', 'data', 'api-uploads'),
+  drive: path.join(__dirname, '..', 'data', 'drive'),
+};
+
+// Absolute location of a stored file, or null if the root/path is bogus.
+function fileDiskPath(root, relPath) {
+  const base = FILE_ROOTS[root];
+  if (!base || !relPath) return null;
+  const full = path.resolve(base, relPath);
+  if (full !== base && !full.startsWith(base + path.sep)) return null;
+  return full;
+}
+
+// Map a stored URL (e.g. '/uploads/avatars/x.jpg') to its root + relative path.
+function splitStoredPath(stored) {
+  if (!stored) return null;
+  const s = String(stored);
+  if (s.startsWith('/api-uploads/')) return { root: 'api-uploads', path: s.slice('/api-uploads/'.length) };
+  if (s.startsWith('/drive/f/')) return { root: 'drive', path: s.slice('/drive/f/'.length) };
+  if (s.startsWith('/uploads/')) return { root: 'uploads', path: s.slice('/uploads/'.length) };
+  return null;
+}
+
+function createUserFile({ userId, kind, root, path: relPath, mime, size, sealed, name }) {
+  const existing = db.prepare(`SELECT id FROM user_files WHERE root = ? AND path = ?`).get(root, relPath);
+  if (existing) {
+    db.prepare(`UPDATE user_files SET user_id = ?, kind = ?, mime = ?, size = ?, sealed = ?, name = ? WHERE id = ?`)
+      .run(userId, kind, mime || null, size, sealed ? 1 : 0, name || null, existing.id);
+    return existing.id;
+  }
+  return db.prepare(`
+    INSERT INTO user_files (user_id, kind, root, path, mime, size, sealed, name, created_at)
+    VALUES (?,?,?,?,?,?,?,?,?)
+  `).run(userId, kind, root, relPath, mime || null, size, sealed ? 1 : 0, name || null, Date.now()).lastInsertRowid;
+}
+
+function getUserFiles(userId) {
+  return db.prepare(`SELECT * FROM user_files WHERE user_id = ? ORDER BY created_at DESC, id DESC`).all(userId);
+}
+
+function getUserFileById(id) {
+  return db.prepare(`SELECT * FROM user_files WHERE id = ?`).get(id);
+}
+
+function getUserFileUsage(userId) {
+  return db.prepare(`SELECT COALESCE(SUM(size),0) AS n FROM user_files WHERE user_id = ?`).get(userId).n;
+}
+
+function getAllUserFileUsage() {
+  return db.prepare(
+    `SELECT user_id, SUM(size) AS bytes, COUNT(*) AS files FROM user_files GROUP BY user_id ORDER BY bytes DESC`
+  ).all();
+}
+
+function getTotalUserFileUsage() {
+  return db.prepare(`SELECT COALESCE(SUM(size),0) AS bytes, COUNT(*) AS files FROM user_files`).get();
+}
+
+function deleteUserFile(id) {
+  const row = getUserFileById(id);
+  if (!row) return null;
+  db.prepare(`DELETE FROM user_files WHERE id = ?`).run(id);
+  return row;
+}
+
+function deleteUserFileByPath(root, relPath) {
+  const row = db.prepare(`SELECT * FROM user_files WHERE root = ? AND path = ?`).get(root, relPath);
+  if (!row) return null;
+  db.prepare(`DELETE FROM user_files WHERE id = ?`).run(row.id);
+  return row;
+}
+
+// Drop a file's accounting row and unlink it. Tolerates either half missing.
+function removeStoredFile(root, relPath) {
+  const row = deleteUserFileByPath(root, relPath);
+  const full = fileDiskPath(root, relPath);
+  if (full) { try { fs.unlinkSync(full); } catch (e) { /* already gone */ } }
+  return row;
+}
+
+// How many posts still point at this media path (used before letting a Drive
+// file be deleted, and when a post is removed).
+function countPostsUsingMedia(mediaPath) {
+  if (!mediaPath) return 0;
+  return db.prepare(`SELECT COUNT(*) AS n FROM posts WHERE media_path = ?`).get(mediaPath).n;
+}
+
+// One-time: count the files users already stored before the Drive existed, so
+// nobody starts at 0 bytes of usage. Guarded by app_meta; safe to call often.
+function backfillDriveFiles() {
+  const done = db.prepare(`SELECT value FROM app_meta WHERE key = 'drive_backfill_v1'`).get();
+  if (done) return 0;
+  let added = 0;
+  const register = (userId, kind, stored) => {
+    if (!userId) return;
+    const split = splitStoredPath(stored);
+    if (!split) return;
+    const full = fileDiskPath(split.root, split.path);
+    if (!full) return;
+    let size = 0;
+    try { size = fs.statSync(full).size; } catch (e) { return; } // not on disk -> skip
+    const existing = db.prepare(`SELECT id FROM user_files WHERE root = ? AND path = ?`).get(split.root, split.path);
+    if (existing) return;
+    createUserFile({ userId, kind, root: split.root, path: split.path, size, sealed: 0 });
+    added++;
+  };
+  db.prepare(`SELECT id, avatar FROM users WHERE avatar IS NOT NULL AND avatar != ''`).all()
+    .forEach((u) => register(u.id, 'avatar', u.avatar));
+  db.prepare(`SELECT user_id, file_path FROM stickers`).all()
+    .forEach((s) => register(s.user_id, 'sticker', s.file_path));
+  db.prepare(`SELECT user_id, media_path FROM posts WHERE media_path IS NOT NULL AND media_path != ''`).all()
+    .forEach((p) => register(p.user_id, 'post', p.media_path));
+  db.prepare(`SELECT user_id, file_path FROM media_attachments`).all()
+    .forEach((m) => register(m.user_id, 'api', '/api-uploads/' + m.file_path));
+  db.prepare(`INSERT OR REPLACE INTO app_meta (key, value) VALUES ('drive_backfill_v1', '1')`).run();
+  if (added) console.log(`[Drive] Backfilled ${added} existing file(s) into storage accounting.`);
+  return added;
+}
+
+// Sweep Drive files that have no accounting row — e.g. the process died between
+// writing a file and registering it. Files touched in the last hour are left
+// alone so an upload in flight is never removed.
+function pruneOrphanDriveFiles() {
+  const dir = FILE_ROOTS.drive;
+  let names;
+  try { names = fs.readdirSync(dir); } catch (e) { return 0; }
+  const hasRow = db.prepare(`SELECT 1 FROM user_files WHERE root = 'drive' AND path = ?`);
+  const cutoff = Date.now() - 60 * 60 * 1000;
+  let removed = 0;
+  for (const name of names) {
+    if (hasRow.get(name)) continue;
+    const full = path.join(dir, name);
+    let st;
+    try { st = fs.statSync(full); } catch (e) { continue; }
+    if (!st.isFile() || st.mtimeMs > cutoff) continue;
+    try { fs.unlinkSync(full); removed++; } catch (e) { /* best effort */ }
+  }
+  if (removed) console.log(`[Drive] Removed ${removed} orphaned file(s) with no storage record.`);
+  return removed;
+}
+
+try { backfillDriveFiles(); } catch (err) { console.error('Drive backfill error:', err); }
+try { pruneOrphanDriveFiles(); } catch (err) { console.error('Drive prune error:', err); }
+
 // ---------- Idempotency keys ----------
 const IDEMPOTENCY_TTL = 24 * 60 * 60 * 1000; // 24h
 
@@ -3211,6 +3384,26 @@ function isEmailVerificationRequired() {
   return getEmailPolicy() === 'required';
 }
 
+// ---------- Drive quota ----------
+// Per-user storage limit for everything they upload.
+// Precedence: admin UI (DB) → EXTV_DRIVE_QUOTA_BYTES env → 50 MB.
+const DRIVE_QUOTA_DEFAULT_BYTES = 50 * 1024 * 1024;
+
+function getDriveQuotaBytes() {
+  const stored = Number(getSetting('drive_quota_bytes'));
+  if (Number.isFinite(stored) && stored > 0) return Math.floor(stored);
+  const env = Number(process.env.EXTV_DRIVE_QUOTA_BYTES);
+  if (Number.isFinite(env) && env > 0) return Math.floor(env);
+  return DRIVE_QUOTA_DEFAULT_BYTES;
+}
+
+// 0 / '' / null clears the DB row so the env var or default applies again.
+function setDriveQuotaBytes(bytes) {
+  const n = Number(bytes);
+  if (Number.isFinite(n) && n > 0) setSetting('drive_quota_bytes', String(Math.floor(n)));
+  else setSetting('drive_quota_bytes', null);
+}
+
 function requireVerifiedEmail(user) {
   if (!isEmailVerificationRequired()) return false;
   if (!user) return false;
@@ -3380,6 +3573,11 @@ module.exports = {
   rotateRefreshToken, migrateOAuthTokenHashes, hashOAuthToken,
   // media
   createMediaAttachment, getMediaAttachment, getMediaAttachmentsByUser, updateMediaAttachmentDimensions, getUserMediaUsage,
+  // drive / user files
+  FILE_ROOTS, fileDiskPath, splitStoredPath, createUserFile, getUserFiles, getUserFileById, getUserFileUsage,
+  getAllUserFileUsage, getTotalUserFileUsage, deleteUserFile, deleteUserFileByPath, removeStoredFile,
+  countPostsUsingMedia,
+  backfillDriveFiles, pruneOrphanDriveFiles, getDriveQuotaBytes, setDriveQuotaBytes, DRIVE_QUOTA_DEFAULT_BYTES,
   // idempotency
   getIdempotencyKey, setIdempotencyKey,
   getUserMediaUsage, pruneAuditLog, pruneNotifications,

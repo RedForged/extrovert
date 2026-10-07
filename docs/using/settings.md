@@ -53,6 +53,12 @@ This is the OAuth app manager:
 - **Authorized apps:** apps you've granted access to through the OAuth flow, with scopes and authorization date; revoke access per app.
 - API twins exist at `/api/v1/oauth/apps` and `/api/v1/oauth/authorized_apps` (see [OAuth & OIDC](../developers/oauth-oidc.md)).
 
+## Storage
+
+The **Storage** section shows how much of your Drive you're using (`used of quota`) with the same bar
+as the Drive page, and links to it. Everything you upload counts: chat attachments, post media,
+stickers and avatars. See [Drive](/docs/using/drive).
+
 ## What's *not* in settings
 
 Profile editing (display name, bio, custom HTML/CSS, avatar) lives in the profile editor at `/u/<username>/edit` — see [Profiles](profiles.md). Invite links are created and copied from the account sheet.

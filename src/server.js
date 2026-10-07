@@ -32,8 +32,10 @@ if (!SESSION_SECRET) {
 // Ensure data + upload directories exist.
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const UPLOAD_DIR = path.join(__dirname, '..', 'uploads');
+const DRIVE_DIR = path.join(__dirname, '..', 'data', 'drive');
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+fs.mkdirSync(DRIVE_DIR, { recursive: true });
 
 // View engine.
 app.set('view engine', 'ejs');
@@ -52,8 +54,8 @@ app.use(helmet({
     directives: {
       defaultSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
-      imgSrc: ["'self'", "http:", "https:"],
-      mediaSrc: ["'self'"],
+      imgSrc: ["'self'", "http:", "https:", "blob:"],
+      mediaSrc: ["'self'", "blob:"],
       scriptSrc: ["'self'", "'wasm-unsafe-eval'"],
       workerSrc: ["'self'"],
       connectSrc: ["'self'", "ws:", "wss:"],
@@ -259,6 +261,7 @@ app.use((req, res, next) => {
     req.path === '/stickers/upload' ||
     req.path.startsWith('/stickers/upload') ||
     req.path === '/posts' ||
+    req.path === '/drive/upload' ||
     /^\/u\/[^\/]+\/avatar$/.test(req.path) ||
     req.path === '/push/cancel-pending'
   )) {
@@ -315,6 +318,15 @@ app.use('/api-uploads', express.static(path.join(__dirname, '..', 'data', 'api-u
   setHeaders: (res) => {
     res.set('X-Content-Type-Options', 'nosniff');
     res.set('Content-Disposition', 'inline');
+    res.set('Cross-Origin-Resource-Policy', 'cross-origin');
+  },
+}));
+// Drive files. Names are random; the URL is the capability (same model as
+// /api-uploads). Sealed blobs have no extension, so they come back as
+// application/octet-stream and are meaningless without the message's key.
+app.use('/drive/f', express.static(DRIVE_DIR, {
+  setHeaders: (res) => {
+    res.set('X-Content-Type-Options', 'nosniff');
     res.set('Cross-Origin-Resource-Policy', 'cross-origin');
   },
 }));
@@ -410,6 +422,7 @@ app.use('/passkeys', require('./routes/webauthn'));
 app.use('/admin', require('./routes/admin'));
 app.use('/stickers', require('./routes/stickers'));
 app.use('/rooms', require('./routes/rooms'));
+app.use('/drive', require('./routes/drive'));
 app.use('/', require('./routes/security')); // /security, /security/report, /security.txt
 
 // REST API v1.

@@ -1,0 +1,64 @@
+<%- include('partials/header') %>
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap">
+      <h2 style="margin:0">Drive</h2>
+      <small class="muted"><%= fmt(usage.used) %> of <%= fmt(usage.quota) %> used</small>
+    </div>
+    <div class="usage-bar" role="progressbar" aria-valuenow="<%= usedPercent %>" aria-valuemin="0" aria-valuemax="100">
+      <span style="width:<%= usedPercent %>%"></span>
+    </div>
+    <% if (usage.used > usage.quota) { %>
+      <p class="muted" style="margin:8px 0 0">You're over your quota. Delete something to upload again.</p>
+    <% } %>
+
+    <form method="post" action="/drive/upload" enctype="multipart/form-data" id="driveUpload"
+          data-remaining="<%= usage.remaining %>" style="margin-top:18px">
+      <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+      <label for="drive-file">Upload a file</label>
+      <input type="file" name="file" id="drive-file" required>
+      <small class="muted" style="display:block;margin-top:6px">
+        No per-file limit — the only limit is your remaining space (<%= fmt(usage.remaining) %>).
+      </small>
+      <p class="drive-warn" id="driveWarn" hidden></p>
+      <button class="btn" style="margin-top:12px"><%- include('partials/icon', { name: 'plus', size: 15 }) %> Upload</button>
+    </form>
+  </div>
+
+  <% if (files.length === 0) { %>
+    <div class="card empty-state">
+      <div class="empty-art"><%- include('partials/rings', { size: 56, animate: true }) %></div>
+      <h4>Nothing stored yet</h4>
+      <p>Files you send in chats and attach to posts are kept here.</p>
+    </div>
+  <% } else { %>
+    <div class="card">
+      <h4 style="margin-top:0">Files</h4>
+      <% files.forEach(function(f){ %>
+        <div class="drive-row">
+          <div class="drive-row-main">
+            <strong><%= f.sealed ? 'Chat attachment' : (f.name || (f.kind + ' file')) %></strong>
+            <small class="muted">
+              <%= fmt(f.size) %> · <%= f.kind %><%= f.sealed ? ' · sealed' : '' %> · <%= locals.relTime(f.created_at) %>
+            </small>
+          </div>
+          <div class="drive-row-actions">
+            <% if (!f.sealed) { %>
+              <button type="button" class="btn ghost small copy-ref" data-link="<%= f.url %>"><span class="copy-ref-label">Copy link</span></button>
+            <% } %>
+            <% if (f.owned && !f.usedByPost) { %>
+              <form method="post" action="/drive/<%= f.id %>/delete" data-confirm="Delete this file? Space it uses is freed." style="margin:0">
+                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                <button class="btn ghost danger small"><%- include('partials/icon', { name: 'trash', size: 13 }) %> Delete</button>
+              </form>
+            <% } else if (f.usedByPost) { %>
+              <span class="drive-note">in use by a post</span>
+            <% } else { %>
+              <span class="drive-note">managed with your posts, stickers or avatar</span>
+            <% } %>
+          </div>
+        </div>
+      <% }); %>
+    </div>
+  <% } %>
+  <script src="/static/drive.js?v=1"></script>
+<%- include('partials/footer') %>

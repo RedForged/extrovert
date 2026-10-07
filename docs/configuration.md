@@ -119,10 +119,27 @@ All of these are configurable through the `EXTV_*_RATE_LIMIT` variables listed b
 | Comment body | 1,000 chars |
 | DM ciphertext | 65,536 chars |
 | Room message ciphertext | 20,000 chars |
-| Media upload | 60 MB per file |
+| Upload request ceiling | 512 MB per request (a denial-of-service guard — the Drive quota is the real limit) |
 | Avatar upload | 10 MB per file |
 | Sticker upload | 500 KB per file |
 | API pagination limit | 40 items per page (default 20) |
+
+## Drive quota (storage per user)
+
+Everything a user uploads — chat attachments, post media, avatars, stickers and API media — counts
+against one per-user Drive quota. There is no per-file limit; a file simply has to fit in the user's
+remaining space.
+
+| | |
+|---|---|
+| Default | 50 MB per user |
+| Runtime setting | `drive_quota_bytes` in `server_settings`, editable at `/admin/storage` (no restart needed) |
+| Environment | `EXTV_DRIVE_QUOTA_BYTES` (bytes) |
+| Precedence | admin value → `EXTV_DRIVE_QUOTA_BYTES` → 50 MB |
+
+Accounts already over the quota keep their files but cannot upload until they delete something.
+Usage lives in the `user_files` table; files uploaded before this feature existed were registered by a
+one-time backfill (`drive_backfill_v1` in `app_meta`) that stats what is already on disk.
 
 ## Upgrading / migrations
 

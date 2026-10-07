@@ -51,6 +51,18 @@ The public `/security` page invites security research and offers a **private** r
 
 The nav badge for admins counts open security reports together with moderation reports. The machine-readable policy is at `/.well-known/security.txt` (RFC 9116); the contact address is set with `SECURITY_CONTACT_EMAIL`.
 
+## Storage quota (`/admin/storage`)
+
+Every user has one storage pool — their **Drive** — covering chat attachments, post media, avatars,
+stickers and API media. There is no per-file limit; uploads are refused once the user's space is
+used up.
+
+- Set the **quota per user** in megabytes and save. It applies to the next upload immediately, with
+  no restart.
+- Leave the field blank to fall back to `EXTV_DRIVE_QUOTA_BYTES`, or to the built-in 50 MB default.
+- The panel also shows total storage across the instance and the ten largest accounts, flagging any
+  that are already over the quota (they keep their files but can't upload until they free space).
+
 ## Audit notes
 
 Selected admin-adjacent actions (OAuth app creation, token issuance, follows, post creation/deletion, DM key updates, avatar changes, media uploads) are written to the `audit_log` table with actor and timestamp.

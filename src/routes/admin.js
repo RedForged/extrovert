@@ -1,8 +1,9 @@
 'use strict';
 
 const express = require('express');
-const { getAllUsers, getUserById, removeReferralBadge, banUser, unbanUser, deleteUser, getAllRooms, deleteRoom, getPendingReports, getReport, resolveReport, dismissReport, promoteUser, getAnnouncement, setAnnouncement, clearAnnouncement, getSecurityReports, markSecurityReportHandled, getSetting, revokeAllOAuthTokensForUser, auditLog } = require('../db');
+const { getAllUsers, getUserById, removeReferralBadge, banUser, unbanUser, deleteUser, getAllRooms, deleteRoom, getPendingReports, getReport, resolveReport, dismissReport, promoteUser, getAnnouncement, setAnnouncement, clearAnnouncement, getSecurityReports, markSecurityReportHandled, getSetting, revokeAllOAuthTokensForUser, auditLog, getDriveQuotaBytes, setDriveQuotaBytes, getTotalUserFileUsage, getAllUserFileUsage, DRIVE_QUOTA_DEFAULT_BYTES } = require('../db');
 const { destroySessionsForUser } = require('../session-store');
+const { fmt } = require('../drive');
 
 const router = express.Router();
 
@@ -196,6 +197,51 @@ router.post('/mail', requireAdmin, (req, res) => {
   } catch (err) {
     console.error('admin/mail: save failed', err);
     renderMailPanel(req, res, { error: 'Failed to save: ' + (err.message || err) });
+  }
+});
+
+// ---------- Storage quota ----------
+function renderStoragePanel(req, res, { error = null, saved = false } = {}) {
+  const consumers = getAllUserFileUsage().slice(0, 10).map((row) => {
+    const u = getUserById(row.user_id);
+    return { id: row.user_id, username: u ? u.username : '#' + row.user_id, bytes: row.bytes, files: row.files };
+  });
+  res.render('admin-storage', {
+    quota: getDriveQuotaBytes(),
+    // Raw DB value: null means "inherit from the environment / default".
+    storedQuota: getSetting('drive_quota_bytes'),
+    envQuota: process.env.EXTV_DRIVE_QUOTA_BYTES || null,
+    defaultQuota: DRIVE_QUOTA_DEFAULT_BYTES,
+    total: getTotalUserFileUsage(),
+    consumers,
+    userCount: getAllUsers().length,
+    fmt,
+    error,
+    saved,
+  });
+}
+
+router.get('/storage', requireAdmin, (req, res) => renderStoragePanel(req, res));
+
+router.post('/storage', requireAdmin, (req, res) => {
+  try {
+    const mb = String((req.body && req.body.quota_mb) || '').trim();
+    if (!mb) {
+      // Blank = inherit from EXTV_DRIVE_QUOTA_BYTES / built-in default.
+      setDriveQuotaBytes(null);
+    } else {
+      const n = Number(mb);
+      if (!Number.isFinite(n) || n <= 0) {
+        return renderStoragePanel(req, res, {
+          error: 'Enter a positive number of megabytes, or leave it blank to inherit the default.',
+        });
+      }
+      setDriveQuotaBytes(Math.round(n * 1024 * 1024));
+    }
+    renderStoragePanel(req, res, { saved: true });
+  } catch (err) {
+    console.error('admin/storage: save failed', err);
+    renderStoragePanel(req, res, { error: 'Failed to save: ' + (err.message || err) });
   }
 });
 

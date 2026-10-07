@@ -53,10 +53,14 @@ Security researchers may test the software under the conditions on the in-app **
 ## Headers (helmet CSP)
 
 ```
-default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' http: https:;
-media-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self';
+default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' http: https: blob:;
+media-src 'self' blob:; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self';
 connect-src 'self' ws: wss:; frame-ancestors 'none'
 ```
+
+`blob:` is allowed for images and media only so decrypted chat attachments can be previewed from
+memory — a sealed attachment is fetched as ciphertext and decrypted in the browser, never written to
+disk or served in the clear.
 
 `script-src 'self'` means profile pages can't load external scripts even if HTML injection slipped through. Swagger UI is served from the same origin (`/developers/swagger-ui/*` — vendored `swagger-ui-dist`, no CDN) under this same CSP, so no route loosens it.
 

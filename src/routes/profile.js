@@ -12,9 +12,10 @@ const {
   commentsForPost, isFollowing, countFollowers, countFollowing,
   getFollowers, getFollowing, areMutualFollowers,
   setReferralCode, getReferralCode, getReferralCount,
-  setAvatar,
+  setAvatar, createUserFile, splitStoredPath, removeStoredFile,
 } = require('../db');
 const { canView } = require('../network');
+const drive = require('../drive');
 const { sanitizeProfileHTML, sanitizeCSS, parsePronouns, sanitizePronouns, PRONOUN_FIELDS_MAX, PRONOUN_LENGTH_MAX } = require('../sanitize');
 
 const router = express.Router();
@@ -225,6 +226,15 @@ router.post('/:username/avatar', (req, res, next) => {
   if (!req.file) return res.redirect('/u/' + profileUser.username + '/edit');
 
   const inputPath = req.file.path;
+  // Avatars are stored files too, so they need room in the Drive.
+  const space = drive.quotaState(viewer.id);
+  if (space.used + req.file.size > space.quota) {
+    try { fs.unlinkSync(inputPath); } catch (e) {}
+    return res.status(413).send(
+      'Not enough Drive space for a new avatar — you have ' + drive.fmt(space.remaining) + ' left. Delete something first.'
+    );
+  }
+  const previousAvatar = viewer.avatar;
   const outputName = crypto.randomBytes(12).toString('hex') + '.jpg';
   const outputPath = path.join(AVATAR_DIR, outputName);
 
@@ -232,6 +242,15 @@ router.post('/:username/avatar', (req, res, next) => {
     await sharp(inputPath).resize(200, 200, { fit: 'cover', position: 'center' }).jpeg({ quality: 85 }).toFile(outputPath);
     fs.unlinkSync(inputPath);
     setAvatar(viewer.id, '/uploads/avatars/' + outputName);
+    createUserFile({
+      userId: viewer.id, kind: 'avatar', root: 'uploads', path: 'avatars/' + outputName,
+      mime: 'image/jpeg', size: fs.statSync(outputPath).size,
+    });
+    // The old avatar is dead weight — unlink it and refund its space.
+    if (previousAvatar) {
+      const prev = splitStoredPath(previousAvatar);
+      if (prev) removeStoredFile(prev.root, prev.path);
+    }
   } catch (e) {
     console.error('Avatar processing error:', e);
     try { fs.unlinkSync(inputPath); } catch {}
@@ -249,7 +268,12 @@ router.post('/:username/avatar/remove', (req, res) => {
   if (!profileUser || profileUser.id !== viewer.id) return res.status(403).send('Not your profile.');
   const token = req.body._csrf || req.headers['x-csrf-token'];
   if (!token || token !== req.session.csrfToken) return res.status(403).send('CSRF validation failed');
+  const existing = viewer.avatar;
   setAvatar(viewer.id, null);
+  if (existing) {
+    const prev = splitStoredPath(existing);
+    if (prev) removeStoredFile(prev.root, prev.path);
+  }
   res.redirect('/u/' + profileUser.username + '/edit');
 });
 

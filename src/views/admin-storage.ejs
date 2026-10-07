@@ -1,0 +1,52 @@
+<%- include('partials/header') %>
+  <div class="card" style="max-width:860px;margin:0 auto">
+    <div style="display:flex;align-items:center;gap:2em;margin-bottom:18px;flex-wrap:wrap">
+      <h2 style="margin:0">Admin · Storage</h2>
+      <a class="btn ghost small" href="/admin" style="margin-left:auto"><%- include('partials/icon', { name: 'arrowLeft', size: 13 }) %> Back</a>
+    </div>
+
+    <% if (locals.saved) { %><div class="flash ok">Saved — applies to every upload immediately (no restart).</div><% } %>
+    <% if (locals.error) { %><div class="flash err"><span class="flash-ico"><%- include('partials/icon', { name: 'alert', size: 18 }) %></span><span><%= error %></span></div><% } %>
+
+    <form method="post" action="/admin/storage">
+      <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+
+      <h4 style="margin-top:6px">Drive quota per user</h4>
+      <p class="muted" style="font-size:0.85rem;margin:-2px 0 8px">
+        How much each user may store — chat attachments, post media, stickers and avatars together.
+        There is no per-file limit; a file just has to fit in the user's remaining space.
+      </p>
+      <label for="quota-mb">Quota (MB)</label>
+      <input type="number" id="quota-mb" name="quota_mb" min="1" step="1"
+             value="<%= storedQuota ? Math.round(Number(storedQuota) / 1024 / 1024) : '' %>"
+             placeholder="<%= Math.round(defaultQuota / 1024 / 1024) %>">
+      <p class="muted" style="font-size:0.78rem;margin:-2px 0 0">
+        Blank = inherit
+        <%= envQuota ? 'EXTV_DRIVE_QUOTA_BYTES' : 'the built-in default' %>
+        (<%= fmt(quota) %>).
+      </p>
+
+      <button class="btn full" style="margin-top:18px">Save quota</button>
+    </form>
+  </div>
+
+  <div class="card" style="max-width:860px;margin:16px auto">
+    <h2 style="margin-top:0">Current usage</h2>
+    <p class="muted" style="font-size:0.85rem;margin:-4px 0 12px">
+      <strong><%= fmt(total.bytes) %></strong> stored across <%= total.files %> file<%= total.files === 1 ? '' : 's' %>
+      and <%= userCount %> account<%= userCount === 1 ? '' : 's' %><%= quota && userCount ? ' — ' + Math.round(((total.bytes / userCount) / quota) * 100) + '% of the per-user quota on average' : '' %>.
+    </p>
+    <% if (consumers.length === 0) { %>
+      <p class="muted">No files stored yet.</p>
+    <% } else { %>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <% consumers.forEach(function(c) { %>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 10px;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;font-size:0.85rem">
+            <a href="/u/<%= encodeURIComponent(c.username) %>">@<%= c.username %></a>
+            <span class="muted"><%= fmt(c.bytes) %> · <%= c.files %> file<%= c.files === 1 ? '' : 's' %><%= c.bytes > quota ? ' · over quota' : '' %></span>
+          </div>
+        <% }); %>
+      </div>
+    <% } %>
+  </div>
+<%- include('partials/footer') %>

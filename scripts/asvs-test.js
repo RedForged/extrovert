@@ -533,17 +533,20 @@ describe('OWASP ASVS v4.0 (automatable subset)', () => {
         assert.ok([302, 400, 403].includes(resp.status), `upload of ${name} rejected (got ${resp.status})`);
       }
       const uploads = path.join(__dirname, '..', 'uploads');
-      if (fs.existsSync(uploads)) {
-        for (const f of walk(uploads)) {
+      const driveDir = path.join(__dirname, '..', 'data', 'drive');
+      for (const dir of [uploads, driveDir]) {
+        if (!fs.existsSync(dir)) continue;
+        for (const f of walk(dir)) {
           assert.ok(!/\.(html?|svg|js)$/i.test(f), `no active-content file stored: ${f}`);
         }
       }
     });
     it('12.1.2 — upload size limits configured', async () => {
-      const postsSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'posts.js'), 'utf8');
+      const driveSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'drive.js'), 'utf8');
       const apiSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'api-v1.js'), 'utf8');
-      assert.ok(/fileSize:\s*\d+/.test(postsSrc), 'posts upload has a size limit');
+      assert.ok(/fileSize:\s*(\d+|MAX_REQUEST_BYTES)/.test(driveSrc), 'Drive uploads have a per-request ceiling');
       assert.ok(/fileSize:\s*\d+/.test(apiSrc), 'API upload has a size limit');
+      assert.ok(/getDriveQuotaBytes/.test(driveSrc), 'uploads are bounded by the per-user Drive quota');
     });
     it('12.2.1 / 12.6.1 — downloads served with nosniff, inline disposition, server-generated names', async () => {
       const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
@@ -679,8 +682,8 @@ describe('OWASP ASVS v4.0 (automatable subset)', () => {
       assert.ok(!feed.includes(unique), 'report content not on the feed');
     });
 
-    it('14.3.4 — the /security nav link is gated behind developer settings', async () => {
-      // Default user: developer mode off → no Security link in the nav.
+    it('14.3.4 — the /security entry point has no top-bar nav link', async () => {
+      // Security lives behind the settings page, for everyone.
       const feedOff = await (await req('/', { jar: aliceSession })).text();
       assert.ok(!/href="\/security"/.test(feedOff), 'no /security nav link for ordinary users');
 
@@ -692,7 +695,11 @@ describe('OWASP ASVS v4.0 (automatable subset)', () => {
       assert.strictEqual(save.status, 302, 'settings saved');
 
       const feedOn = await (await req('/', { jar: aliceSession })).text();
-      assert.ok(/href="\/security"/.test(feedOn), '/security nav link appears with developer settings on');
+      assert.ok(!/href="\/security"/.test(feedOn), 'still no /security nav link with developer settings on');
+
+      // The entry point is a button on the settings page instead.
+      const settingsPage = await (await req('/settings', { jar: aliceSession })).text();
+      assert.ok(/href="\/settings\/security"/.test(settingsPage), 'settings page links to security');
 
       // The page itself stays directly reachable either way.
       assert.strictEqual((await req('/security')).status, 200);

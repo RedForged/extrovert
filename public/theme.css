@@ -968,6 +968,7 @@ label { display: block; font-size: var(--fs-sm); color: var(--text-secondary); m
 
 /* counts framed by the ring motif */
 .profile-stats { display: inline-flex; align-items: center; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+
 .profile-stats a, .profile-stats .stat-pip {
   display: inline-flex; align-items: center; gap: 6px;
   color: var(--text-secondary); font-size: var(--fs-sm); font-weight: 600;
@@ -990,6 +991,26 @@ label { display: block; font-size: var(--fs-sm); color: var(--text-secondary); m
 .pager { display: flex; justify-content: space-between; margin-top: 22px; gap: 10px; }
 .pager .page-indicator { align-self: center; color: var(--text-muted); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
 .pager .pager-side { display: inline-flex; gap: 10px; }
+
+/* ── Drive ────────────────────────────────────────────────────────── */
+
+.usage-bar {
+  height: 6px; border-radius: var(--radius-full); overflow: hidden;
+  background: var(--surface-2, var(--border-soft)); margin-top: 12px;
+}
+.usage-bar span { display: block; height: 100%; background: var(--primary); transition: width 0.3s; }
+
+.drive-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 0; border-bottom: 1px solid var(--border-soft);
+}
+.drive-row:last-child { border-bottom: none; }
+.drive-row-main { min-width: 0; }
+.drive-row-main strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drive-row-main small { display: block; margin-top: 2px; }
+.drive-row-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+.drive-note { font-size: 0.78rem; color: var(--text-muted); }
+.drive-warn { margin: 8px 0 0; font-size: 0.85rem; color: var(--danger); }
 
 /* ── User rows ─────────────────────────────────────────────────────── */
 

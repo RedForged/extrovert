@@ -6,7 +6,8 @@ const fs = require('fs');
 const crypto = require('crypto');
 const multer = require('multer');
 const sharp = require('sharp');
-const { addSticker, getMyStickers } = require('../db');
+const { addSticker, getMyStickers, createUserFile, splitStoredPath, removeStoredFile } = require('../db');
+const drive = require('../drive');
 
 const router = express.Router();
 
@@ -78,7 +79,18 @@ router.post('/upload', (req, res) => {
     }
 
     const filePath = '/uploads/stickers/' + req.file.filename;
+    // Stickers count against the Drive like every other stored file.
+    const space = drive.quotaState(res.locals.currentUser.id);
+    if (space.used + req.file.size > space.quota) {
+      try { fs.unlinkSync(path.join(STICKER_DIR, req.file.filename)); } catch (e) {}
+      return res.status(413).send('Not enough Drive space for a new sticker — you have ' + drive.fmt(space.remaining) + ' left.');
+    }
     addSticker(res.locals.currentUser.id, filePath);
+    createUserFile({
+      userId: res.locals.currentUser.id, kind: 'sticker', root: 'uploads',
+      path: 'stickers/' + req.file.filename, mime: req.file.mimetype || null,
+      size: fs.statSync(path.join(STICKER_DIR, req.file.filename)).size, name: req.file.originalname || null,
+    });
     res.redirect('/stickers/manage');
   });
 });
