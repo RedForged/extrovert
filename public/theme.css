@@ -1133,7 +1133,7 @@ a.conv-row:hover { color: var(--primary); }
 
 .pfx-canvas {
   position: fixed; inset: 0; z-index: 9991; pointer-events: none;
-  opacity: 0; transition: opacity 220ms ease-in-out;
+  opacity: 0; transition: opacity 160ms ease-in-out;
 }
 .pfx-canvas.pfx-in { opacity: 0.85; transition-duration: 180ms; }
 
@@ -1164,7 +1164,7 @@ a.conv-row:hover { color: var(--primary); }
 
 .pfx-glitch-layer {
   position: fixed; inset: -2px; z-index: 9992; pointer-events: none;
-  opacity: 0; transition: opacity 220ms ease-in-out; mix-blend-mode: overlay;
+  opacity: 0; transition: opacity 160ms ease-in-out; mix-blend-mode: overlay;
   background-image:
     repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.05) 0 1px, rgba(0, 0, 0, 0.055) 1px 3px),
     repeating-linear-gradient(0deg, rgba(126, 255, 178, 0.05) 0 2px, transparent 2px 8px),

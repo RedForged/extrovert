@@ -70,27 +70,45 @@
     for (var c = 0; c < cols; c++) drops.push(Math.random() * -(canvas.height / size));
 
     var start = Date.now();
+    // Rain normally, then stop spawning and let every remaining glyph flow off
+    // the bottom of the screen instead of having the effect cut off.
+    var drainAt = 420;
     function draw() {
+      var t = Date.now() - start;
+      var spawning = t < drainAt;
+      var speed = spawning ? 1 : 1 + Math.min(2, (t - drainAt) / 160);
       // Erase the previous frames instead of painting black over them, so the
       // rain trails stay transparent and the page keeps its own background.
+      // Trails die faster once draining, so the screen really empties out.
       ctx.globalCompositeOperation = 'destination-out';
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.22)';
+      ctx.fillStyle = spawning ? 'rgba(0, 0, 0, 0.22)' : 'rgba(0, 0, 0, 0.45)';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.globalCompositeOperation = 'source-over';
       ctx.font = size + 'px monospace';
       ctx.shadowColor = 'rgba(47, 220, 134, 0.7)';
       ctx.shadowBlur = 6;
+      var alive = false;
       for (var i = 0; i < cols; i++) {
         var y = drops[i] * size;
+        if (y - size > canvas.height) {
+          if (!spawning) continue;
+          drops[i] = -Math.random() * 12;
+          y = drops[i] * size;
+        }
+        alive = true;
         ctx.fillStyle = '#b6ffd8';
         ctx.fillText(glyphs.charAt(Math.floor(Math.random() * glyphs.length)), i * size, y - size);
         ctx.fillStyle = '#2fdc86';
         ctx.fillText(glyphs.charAt(Math.floor(Math.random() * glyphs.length)), i * size, y);
-        if (y > canvas.height && Math.random() > 0.96) drops[i] = 0;
-        drops[i] += 1;
+        drops[i] += speed;
       }
       ctx.shadowBlur = 0;
-      if (Date.now() - start < 900) raf = requestAnimationFrame(draw);
+      // Every glyph has left the screen: nothing to fade, just clear.
+      if (!spawning && !alive) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        return;
+      }
+      if (t < 960) raf = requestAnimationFrame(draw);
     }
     raf = requestAnimationFrame(draw);
 
@@ -116,12 +134,6 @@
       el.style.animationDelay = (140 + Math.round(i * step)) + 'ms';
     });
     page.classList.add('pfx-flying');
-
-    // Blend the rain out on the same one-second budget as everything else,
-    // so the effect finishes by fading instead of being cut off.
-    setTimeout(function () {
-      nodes.forEach(function (n) { n.classList.remove('pfx-in'); });
-    }, 760);
   }
 
   function runGlitch() {
@@ -134,5 +146,12 @@
     else runGlitch();
   } catch (e) {
     cleanup();
+    return;
   }
+
+  // Blend whatever is left out, finishing exactly on the one-second mark so the
+  // cleanup timer only ever removes something that is already invisible.
+  setTimeout(function () {
+    nodes.forEach(function (n) { n.classList.remove('pfx-in'); });
+  }, 840);
 })();

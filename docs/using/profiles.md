@@ -65,15 +65,17 @@ Pick one in the profile editor; it plays **once** when someone opens your profil
 settles into its normal state.
 
 - **Matrix** — green glyphs rain down over the page (no backdrop; the page keeps its own
-  background) while the page's text flies in from all four sides.
+  background) while the page's text flies in from all four sides. The rain then stops spawning and
+  the glyphs still on screen flow down and off the bottom.
 - **Glitch** — the whole page picks up a subtle scanline tear: micro displacement, faint hue
   shifts and a fine scanline layer over every part of the viewport.
 
 Rules that apply to every effect:
 
-- Hard cap of **1 second** — the animation is timed so it *finishes* inside that budget, blending
-  out over its last ~220 ms instead of snapping away. A timer then removes the already-invisible
-  layers and any inline styles they set, so a slow or interrupted frame can't leave the page broken.
+- Hard cap of **1 second** — the animation is timed to *finish* inside that budget: the matrix
+  drains its glyphs off the bottom of the screen, and whatever is still visible blends out over the
+  final ~160 ms. A timer then removes the already-invisible layers and any inline styles they set,
+  so a slow or interrupted frame can't leave the page broken.
 - Never blocks interaction — the effect layers are `pointer-events: none`, so clicks and scrolling
   work throughout.
 - Skipped entirely when the visitor's system requests reduced motion (`prefers-reduced-motion`).
