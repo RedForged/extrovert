@@ -454,6 +454,10 @@ function getCommentById(id) {
   return db.prepare(`SELECT * FROM comments WHERE id = ?`).get(id);
 }
 
+function getRoomMessageById(id) {
+  return db.prepare(`SELECT * FROM room_messages WHERE id = ?`).get(id);
+}
+
 // Private security reports from the responsible-disclosure form (/security).
 // Visible only to admins — never rendered on public pages.
 try { db.exec(`CREATE TABLE IF NOT EXISTS security_reports (
@@ -3682,7 +3686,7 @@ module.exports = {
   getUserFileByPath, countPostsUsingMedia, setUserFont, clearUserFontByPath,
   // content reports
   createContentReport, getPendingContentReports, countPendingContentReports, resolveContentReport,
-  getContentReport, getCommentById, REPORT_TARGET_TYPES,
+  getContentReport, getCommentById, getRoomMessageById, REPORT_TARGET_TYPES,
   backfillDriveFiles, pruneOrphanDriveFiles, getDriveQuotaBytes, setDriveQuotaBytes, DRIVE_QUOTA_DEFAULT_BYTES,
   // idempotency
   getIdempotencyKey, setIdempotencyKey,

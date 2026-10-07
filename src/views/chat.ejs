@@ -53,10 +53,17 @@
            <div class="muted" style="font-size:0.7rem;padding:0 4px">
              <%= locals.relTime(m.created_at) %>
              <% if (m.edited_at) { %><span class="edited-indicator" title="<%= new Date(m.edited_at).toLocaleString() %>">· edited</span><% } %>
-             <% if (m.from_id === currentUser.id) { %>
-               <button class="edit-msg-btn" style="font-size:0.7rem;color:var(--text-muted);background:none;border:none;cursor:pointer;padding:0 2px;margin-left:4px;text-decoration:underline">Edit</button>
-               <button class="delete-msg-btn" data-msg-id="<%= m.id %>" data-csrf="<%= csrfToken %>" data-action="/chats/<%= other.username %>/delete/<%= m.id %>" style="font-size:0.7rem;color:var(--text-muted);background:none;border:none;cursor:pointer;padding:0 2px;margin-left:4px;text-decoration:underline">Delete</button>
-             <% } %>
+             <span class="comment-menu-container" style="margin-left:4px">
+               <button class="comment-menu-btn" title="More actions" aria-label="More actions"><%- include('partials/icon', { name: 'more', size: 13 }) %></button>
+               <div class="comment-menu" style="display:none">
+                 <% if (m.from_id === currentUser.id) { %>
+                   <button class="edit-msg-btn"><%- include('partials/icon', { name: 'edit', size: 14 }) %> Edit</button>
+                   <button class="delete-msg-btn" data-msg-id="<%= m.id %>" data-csrf="<%= csrfToken %>" data-action="/chats/<%= other.username %>/delete/<%= m.id %>"><%- include('partials/icon', { name: 'trash', size: 14 }) %> Delete</button>
+                 <% } else { %>
+                   <button type="button" class="report-item" data-report="dm_message" data-report-id="<%= m.id %>" data-report-snapshot=".chat-bubble"><%- include('partials/icon', { name: 'flag', size: 14 }) %> Report</button>
+                 <% } %>
+               </div>
+             </span>
            </div>
            <% if (m.from_id === currentUser.id) { %>
              <input type="hidden" class="edit-msg-data" value="<%= m.body %>" data-csrf="<%= csrfToken %>" data-action="/chats/<%= other.username %>/edit/<%= m.id %>">

@@ -380,25 +380,41 @@ document.addEventListener('DOMContentLoaded', function() {
       bodyDiv.appendChild(rowDiv);
       var actionsDiv = document.createElement('div');
       actionsDiv.className = 'room-msg-actions';
+      var menuWrap = document.createElement('span');
+      menuWrap.className = 'comment-menu-container room-msg-menu';
+      var menuBtn = document.createElement('button');
+      menuBtn.className = 'comment-menu-btn';
+      menuBtn.title = 'More actions';
+      menuBtn.setAttribute('aria-label', 'More actions');
+      if (window.DSHIcons) menuBtn.appendChild(window.DSHIcons.icon('more', 14));
+      var menu = document.createElement('div');
+      menu.className = 'comment-menu';
+      menu.style.display = 'none';
       if (m.user_id === currentUserId) {
-        var editSpan = document.createElement('span');
-        editSpan.className = 'room-msg-edit';
-        editSpan.dataset.msgId = m.id;
-        editSpan.textContent = 'Edit';
-        actionsDiv.appendChild(editSpan);
+        var editBtn = document.createElement('button');
+        editBtn.className = 'edit-comment-btn room-msg-edit';
+        editBtn.dataset.msgId = m.id;
+        editBtn.textContent = 'Edit';
+        menu.appendChild(editBtn);
       }
       if (m.user_id === currentUserId || canDelete) {
-        var delSpan = document.createElement('span');
-        delSpan.className = 'room-msg-delete';
-        delSpan.dataset.msgId = m.id;
-        delSpan.textContent = 'Delete';
-        actionsDiv.appendChild(delSpan);
+        var delBtn = document.createElement('button');
+        delBtn.className = 'delete-comment-btn room-msg-delete';
+        delBtn.dataset.msgId = m.id;
+        delBtn.textContent = 'Delete';
+        menu.appendChild(delBtn);
       }
-      var reportSpan = document.createElement('span');
-      reportSpan.className = 'room-msg-report';
-      reportSpan.dataset.msgId = m.id;
-      reportSpan.textContent = 'Report';
-      actionsDiv.appendChild(reportSpan);
+      var reportBtn = document.createElement('button');
+      reportBtn.type = 'button';
+      reportBtn.className = 'report-item';
+      reportBtn.setAttribute('data-report', 'room_message');
+      reportBtn.setAttribute('data-report-id', String(m.id));
+      reportBtn.setAttribute('data-report-snapshot', '.room-msg-text');
+      reportBtn.textContent = 'Report';
+      menu.appendChild(reportBtn);
+      menuWrap.appendChild(menuBtn);
+      menuWrap.appendChild(menu);
+      actionsDiv.appendChild(menuWrap);
       bodyDiv.appendChild(actionsDiv);
       div.appendChild(bodyDiv);
       msgArea.appendChild(div);

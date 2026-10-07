@@ -53,12 +53,14 @@ router.post('/', (req, res) => {
     targetUserId = target.id;
     context = 'profile';
   } else if (type === 'room_message') {
-    const room = db.getRoom(Number(req.body.room_id));
-    const channel = db.getRoomChannel(Number(req.body.channel_id));
-    if (!room || !channel || channel.room_id !== room.id) return res.status(404).json({ error: 'Message not found.' });
-    if (!db.isRoomMember(room.id, user.id) && !user.is_admin) return res.status(403).json({ error: 'Not a member.' });
-    const message = (db.getRoomMessages(channel.id) || []).find((m) => m.id === targetId);
+    // The room and channel come from the message itself, so the client only
+    // needs to send the message id.
+    const message = db.getRoomMessageById(targetId);
     if (!message) return res.status(404).json({ error: 'Message not found.' });
+    const channel = db.getRoomChannel(message.channel_id);
+    const room = channel ? db.getRoom(channel.room_id) : null;
+    if (!room) return res.status(404).json({ error: 'Message not found.' });
+    if (!db.isRoomMember(room.id, user.id) && !user.is_admin) return res.status(403).json({ error: 'Not a member.' });
     targetUserId = message.user_id;
     context = 'room "' + room.name + '"';
   } else if (type === 'dm_message') {

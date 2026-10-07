@@ -50,9 +50,9 @@ allowed, regardless of who is doing it or what cause they support:
 
 ## Reports, removals, and appeals
 
-- **Anyone can report content**: use the **⋯ menu** on a post, comment or profile, the **Report** chip on a
-  room message, or email for anything else. Direct messages are end-to-end encrypted, so for those we
-  can only see what you choose to send us (a copy of the text, or a screenshot).
+- **Anyone can report content**: use the **⋯ menu** on a post, comment, profile, room message or chat
+  message, or email for anything else. Direct messages are end-to-end encrypted, so for those we can
+  only see what you choose to send us (a copy of the text, or a screenshot).
 - Reporting sends the content and your reason to the moderators; for encrypted messages we also receive
   the copy you were looking at, which is the only plaintext that exists.
 - We do not monitor everything. We act on reports, and on anything we happen to come across.

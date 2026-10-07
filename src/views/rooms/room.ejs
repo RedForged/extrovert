@@ -67,13 +67,18 @@
               </div>
             </div>
             <div class="room-msg-actions">
-              <% if (m.user_id === locals.currentUser.id) { %>
-                <span class="room-msg-edit" data-msg-id="<%= m.id %>">Edit</span>
-              <% } %>
-              <% if (m.user_id === locals.currentUser.id || (role && role.permissions & 16) || locals.currentUser.is_admin) { %>
-                <span class="room-msg-delete" data-msg-id="<%= m.id %>">Delete</span>
-              <% } %>
-              <span class="room-msg-report" data-msg-id="<%= m.id %>">Report</span>
+            <span class="comment-menu-container room-msg-menu">
+              <button class="comment-menu-btn" title="More actions" aria-label="More actions"><%- include('../partials/icon', { name: 'more', size: 14 }) %></button>
+              <div class="comment-menu" style="display:none">
+                <% if (m.user_id === locals.currentUser.id) { %>
+                  <button class="edit-comment-btn room-msg-edit" data-msg-id="<%= m.id %>"><%- include('../partials/icon', { name: 'edit', size: 14 }) %> Edit</button>
+                <% } %>
+                <% if (m.user_id === locals.currentUser.id || (role && role.permissions & 16) || locals.currentUser.is_admin) { %>
+                  <button class="delete-comment-btn room-msg-delete" data-msg-id="<%= m.id %>"><%- include('../partials/icon', { name: 'trash', size: 14 }) %> Delete</button>
+                <% } %>
+                <button type="button" class="report-item" data-report="room_message" data-report-id="<%= m.id %>" data-report-snapshot=".room-msg-text"><%- include('../partials/icon', { name: 'flag', size: 14 }) %> Report</button>
+              </div>
+            </span>
             </div>
           </div>
         </div>

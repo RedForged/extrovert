@@ -139,27 +139,73 @@
   }
 
   function appendMsgControls(timeEl, msgId, otherUsername) {
-    var baseStyle = 'font-size:0.7rem;color:var(--text-muted);background:none;border:none;cursor:pointer;padding:0 2px;margin-left:4px;text-decoration:underline';
+    var wrap = document.createElement('span');
+    wrap.className = 'comment-menu-container';
+    wrap.style.marginLeft = '4px';
+
+    var btn = document.createElement('button');
+    btn.className = 'comment-menu-btn';
+    btn.title = 'More actions';
+    btn.setAttribute('aria-label', 'More actions');
+    if (window.DSHIcons) btn.appendChild(window.DSHIcons.icon('more', 14));
+
+    var menu = document.createElement('div');
+    menu.className = 'comment-menu';
+    menu.style.display = 'none';
+
     var editBtn = document.createElement('button');
     editBtn.className = 'edit-msg-btn';
-    editBtn.style.cssText = baseStyle;
     editBtn.textContent = 'Edit';
     var delBtn = document.createElement('button');
     delBtn.className = 'delete-msg-btn';
     delBtn.setAttribute('data-msg-id', String(msgId));
     delBtn.setAttribute('data-csrf', csrfToken());
     delBtn.setAttribute('data-action', '/chats/' + encodeURIComponent(otherUsername) + '/delete/' + encodeURIComponent(msgId));
-    delBtn.style.cssText = baseStyle;
     delBtn.textContent = 'Delete';
+
+    menu.appendChild(editBtn);
+    menu.appendChild(delBtn);
+    wrap.appendChild(btn);
+    wrap.appendChild(menu);
+    timeEl.appendChild(wrap);
+
     var data = document.createElement('input');
     data.type = 'hidden';
     data.className = 'edit-msg-data';
     data.value = '';
     data.setAttribute('data-csrf', csrfToken());
     data.setAttribute('data-action', '/chats/' + encodeURIComponent(otherUsername) + '/edit/' + encodeURIComponent(msgId));
-    timeEl.appendChild(editBtn);
-    timeEl.appendChild(delBtn);
     timeEl.appendChild(data);
+  }
+
+  // ⋯ menu with a Report item, for messages that came from the other person.
+  function appendReportControl(timeEl, msgId) {
+    var wrap = document.createElement('span');
+    wrap.className = 'comment-menu-container';
+    wrap.style.marginLeft = '4px';
+
+    var btn = document.createElement('button');
+    btn.className = 'comment-menu-btn';
+    btn.title = 'More actions';
+    btn.setAttribute('aria-label', 'More actions');
+    if (window.DSHIcons) btn.appendChild(window.DSHIcons.icon('more', 14));
+
+    var menu = document.createElement('div');
+    menu.className = 'comment-menu';
+    menu.style.display = 'none';
+
+    var rep = document.createElement('button');
+    rep.type = 'button';
+    rep.className = 'report-item';
+    rep.setAttribute('data-report', 'dm_message');
+    rep.setAttribute('data-report-id', String(msgId));
+    rep.setAttribute('data-report-snapshot', '.chat-bubble');
+    rep.textContent = 'Report';
+
+    menu.appendChild(rep);
+    wrap.appendChild(btn);
+    wrap.appendChild(menu);
+    timeEl.appendChild(wrap);
   }
 
   function ensureEditedIndicator(msgEl) {
@@ -611,6 +657,7 @@
         time.textContent = window.relTime ? window.relTime(msg.created_at) : new Date(msg.created_at).toLocaleString();
         div.appendChild(time);
         if (isOwn && msg.id) appendMsgControls(time, msg.id, otherUsername);
+        else if (msg.id) appendReportControl(time, msg.id);
 
         container.appendChild(div);
         scrollChatBottom();
