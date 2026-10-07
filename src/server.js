@@ -305,12 +305,17 @@ app.use('/uploads', express.static(UPLOAD_DIR, {
   setHeaders: (res) => {
     res.set('X-Content-Type-Options', 'nosniff');
     res.set('Content-Disposition', 'inline');
+    // Display assets (avatars, post media, stickers) must render in the
+    // Extrovert clients whose webview origin differs from the server
+    // (Tauri/Android) — helmet's same-origin CORP would block them there.
+    res.set('Cross-Origin-Resource-Policy', 'cross-origin');
   },
 }));
 app.use('/api-uploads', express.static(path.join(__dirname, '..', 'data', 'api-uploads'), {
   setHeaders: (res) => {
     res.set('X-Content-Type-Options', 'nosniff');
     res.set('Content-Disposition', 'inline');
+    res.set('Cross-Origin-Resource-Policy', 'cross-origin');
   },
 }));
 
