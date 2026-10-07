@@ -1147,43 +1147,38 @@ a.conv-row:hover { color: var(--primary); }
   to { opacity: 1; filter: none; transform: none; color: inherit; text-shadow: none; }
 }
 
-/* Whole-page glitch: a micro displacement of the content plus a fine scanline
-   and tear layer covering the viewport, so every part of the page is affected
-   instead of a few stray blocks. */
-.pfx-page.pfx-glitching { animation: pfx-glitch 900ms steps(2, end) both; }
-@keyframes pfx-glitch {
-  0% { transform: none; filter: none; }
-  12% { transform: translate3d(-1.5px, 0.5px, 0) skewX(-0.35deg); filter: hue-rotate(12deg) saturate(1.08); }
-  28% { transform: translate3d(1.5px, -0.5px, 0); filter: hue-rotate(-12deg) saturate(1.06); }
-  44% { transform: translate3d(-1px, 0.5px, 0) skewX(0.3deg); filter: none; }
-  60% { transform: translate3d(1px, 0, 0); filter: hue-rotate(8deg) saturate(1.05); }
-  76% { transform: translate3d(-0.5px, -0.5px, 0); filter: none; }
-  88% { transform: translate3d(0.5px, 0, 0); filter: hue-rotate(-6deg); }
-  100% { transform: none; filter: none; }
-}
-
+/* Whole-page glitch: the page itself doesn't move — an overlay of scanlines,
+   chroma fringing and hatched tearing bands does the work, shifting in discrete
+   steps so every part of the viewport is affected. Light and dark hairlines are
+   mixed so it reads on both themes, without blend modes. */
 .pfx-glitch-layer {
-  position: fixed; inset: -2px; z-index: 9992; pointer-events: none;
-  opacity: 0; transition: opacity 160ms ease-in-out; mix-blend-mode: overlay;
+  position: fixed; inset: -4px; z-index: 9993; pointer-events: none;
+  opacity: 0; transition: opacity 160ms ease-in-out;
   background-image:
-    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.05) 0 1px, rgba(0, 0, 0, 0.055) 1px 3px),
-    repeating-linear-gradient(0deg, rgba(126, 255, 178, 0.05) 0 2px, transparent 2px 8px),
-    repeating-linear-gradient(90deg, rgba(92, 223, 224, 0.035) 0 1px, transparent 1px 5px);
-  animation: pfx-glitch-layer 900ms steps(3, end) both;
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.07) 0 1px, rgba(0, 0, 0, 0.12) 1px 3px),
+    repeating-linear-gradient(90deg, rgba(255, 80, 130, 0.07) 0 1px, transparent 1px 5px, rgba(80, 215, 255, 0.07) 5px 6px, transparent 6px 11px),
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.18) 0 3px, rgba(255, 255, 255, 0.03) 3px 8px),
+    repeating-linear-gradient(90deg, rgba(0, 0, 0, 0.16) 0 2px, rgba(0, 0, 0, 0.02) 2px 7px),
+    repeating-linear-gradient(90deg, rgba(126, 255, 178, 0.16) 0 4px, rgba(126, 255, 178, 0.03) 4px 10px),
+    repeating-linear-gradient(90deg, rgba(92, 223, 224, 0.14) 0 2px, rgba(92, 223, 224, 0.02) 2px 6px);
+  background-repeat: repeat, repeat, no-repeat, no-repeat, no-repeat, no-repeat;
+  background-size: auto, auto, 100% 3px, 100% 2px, 100% 4px, 100% 2px;
+  background-position: 0 0, 0 0, 0 18%, 0 44%, 0 67%, 0 85%;
+  animation: pfx-glitch-shift 900ms steps(5, end) both;
 }
 .pfx-glitch-layer.pfx-in { opacity: 1; transition-duration: 180ms; }
-@keyframes pfx-glitch-layer {
-  0% { transform: none; background-position: 0 0, 0 0, 0 0; }
-  20% { transform: translate3d(-2px, 0, 0); background-position: 0 1px, 0 -2px, -2px 0; }
-  40% { transform: translate3d(1px, 1px, 0); background-position: 0 -1px, 0 2px, 2px 0; }
-  60% { transform: translate3d(-1px, 0, 0); background-position: 0 2px, 0 -1px, -1px 0; }
-  80% { transform: translate3d(1px, -1px, 0); background-position: 0 -2px, 0 1px, 1px 0; }
-  100% { transform: none; background-position: 0 0, 0 0, 0 0; }
+@keyframes pfx-glitch-shift {
+  0% { background-position: 0 0, 0 0, 0 18%, 0 44%, 0 67%, 0 85%; }
+  20% { background-position: 0 2px, -4px 0, -7px 18.6%, 5px 43.4%, -5px 67.6%, 8px 84.4%; }
+  40% { background-position: 0 -2px, 3px 0, 6px 17.4%, -4px 44.6%, 4px 66.4%, -6px 85.6%; }
+  60% { background-position: 0 2px, -2px 0, -4px 18.2%, 3px 43.8%, -3px 67.2%, 4px 84.8%; }
+  80% { background-position: 0 -1px, 2px 0, 3px 18%, 2px 44%, -2px 67%, 3px 85%; }
+  100% { background-position: 0 0, 0 0, 0 18%, 0 44%, 0 67%, 0 85%; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .pfx-canvas, .pfx-glitch-layer { display: none !important; }
-  .pfx-page.pfx-flying > *, .pfx-page.pfx-glitching { animation: none !important; }
+  .pfx-page.pfx-flying > * { animation: none !important; }
 }
 
 /* ── Online dot / call ────────────────────────────────────────────── */

@@ -67,8 +67,9 @@ settles into its normal state.
 - **Matrix** — green glyphs rain down over the page (no backdrop; the page keeps its own
   background) while the page's text flies in from all four sides. The rain then stops spawning and
   the glyphs still on screen flow down and off the bottom.
-- **Glitch** — the whole page picks up a subtle scanline tear: micro displacement, faint hue
-  shifts and a fine scanline layer over every part of the viewport.
+- **Glitch** — a CRT-style overlay across the whole viewport: fine scanlines, red/cyan chroma
+  fringing and hatched tearing bands that shift in discrete steps. The page content itself doesn't
+  move.
 
 Rules that apply to every effect:
 

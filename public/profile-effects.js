@@ -137,7 +137,7 @@
   }
 
   function runGlitch() {
-    page.classList.add('pfx-glitching');
+    // Overlay only — the page content stays perfectly still.
     fadeIn(addNode(Object.assign(document.createElement('div'), { className: 'pfx-glitch-layer' })));
   }
 
