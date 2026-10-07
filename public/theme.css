@@ -940,7 +940,7 @@ label { display: block; font-size: var(--fs-sm); color: var(--text-secondary); m
 
 /* ── Profile ───────────────────────────────────────────────────────── */
 
-.profile-header { display: flex; align-items: center; justify-content: center; gap: 18px; margin-bottom: 26px; flex-wrap: wrap; }
+.profile-header { display: flex; align-items: center; gap: 18px; margin-bottom: 26px; flex-wrap: wrap; }
 .profile-header .avatar {
   width: 72px; height: 72px; border-radius: var(--radius-full); flex: none;
   background: var(--primary-soft); color: var(--primary-strong);
