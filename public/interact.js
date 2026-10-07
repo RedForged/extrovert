@@ -390,18 +390,27 @@ document.addEventListener('DOMContentLoaded', function(){
   // Mobile overflow menus (details.menu-dd): collapsed under 600px, one at a
   // time, and closed on outside clicks. Desktop keeps them open and static.
   var overflowMenus = document.querySelectorAll('details.menu-dd');
-  if (window.matchMedia && window.matchMedia('(max-width: 600px)').matches) {
+  function isNarrowMenuView() {
+    return !!(window.matchMedia && window.matchMedia('(max-width: 600px)').matches);
+  }
+  if (isNarrowMenuView()) {
     Array.prototype.forEach.call(overflowMenus, function(d) { d.open = false; });
   }
   Array.prototype.forEach.call(overflowMenus, function(d) {
     d.addEventListener('toggle', function() {
       if (!d.open) return;
+      if (!isNarrowMenuView()) return;
       Array.prototype.forEach.call(overflowMenus, function(o) { if (o !== d) o.open = false; });
     });
   });
   document.addEventListener('click', function(e) {
+    if (!isNarrowMenuView()) return;
     Array.prototype.forEach.call(overflowMenus, function(d) {
       if (d.open && !d.contains(e.target)) d.open = false;
     });
+  });
+  window.addEventListener('resize', function() {
+    if (isNarrowMenuView()) return;
+    Array.prototype.forEach.call(overflowMenus, function(d) { d.open = true; });
   });
 });

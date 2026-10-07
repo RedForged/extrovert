@@ -1177,13 +1177,14 @@ a.conv-row:hover { color: var(--primary); }
 .voice-channel .voice-join-btn:hover { background: var(--secondary-soft); border-color: var(--secondary); color: var(--secondary); }
 
 .voice-members { padding: 4px 12px 8px 24px; font-size: var(--fs-sm); }
-.voice-members .voice-member { display: flex; align-items: center; gap: 6px; padding: 2px 0; }
+.voice-members .voice-member { display: flex; align-items: center; gap: 6px; padding: 2px 6px; }
 .voice-members .voice-member .voice-member-name { font-size: var(--fs-sm); }
 .voice-members .voice-member .voice-member-speaking {
   color: var(--secondary); font-size: 0.7rem; opacity: 0;
   transition: opacity var(--t-fast) var(--ease-soft);
 }
 .voice-members .voice-member.speaking .voice-member-speaking { opacity: 1; }
+.voice-members .voice-member.speaking { background: var(--secondary-soft); border-radius: var(--radius-sm); }
 .voice-members .voice-member.speaking .voice-member-name { color: var(--text); font-weight: 600; }
 .voice-member-you { color: var(--text-muted); font-size: var(--fs-xs); }
 

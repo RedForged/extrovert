@@ -28,6 +28,7 @@
     ExtrovertCall.on('user_offline', onUserOffline);
     ExtrovertCall.on('remote_stream', onRemoteStream);
     ExtrovertCall.on('speaking', onSelfSpeaking);
+    ExtrovertCall.on('channel_joined', onChannelJoinedBar);
     ExtrovertCall.on('error', onError);
 
     ExtrovertCall.connect();
@@ -84,6 +85,22 @@
     if (username !== null) return;
     selfSpeaking = !!active;
     updateMicState();
+  }
+
+  function resetCallBar() {
+    micMuted = false;
+    selfSpeaking = false;
+    updateMicState();
+    var muteBtn = document.getElementById('call-mute-btn');
+    muteBtn.textContent = 'Mute';
+    muteBtn.style.background = 'var(--surface-2)';
+    muteBtn.style.color = '';
+  }
+
+  function onChannelJoinedBar() {
+    resetCallBar();
+    activeCallBar.style.display = 'flex';
+    startCallTimer();
   }
 
   function createActiveCallBar() {
@@ -300,13 +317,7 @@
     if (!st.channelId) {
       document.getElementById('call-bar-label').textContent = 'Call with ' + username;
     }
-    micMuted = false;
-    selfSpeaking = false;
-    updateMicState();
-    var muteBtn = document.getElementById('call-mute-btn');
-    muteBtn.textContent = 'Mute';
-    muteBtn.style.background = 'var(--surface-2)';
-    muteBtn.style.color = '';
+    resetCallBar();
     activeCallBar.style.display = 'flex';
     startCallTimer();
   }

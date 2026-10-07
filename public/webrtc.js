@@ -46,10 +46,13 @@
   }
 
   function connect() {
-    if (ws && ws.readyState === WebSocket.OPEN) return;
-    try { ws = new WebSocket(wsUrl()); } catch (e) { scheduleReconnect(); return; }
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+    var socket = null;
+    try { socket = new WebSocket(wsUrl()); } catch (e) { scheduleReconnect(); return; }
+    ws = socket;
 
-    ws.onopen = function () {
+    socket.onopen = function () {
+      if (ws !== socket) return;
       reconnectAttempts = 0;
       console.log('WebRTC WS connected');
       send({ type: 'ping' });
@@ -60,20 +63,23 @@
       }
     };
 
-    ws.onmessage = function (e) {
+    socket.onmessage = function (e) {
+      if (ws !== socket) return;
       var msg;
       try { msg = JSON.parse(e.data); } catch { return; }
       console.log('WS recv:', msg.type, msg.from || '');
       handleMessage(msg);
     };
 
-    ws.onclose = function (event) {
+    socket.onclose = function (event) {
+      if (ws !== socket) return;
       console.log('WebRTC WS closed:', event.code, event.reason);
       cleanupAll();
       scheduleReconnect();
     };
 
-    ws.onerror = function (err) {
+    socket.onerror = function (err) {
+      if (ws !== socket) return;
       console.error('WebRTC WS error');
     };
   }
@@ -253,7 +259,7 @@
       var analyser = audioCtx.createAnalyser();
       analyser.fftSize = 512;
       src.connect(analyser);
-      audioWatch[key] = { src: src, analyser: analyser, buf: new Uint8Array(analyser.fftSize), active: false, quietSince: 0 };
+      audioWatch[key] = { src: src, analyser: analyser, buf: new Uint8Array(analyser.fftSize), active: false, quietSince: 0, floor: 0.005 };
       if (!audioTimer) audioTimer = setInterval(tickAudio, 100);
     } catch (e) {}
   }
@@ -282,7 +288,9 @@
         sum += v * v;
       }
       var rms = Math.sqrt(sum / entry.buf.length);
-      if (rms > 0.025) {
+      entry.floor = Math.max(0.003, Math.min(entry.floor * 1.01, rms));
+      var threshold = Math.max(0.012, entry.floor * 4);
+      if (rms > threshold) {
         entry.quietSince = 0;
         if (!entry.active) {
           entry.active = true;
@@ -487,11 +495,13 @@
   }
 
   function joinChannel(roomId, channelId) {
+    getMedia().catch(function () {});
     send({ type: 'join_channel', room_id: roomId, channel_id: channelId });
   }
 
   function leaveChannel(channelId) {
     send({ type: 'leave_channel', channel_id: channelId });
+    emit('call_ended', '');
     endCallInternal();
   }
 
