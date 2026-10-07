@@ -288,7 +288,12 @@ router.post('/auth/pair/claim', express.json(), (req, res) => {
 // ======== API Authentication & Registration (Password, TOTP, Passkeys, Captcha) ========
 
 function enforceHttpsInProduction(req, res, next) {
-  if (process.env.NODE_ENV === 'production' && !req.secure) {
+  // req.secure is only true when TLS reaches Express directly or the fronting
+  // proxy is trusted (TRUST_PROXY). Accept the standard edge-proxy header too,
+  // so TLS-terminating deployments (Nginx Proxy Manager, Caddy, …) keep
+  // working even when trust proxy is misconfigured.
+  const forwardedProto = (req.get('x-forwarded-proto') || '').split(',')[0].trim();
+  if (process.env.NODE_ENV === 'production' && !req.secure && forwardedProto !== 'https') {
     return errorResponse(res, 403, 'Forbidden', 'HTTPS is required in production.');
   }
   next();

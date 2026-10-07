@@ -18,6 +18,11 @@ services:
     environment:
       - NODE_ENV=production
       - SESSION_SECRET
+      # TLS terminates at Nginx Proxy Manager — Express must trust the proxy
+      # or req.secure stays false (enforceHttpsInProduction then rejects all
+      # /api/v1/auth/* calls) and req.ip collapses to the proxy's address
+      # (breaking the IP-scoped lockouts and rate limits).
+      - TRUST_PROXY=true
 
 volumes:
   extrovert_data:
