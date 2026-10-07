@@ -12,8 +12,9 @@ release: the codebase carries its version in `package.json`, and the sections
   when someone opens the page — green glyph rain falling over the page with its text flying in
   from all sides, or a subtle whole-page scanline glitch. The matrix rain falls at a constant speed —
   time-based, so refresh rate and frame drops don't change it — then stops spawning and drains off
-  the bottom of the screen. Both are allowlisted server-side, capped at two seconds, never block
-  clicks or scrolling, and are skipped when the visitor prefers reduced motion.
+  the bottom of the screen, ending when the last glyph has left (about two seconds). Both are
+  allowlisted server-side, never block clicks or scrolling, and are skipped when the visitor prefers
+  reduced motion.
 - **Account sheet**: the avatar chip in the navbar opens a bottom sheet with Edit profile,
   Create/Copy invite link, Settings and Sign out (the account switcher rows appear there too
   when several accounts are signed in). Settings and Security are no longer top-bar items,

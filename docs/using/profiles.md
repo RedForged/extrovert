@@ -75,10 +75,10 @@ Rules that apply to every effect:
 
 - Constant speed: the rain advances by elapsed time, not by frame, so it falls at the same rate on
   a 60 Hz or a 144 Hz display, and doesn't speed up or slow down when the page drops frames.
-- Budgeted, not open-ended: the glitch runs about a second and the matrix about 1.6 — long enough
-  for every glyph to fall off the screen at the rain's own speed. Both blend out over the final
-  ~160 ms before a timer removes the (by then invisible) layers and any inline styles they set, so
-  a slow or interrupted frame can't leave the page broken.
+- Finishes rather than stops: the glitch runs about a second and fades out; the matrix keeps raining
+  until the last glyph has fallen off the bottom of the screen (about 2 seconds), and its canvas is
+  removed in the same frame it empties — so nothing is ever cut off part-way down. A watchdog cleans
+  up if a frame hitch ever stalls that.
 - Never blocks interaction — the effect layers are `pointer-events: none`, so clicks and scrolling
   work throughout.
 - Skipped entirely when the visitor's system requests reduced motion (`prefers-reduced-motion`).
