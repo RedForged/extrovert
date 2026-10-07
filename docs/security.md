@@ -78,8 +78,10 @@ quota. What keeps them from becoming an attack surface:
   only `/uploads/`, `/api-uploads/` and `/drive/f/` paths are recognised — anything else 404s. The
   profile-font route was probed with `/drive/f/../../../data/extrovert.db` and returned 404 without
   exposing a byte of the database.
-- **Custom fonts are validated** by container signature (wOF2, wOFF, OTTO, TrueType, `true`, `ttcf`) and
-  capped at 8 MB, so a renamed image is rejected; they are only ever served as `font/*`.
+- **Custom fonts are validated and re-serialized.** The container signature is checked, then the file is
+  run through the **OpenType Sanitizer** (`ots-sanitize`, the same library browsers apply to downloaded
+  webfonts) and only its sanitized output is stored — see [Configuration](configuration.md). A font the
+  sanitizer rejects is refused, and fonts are only ever served as `font/*` with `nosniff`.
 - **The server never parses uploads.** No image or font decoding happens at request time — only a 4-byte
   signature read — so parser bugs stay in the visitor's browser rather than here.
 - **Profile CSS/HTML is sanitized at render**: `@import` is removed and external `url(...)` is rewritten
@@ -89,9 +91,10 @@ quota. What keeps them from becoming an attack surface:
   name, type or extension, and the key only exists inside the E2EE message.
 
 Residual risk worth knowing: a deliberately malformed font is still parsed by the *visitor's* font
-engine, so a font-parser bug in their browser is the one thing this feature cannot defend against. The
-size cap limits the payload and everything is same-origin, but a stricter deployment could re-encode
-uploads server-side before storing them.
+engine, so a font-parser bug in their browser is the one thing this feature cannot defend against — but
+uploads are re-serialized through the OpenType Sanitizer first (the same validation browsers apply), the
+size cap limits the payload, and everything is same-origin. A stricter deployment could also refuse to
+apply custom fonts inside the native clients, whose webview sandbox is weaker than a browser's.
 
 Also note that anything in the Drive is **public to anyone with its URL** (a 32-hex name), and a profile
 font is deliberately public at `/u/<username>/font` — so users should only upload files they have the

@@ -314,7 +314,7 @@ router.get('/:username/font', (req, res) => {
   res.sendFile(full);
 });
 
-router.post('/:username/font', drive.quotaGuard(), drive.single('font'), (req, res) => {
+router.post('/:username/font', drive.quotaGuard(), drive.single('font'), async (req, res) => {
   const viewer = res.locals.currentUser;
   if (!viewer) return res.redirect('/login');
   const profileUser = getUserByUsername(req.params.username);
@@ -341,6 +341,26 @@ router.post('/:username/font', drive.quotaGuard(), drive.single('font'), (req, r
   if (!drive.isFontFile(req.file.path)) {
     drive.discardUpload(req);
     return res.status(400).send('That file is not a valid font.');
+  }
+
+  // Re-serialize through the OpenType Sanitizer — the same validation browsers
+  // apply to downloaded fonts — so we store sanitized output, never the raw
+  // input. Without the binary we keep the checks above and warn once.
+  const verdict = await drive.sanitizeFontFile(req.file.path);
+  if (!verdict.ok) {
+    if (verdict.reason === 'missing') {
+      drive.warnOtsMissingOnce();
+    } else {
+      drive.discardUpload(req);
+      return res.status(400).send(
+        verdict.reason === 'invalid'
+          ? 'That font failed validation — try exporting it again.'
+          : 'Could not process that font.'
+      );
+    }
+  } else {
+    // Charge the Drive for what is actually stored.
+    req.file.size = verdict.size;
   }
 
   const stored = drive.acceptUpload(req, res, { kind: 'font', userId: viewer.id });

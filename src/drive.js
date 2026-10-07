@@ -10,6 +10,7 @@
 const path = require('node:path');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
+const { spawn } = require('node:child_process');
 const multer = require('multer');
 const db = require('./db');
 
@@ -57,6 +58,72 @@ function isFontFile(filePath) {
 
 // Fonts are small; keep one from eating the whole quota in a single request.
 const MAX_FONT_BYTES = 8 * 1024 * 1024;
+
+// Browsers run downloaded fonts through the OpenType Sanitizer before the OS
+// font engine sees them. We do the same on the way in, so a malformed font is
+// re-serialized (or rejected) instead of being stored as-is. Override the path
+// with EXTV_OTS_SANITIZE; when the binary is missing we fall back to the
+// signature/extension checks and warn once.
+const OTS_BIN = process.env.EXTV_OTS_SANITIZE || 'ots-sanitize';
+const OTS_TIMEOUT_MS = 20000;
+let otsWarned = false;
+
+// Validates and re-serializes a font in place.
+//   { ok: true, size }                 — replaced with the sanitized output
+//   { ok: false, reason: 'invalid' }   — the sanitizer rejected it
+//   { ok: false, reason: 'missing' }   — ots-sanitize isn't installed
+//   { ok: false, reason: 'failed', detail }
+function sanitizeFontFile(filePath) {
+  const outPath = filePath + '.ots';
+  return new Promise((resolve) => {
+    let child;
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(killTimer);
+      resolve(result);
+    };
+    const killTimer = setTimeout(() => {
+      try { child.kill('SIGKILL'); } catch (e) { /* already gone */ }
+      try { fs.unlinkSync(outPath); } catch (e) { /* nothing written */ }
+      finish({ ok: false, reason: 'failed', detail: 'sanitizer timed out' });
+    }, OTS_TIMEOUT_MS);
+
+    try {
+      child = spawn(OTS_BIN, ['--quiet', filePath, outPath], { stdio: 'ignore' });
+    } catch (e) {
+      return finish({ ok: false, reason: 'missing' });
+    }
+
+    child.on('error', (err) => {
+      const missing = err && err.code === 'ENOENT';
+      finish({ ok: false, reason: missing ? 'missing' : 'failed', detail: String((err && err.message) || err) });
+    });
+
+    child.on('close', (code) => {
+      if (code !== 0) {
+        try { fs.unlinkSync(outPath); } catch (e) { /* nothing written */ }
+        return finish({ ok: false, reason: 'invalid' });
+      }
+      try {
+        const size = fs.statSync(outPath).size;
+        if (!size) throw new Error('empty output');
+        fs.renameSync(outPath, filePath);
+        finish({ ok: true, size });
+      } catch (e) {
+        try { fs.unlinkSync(outPath); } catch (e2) { /* nothing written */ }
+        finish({ ok: false, reason: 'failed', detail: String(e.message || e) });
+      }
+    });
+  });
+}
+
+function warnOtsMissingOnce() {
+  if (otsWarned) return;
+  otsWarned = true;
+  console.warn('[Drive] ots-sanitize not found — fonts are stored without re-serialization. Install opentype-sanitizer (or set EXTV_OTS_SANITIZE).');
+}
 
 // Safety ceiling for a single request's body. The quota check below is what
 // actually refuses uploads; this just bounds the worst case.
@@ -203,6 +270,8 @@ module.exports = {
   MAX_FONT_BYTES,
   MAX_REQUEST_BYTES,
   isFontFile,
+  sanitizeFontFile,
+  warnOtsMissingOnce,
   upload,
   single,
   quotaGuard,

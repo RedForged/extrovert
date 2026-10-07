@@ -8,6 +8,17 @@ release: the codebase carries its version in `package.json`, and the sections
 ## [Unreleased]
 
 ### Features
+- **Terms of Service & rules**: a ToS at `/docs/terms` covering accounts, uploads (including the
+  "you confirm you have the right to share this" declaration), a narrow conduct-based set of
+  prohibited content (illegal material, violent extremism, genocide denial/glorification, hate,
+  harassment, CSAM, doxxing, spam, infringement, ban evasion), reports/removals/appeals, a copyright
+  takedown process, data, and liability. Accepted by using the instance — stated in the site footer,
+  on the register page, and linked from Settings.
+- **Server-side font sanitization**: profile fonts are now validated and **re-serialized** through the
+  OpenType Sanitizer (`ots-sanitize`, shipped in the Docker image via `opentype-sanitizer`) before being
+  stored, so what is served is sanitized output rather than the uploaded bytes. A font the sanitizer
+  rejects is refused; the quota is charged for the stored (sanitized) size. Without the binary, uploads
+  keep working un-sanitized with a one-time warning (`EXTV_OTS_SANITIZE` overrides the path).
 - **Custom profile fonts**: upload a woff2/woff/ttf/otf (≤8 MB) in the profile editor and use it on
   your page with a copy-ready `@font-face` snippet. Fonts are stored in your Drive (counting against
   its quota) and served at a stable URL, `/u/<username>/font`, so the CSS survives replacing the

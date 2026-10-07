@@ -5,7 +5,9 @@ RUN npm ci --only=production
 
 FROM node:26-slim
 WORKDIR /app
-RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends dumb-init && rm -rf /var/lib/apt/lists/*
+# dumb-init: PID 1; opentype-sanitizer: validates + re-serializes uploaded
+# profile fonts (ots-sanitize) before they are stored.
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends dumb-init opentype-sanitizer && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/node_modules ./node_modules
 COPY . .
 # Run as the unprivileged 'node' user (ASVS V10.2 / container hardening). The

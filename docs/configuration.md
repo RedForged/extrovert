@@ -141,6 +141,22 @@ Accounts already over the quota keep their files but cannot upload until they de
 Usage lives in the `user_files` table; files uploaded before this feature existed were registered by a
 one-time backfill (`drive_backfill_v1` in `app_meta`) that stats what is already on disk.
 
+### Font sanitizer (`ots-sanitize`)
+
+Profile fonts are validated and **re-serialized** with the OpenType Sanitizer before being stored — the
+same library browsers run on downloaded webfonts — so only sanitized output is ever served. The
+sanitizer ships in the Docker image (`opentype-sanitizer`). If the binary is missing, uploads still
+work but are stored un-sanitized and the server logs a warning once.
+
+| | |
+|---|---|
+| Binary | `ots-sanitize` on `PATH`, or the path in `EXTV_OTS_SANITIZE` |
+| Behaviour on failure | Upload rejected: "That font failed validation" |
+| Behaviour when missing | Upload accepted un-sanitized + a one-time warning |
+
+A font the sanitizer rejects will be refused even if a browser happens to render it (older or malformed
+tables, some variable fonts). The fix for the uploader is to export a fresh static/subsetted webfont.
+
 ## Upgrading / migrations
 
 Schema changes run automatically at startup in `src/db.js` (`CREATE TABLE IF NOT EXISTS` + idempotent `ALTER TABLE ... ADD COLUMN` inside `try/catch`). Just restart the server with the new code; the database migrates itself. Keep a backup of `data/` before upgrading.

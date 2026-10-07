@@ -116,8 +116,11 @@ everyone who opens your profile gets it.
   body { font-family: 'My Font', sans-serif; }
   ```
 
-- Uploads must really be fonts: the server checks the container signature, so a renamed image is
-  rejected, and the file is served with the correct `font/*` content type and `nosniff`.
+- Uploads must really be fonts: the server checks the container signature and then **re-serializes the
+  file through the OpenType Sanitizer** (the same library browsers use for webfonts), so only
+  sanitized output is stored. It is served with the correct `font/*` content type and `nosniff`.
+  A font the sanitizer rejects is refused — export a fresh static/subsetted webfont (some variable
+  fonts and older files fail this check even though a browser would render them).
 - One font per profile. Uploading a new one replaces the file and frees the old space; removing it
   (here or from the Drive) clears the pointer and `/u/<username>/font` returns 404.
 - The font is **public**: anyone can fetch that URL, so only upload fonts you have the right to share
