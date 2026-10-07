@@ -99,6 +99,28 @@ Rules that apply to every effect:
 - Only the two built-in effects exist; the server allowlists the value, so nothing else can be
   stored or rendered on someone's page.
 
+## Custom fonts
+
+Upload a font in the profile editor (woff2, woff, ttf or otf, up to 8 MB) and use it on your page —
+everyone who opens your profile gets it.
+
+- The file lives in your [Drive](drive.md) and counts against its quota.
+- It is served at a stable URL, `/u/<username>/font`, so your CSS doesn't change when you replace the
+  font. The editor hands you a copy-ready snippet:
+
+  ```css
+  @font-face {
+    font-family: 'My Font';
+    src: url('/u/you/font?v=12');
+  }
+  body { font-family: 'My Font', sans-serif; }
+  ```
+
+- Uploads must really be fonts: the server checks the container signature, so a renamed image is
+  rejected, and the file is served with the correct `font/*` content type and `nosniff`.
+- One font per profile. Uploading a new one replaces the file and frees the old space; removing it
+  (here or from the Drive) clears the pointer and `/u/<username>/font` returns 404.
+
 ## Avatars
 - Upload from the profile editor: JPEG / PNG / WebP, max 10 MB.
 - Processed with `sharp`: resized to **200×200 px center-crop**, re-encoded as **JPEG quality 85**, stored at `uploads/avatars/<random>.jpg`.

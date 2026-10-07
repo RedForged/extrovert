@@ -22,6 +22,7 @@ function init() {
       display_name  TEXT NOT NULL,
       bio           TEXT NOT NULL DEFAULT '',
       pronouns      TEXT NOT NULL DEFAULT '',
+      custom_font   TEXT NOT NULL DEFAULT '',
       created_at    INTEGER NOT NULL,
       theme         TEXT NOT NULL DEFAULT 'default',
       referral_code TEXT,
@@ -342,6 +343,7 @@ try { db.exec(`ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT 'default
 try { db.exec(`ALTER TABLE users ADD COLUMN bio TEXT NOT NULL DEFAULT ''`); } catch {}
 try { db.exec(`ALTER TABLE profile_customization ADD COLUMN effect TEXT NOT NULL DEFAULT ''`); } catch {}
 try { db.exec(`ALTER TABLE users ADD COLUMN pronouns TEXT NOT NULL DEFAULT ''`); } catch {}
+try { db.exec(`ALTER TABLE users ADD COLUMN custom_font TEXT NOT NULL DEFAULT ''`); } catch {}
 try { db.exec(`ALTER TABLE users ADD COLUMN developer_mode INTEGER NOT NULL DEFAULT 0`); } catch {}
 try { db.exec(`ALTER TABLE messages ADD COLUMN key_for_sender TEXT`); } catch {}
 try { db.exec(`ALTER TABLE messages ADD COLUMN key_for_recipient TEXT`); } catch {}
@@ -803,6 +805,11 @@ function updateUserProfile(id, { displayName, bio, pronouns }) {
 
 function setAvatar(id, avatarPath) {
   db.prepare(`UPDATE users SET avatar = ? WHERE id = ?`).run(avatarPath, id);
+}
+
+// The profile's chosen font (a stored path, '' for none).
+function setUserFont(id, fontPath) {
+  db.prepare(`UPDATE users SET custom_font = ? WHERE id = ?`).run(fontPath || '', id);
 }
 
 function getAvatar(id) {
@@ -3122,6 +3129,12 @@ function getUserFileByPath(root, relPath) {
   return db.prepare(`SELECT * FROM user_files WHERE root = ? AND path = ?`).get(root, relPath);
 }
 
+// Drop the profile-font pointer when the file behind it is deleted elsewhere.
+function clearUserFontByPath(storedPath) {
+  if (!storedPath) return 0;
+  return db.prepare(`UPDATE users SET custom_font = '' WHERE custom_font = ?`).run(storedPath).changes;
+}
+
 // Drop a file's accounting row and unlink it. Tolerates either half missing.
 function removeStoredFile(root, relPath) {
   const row = deleteUserFileByPath(root, relPath);
@@ -3580,7 +3593,7 @@ module.exports = {
   // drive / user files
   FILE_ROOTS, fileDiskPath, splitStoredPath, createUserFile, getUserFiles, getUserFileById, getUserFileUsage,
   getAllUserFileUsage, getTotalUserFileUsage, deleteUserFile, deleteUserFileByPath, removeStoredFile,
-  getUserFileByPath, countPostsUsingMedia,
+  getUserFileByPath, countPostsUsingMedia, setUserFont, clearUserFontByPath,
   backfillDriveFiles, pruneOrphanDriveFiles, getDriveQuotaBytes, setDriveQuotaBytes, DRIVE_QUOTA_DEFAULT_BYTES,
   // idempotency
   getIdempotencyKey, setIdempotencyKey,

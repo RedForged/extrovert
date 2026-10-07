@@ -1026,6 +1026,15 @@ label { display: block; font-size: var(--fs-sm); color: var(--text-secondary); m
 .drive-note { font-size: 0.78rem; color: var(--text-muted); }
 .drive-warn { margin: 8px 0 0; font-size: 0.85rem; color: var(--danger); }
 
+/* ── Custom profile font ──────────────────────────────────────────── */
+
+.font-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 8px 10px; margin-bottom: 10px;
+  background: var(--surface-2); border: 1px solid var(--border-soft); border-radius: var(--radius);
+}
+.font-current { font-size: 0.88rem; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* ── User rows ─────────────────────────────────────────────────────── */
 
 .user-row {

@@ -12,7 +12,7 @@ const {
   commentsForPost, isFollowing, countFollowers, countFollowing,
   getFollowers, getFollowing, areMutualFollowers,
   setReferralCode, getReferralCode, getReferralCount,
-  setAvatar, createUserFile, splitStoredPath, removeStoredFile,
+  setAvatar, createUserFile, splitStoredPath, removeStoredFile, setUserFont, fileDiskPath, getUserFileByPath,
 } = require('../db');
 const { canView } = require('../network');
 const drive = require('../drive');
@@ -181,6 +181,7 @@ router.get('/:username/edit', (req, res) => {
     pronouns: parsePronouns(viewer.pronouns),
     pronounFieldsMax: PRONOUN_FIELDS_MAX,
     pronounLengthMax: PRONOUN_LENGTH_MAX,
+    customFont: fontInfoFor(viewer),
   });
 });
 
@@ -272,6 +273,103 @@ router.post('/:username/avatar/remove', (req, res) => {
   setAvatar(viewer.id, null);
   if (existing) {
     const prev = splitStoredPath(existing);
+    if (prev) removeStoredFile(prev.root, prev.path);
+  }
+  res.redirect('/u/' + profileUser.username + '/edit');
+});
+
+// ---------- Custom profile font ----------
+// The chosen font lives in the Drive (so it counts against the quota) and is
+// served at a stable URL, /u/<username>/font, for use in the profile's CSS:
+//   @font-face { font-family: 'My Font'; src: url('/u/me/font'); }
+
+function fontFamilyFromName(name, fallback) {
+  const base = String(name || '').replace(/\.[a-z0-9]+$/i, '');
+  const clean = base.replace(/["'\\<>{};()]/g, '').replace(/\s+/g, ' ').trim().slice(0, 40);
+  return clean || fallback;
+}
+
+// What the profile editor shows for the current font, if any.
+function fontInfoFor(user) {
+  const split = user && user.custom_font ? splitStoredPath(user.custom_font) : null;
+  if (!split) return null;
+  const row = getUserFileByPath(split.root, split.path);
+  return {
+    url: user.custom_font,
+    id: row ? row.id : 0,
+    name: row && row.name ? row.name : 'Custom font',
+    family: fontFamilyFromName(row && row.name, user.username),
+  };
+}
+
+router.get('/:username/font', (req, res) => {
+  const profileUser = getUserByUsername(req.params.username);
+  const split = profileUser ? splitStoredPath(profileUser.custom_font) : null;
+  const full = split ? fileDiskPath(split.root, split.path) : null;
+  if (!full || !fs.existsSync(full)) return res.status(404).send('No custom font.');
+  res.set('X-Content-Type-Options', 'nosniff');
+  res.set('Cross-Origin-Resource-Policy', 'cross-origin');
+  res.set('Cache-Control', 'public, max-age=300');
+  res.type(path.extname(split.path) || '.ttf');
+  res.sendFile(full);
+});
+
+router.post('/:username/font', drive.quotaGuard(), drive.single('font'), (req, res) => {
+  const viewer = res.locals.currentUser;
+  if (!viewer) return res.redirect('/login');
+  const profileUser = getUserByUsername(req.params.username);
+  if (!profileUser || profileUser.id !== viewer.id) {
+    drive.discardUpload(req);
+    return res.status(403).send('Not your profile.');
+  }
+  const token = req.body._csrf || req.headers['x-csrf-token'];
+  if (!token || token !== req.session.csrfToken) {
+    drive.discardUpload(req);
+    return res.status(403).send('CSRF validation failed');
+  }
+  if (!req.file) return res.redirect('/u/' + profileUser.username + '/edit');
+
+  const ext = path.extname(req.file.originalname || '').toLowerCase();
+  if (!drive.FONT_EXTENSIONS.has(ext)) {
+    drive.discardUpload(req);
+    return res.status(400).send('Fonts must be .woff2, .woff, .ttf or .otf.');
+  }
+  if (req.file.size > drive.MAX_FONT_BYTES) {
+    drive.discardUpload(req);
+    return res.status(400).send('That font is too large (max 8 MB).');
+  }
+  if (!drive.isFontFile(req.file.path)) {
+    drive.discardUpload(req);
+    return res.status(400).send('That file is not a valid font.');
+  }
+
+  const stored = drive.acceptUpload(req, res, { kind: 'font', userId: viewer.id });
+  if (!stored.ok) {
+    if (stored.exceeded) return drive.rejectFull(req, res, stored.state);
+    return res.redirect('/u/' + profileUser.username + '/edit');
+  }
+
+  const previous = viewer.custom_font;
+  setUserFont(viewer.id, stored.url);
+  // One profile font at a time: drop the old file and refund its space.
+  if (previous && previous !== stored.url) {
+    const prev = splitStoredPath(previous);
+    if (prev) removeStoredFile(prev.root, prev.path);
+  }
+  res.redirect('/u/' + profileUser.username + '/edit');
+});
+
+router.post('/:username/font/remove', (req, res) => {
+  const viewer = res.locals.currentUser;
+  if (!viewer) return res.redirect('/login');
+  const profileUser = getUserByUsername(req.params.username);
+  if (!profileUser || profileUser.id !== viewer.id) return res.status(403).send('Not your profile.');
+  const token = req.body._csrf || req.headers['x-csrf-token'];
+  if (!token || token !== req.session.csrfToken) return res.status(403).send('CSRF validation failed');
+  const previous = viewer.custom_font;
+  setUserFont(viewer.id, '');
+  if (previous) {
+    const prev = splitStoredPath(previous);
     if (prev) removeStoredFile(prev.root, prev.path);
   }
   res.redirect('/u/' + profileUser.username + '/edit');

@@ -1,8 +1,8 @@
 # Drive
 
-Every file you upload — chat attachments, post media, stickers and avatars — is stored in your
-**Drive**. It has a size limit (50 MB by default) rather than a per-file limit: a single file may use
-as much of your remaining space as it needs.
+Every file you upload — chat attachments, post media, stickers, avatars, API media and custom
+profile fonts — is stored in your **Drive**. It has a size limit (50 MB by default) rather than a
+per-file limit: a single file may use as much of your remaining space as it needs.
 
 ## Quota
 

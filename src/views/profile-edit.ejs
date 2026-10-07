@@ -24,6 +24,29 @@
       </div>
     </div>
 
+    <h4 style="margin:22px 0 8px">Custom font</h4>
+    <p class="muted" style="font-size:0.8rem;margin:0 0 10px">woff2, woff, ttf or otf — stored in your Drive and served at <code>/u/<%= profileUser.username %>/font</code>.</p>
+    <% if (customFont) { %>
+      <div class="font-row">
+        <span class="font-current"><%- include('partials/icon', { name: 'doc', size: 14 }) %> <%= customFont.name %></span>
+        <form method="post" action="/u/<%= profileUser.username %>/font/remove" style="margin:0">
+          <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+          <button class="btn ghost danger small"><%- include('partials/icon', { name: 'trash', size: 13 }) %> Remove</button>
+        </form>
+      </div>
+      <label for="font-snippet">Paste this into your profile CSS to use it</label>
+      <textarea id="font-snippet" rows="5" readonly onclick="this.select()" style="font-family:ui-monospace,monospace;font-size:12px">@font-face {
+  font-family: '<%= customFont.family %>';
+  src: url('/u/<%= profileUser.username %>/font?v=<%= customFont.id %>');
+}
+body { font-family: '<%= customFont.family %>', sans-serif; }</textarea>
+    <% } %>
+    <form method="post" action="/u/<%= profileUser.username %>/font" enctype="multipart/form-data">
+      <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+      <input type="file" name="font" accept=".woff2,.woff,.ttf,.otf" required>
+      <button class="btn ghost small" style="margin-top:8px"><%- include('partials/icon', { name: 'image', size: 13 }) %> <%= customFont ? 'Replace font' : 'Upload font' %></button>
+    </form>
+
     <form method="post" action="/u/<%= profileUser.username %>/edit">
       <input type="hidden" name="_csrf" value="<%= csrfToken %>">
       <label for="edit-displayName">Display name</label>

@@ -25,7 +25,38 @@ const SAFE_EXTENSIONS = new Set([
   '.mp3', '.ogg', '.oga', '.wav', '.m4a', '.flac',
   '.pdf', '.txt', '.md', '.csv', '.rtf', '.odt', '.ods', '.odp', '.docx', '.xlsx', '.pptx',
   '.zip', '.gz', '.tar', '.7z', '.rar',
+  // Web fonts, so profiles can ship their own (served with the font MIME type).
+  '.woff2', '.woff', '.ttf', '.otf', '.ttc',
 ]);
+
+// Extensions we accept as a profile font.
+const FONT_EXTENSIONS = new Set(['.woff2', '.woff', '.ttf', '.otf', '.ttc']);
+
+// A font file has to actually be one: browsers parse these with a font engine,
+// so we only accept known container signatures.
+const FONT_SIGNATURES = [
+  Buffer.from([0x77, 0x4f, 0x46, 0x32]), // wOF2
+  Buffer.from([0x77, 0x4f, 0x46, 0x46]), // wOFF
+  Buffer.from([0x4f, 0x54, 0x54, 0x4f]), // OTTO (CFF/OpenType)
+  Buffer.from([0x00, 0x01, 0x00, 0x00]), // TrueType
+  Buffer.from([0x74, 0x72, 0x75, 0x65]), // true (Apple)
+  Buffer.from([0x74, 0x74, 0x63, 0x66]), // ttcf (collection)
+];
+
+function isFontFile(filePath) {
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    const head = Buffer.alloc(4);
+    fs.readSync(fd, head, 0, 4, 0);
+    fs.closeSync(fd);
+    return FONT_SIGNATURES.some((sig) => head.equals(sig));
+  } catch (e) {
+    return false;
+  }
+}
+
+// Fonts are small; keep one from eating the whole quota in a single request.
+const MAX_FONT_BYTES = 8 * 1024 * 1024;
 
 // Safety ceiling for a single request's body. The quota check below is what
 // actually refuses uploads; this just bounds the worst case.
@@ -168,7 +199,10 @@ function acceptUpload(req, res, opts = {}) {
 module.exports = {
   DRIVE_DIR,
   SAFE_EXTENSIONS,
+  FONT_EXTENSIONS,
+  MAX_FONT_BYTES,
   MAX_REQUEST_BYTES,
+  isFontFile,
   upload,
   single,
   quotaGuard,

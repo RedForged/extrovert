@@ -263,6 +263,7 @@ app.use((req, res, next) => {
     req.path === '/posts' ||
     req.path === '/drive/upload' ||
     /^\/u\/[^\/]+\/avatar$/.test(req.path) ||
+    /^\/u\/[^\/]+\/font$/.test(req.path) ||
     req.path === '/push/cancel-pending'
   )) {
     return next();

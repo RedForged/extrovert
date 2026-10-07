@@ -8,6 +8,12 @@ release: the codebase carries its version in `package.json`, and the sections
 ## [Unreleased]
 
 ### Features
+- **Custom profile fonts**: upload a woff2/woff/ttf/otf (≤8 MB) in the profile editor and use it on
+  your page with a copy-ready `@font-face` snippet. Fonts are stored in your Drive (counting against
+  its quota) and served at a stable URL, `/u/<username>/font`, so the CSS survives replacing the
+  font. Uploads are validated by container signature — a renamed image is rejected — and served with
+  the correct `font/*` type and `nosniff`. One font per profile; replacing or removing it frees the
+  old file.
 - **Sealed attachments in DMs and rooms**: attach a photo or file with the **+** button. The browser
   encrypts it with a fresh AES-256-GCM key before upload, and the key travels inside the MLS-encrypted
   message — the server stores an opaque blob with no name, type or extension, and the ciphertext

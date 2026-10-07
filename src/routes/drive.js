@@ -94,6 +94,8 @@ router.post('/:id/delete', (req, res) => {
     return res.status(409).send('This file is used by a post. Delete the post to free its space.');
   }
   db.removeStoredFile('drive', file.path);
+  // If this file was someone's profile font, stop pointing at it.
+  db.clearUserFontByPath(url);
   res.redirect('/drive');
 });
 
