@@ -23,8 +23,8 @@
           <% } %>
         </div>
       </div>
-      <span class="spacer"></span>
       <% if (locals.currentUser && !isOwn) { %>
+        <span class="spacer"></span>
         <% if (following) { %>
           <form method="post" action="/unfollow/<%= profileUser.username %>"><input type="hidden" name="_csrf" value="<%= csrfToken %>"><button class="btn ghost"><%- include('partials/icon', { name: 'check', size: 15 }) %> Following</button></form>
         <% } else { %>
