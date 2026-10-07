@@ -1124,7 +1124,7 @@ a.conv-row:hover { color: var(--primary); }
 }
 /* Each notification is its own .card; the unread indicator adds a 3px left
    border, so its padding-left is 3px less to keep the icon column aligned. */
-.notif.unread { border-left: 3px solid var(--primary); padding-left: 15px; background: linear-gradient(90deg, var(--primary-soft-2), transparent 40%); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+.notif.unread { border-left: 3px solid var(--primary); padding-left: 15px; background: linear-gradient(90deg, var(--primary-soft-2), transparent 40%); }
 .notif-icon { font-size: 1.2rem; min-width: 28px; text-align: center; color: var(--secondary); display: inline-flex; }
 .notif-body { flex: 1; }
 .notif-body a { color: var(--primary); font-weight: 600; }
