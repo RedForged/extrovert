@@ -87,6 +87,11 @@
             <button class="btn ghost small">Rotate signing secret</button>
           </form>
         <% } %>
+
+        <form method="post" action="/settings/bots/<%= b.id %>/delete" style="margin-top:14px" onsubmit="return confirm('Delete @<%= b.username %>? Its tokens and webhook stop working immediately and its posts are removed. This cannot be undone.')">
+          <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+          <button class="btn ghost danger small"><%- include('partials/icon', { name: 'trash', size: 14 }) %> Delete bot</button>
+        </form>
       </div>
     <% }) %>
   </div>

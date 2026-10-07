@@ -203,6 +203,9 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
       post: { tags: ['Bots'], summary: 'Admin: create a bot account and its first long-lived token (the raw token is returned exactly once)', responses: { 201: { description: 'Created' }, 403: { description: 'Admins only' } } },
       get: { tags: ['Bots'], summary: 'Admin: list bot accounts', responses: { 200: { description: 'OK' } } },
     },
+    '/bots/{id}': {
+      delete: { tags: ['Bots'], summary: 'Delete a bot you own, with its tokens, webhook and content (admins: any bot)', responses: { 200: { description: 'OK' }, 403: { description: 'Not your bot' }, 404: { description: 'Bot not found' } } },
+    },
     '/bots/{id}/tokens': {
       post: { tags: ['Bots'], summary: 'Admin: issue an additional bot token (returned once)', responses: { 201: { description: 'Created' } } },
       get: { tags: ['Bots'], summary: "Admin: list a bot's token prefixes (never the secrets)", responses: { 200: { description: 'OK' } } },

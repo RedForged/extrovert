@@ -533,4 +533,14 @@ router.post('/bots/:id/webhook/rotate', (req, res) => {
   res.render('settings-bots', botViewState(user, { newSecret: secret, secretBotUsername: bot.username }));
 });
 
+router.post('/bots/:id/delete', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.redirect('/login');
+  const bot = ownBot(user, req.params.id);
+  if (!bot) return res.redirect('/settings/bots?error=' + encodeURIComponent('Bot not found.'));
+  db.deleteBot(bot.id);
+  db.auditLog('bot_deleted', user.id, `Bot @${bot.username}`);
+  res.redirect('/settings/bots');
+});
+
 module.exports = router;

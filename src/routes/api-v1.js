@@ -2198,6 +2198,16 @@ router.delete('/bots/:id/tokens/:tokenId', requireApiAuth('write'), (req, res) =
   responseEnvelope(res, { ok: true });
 });
 
+// Delete a bot you own (admins: any bot). Tokens, webhook and content go with it.
+router.delete('/bots/:id', requireApiAuth('write'), (req, res) => {
+  const bot = db.getUserById(parseInt(req.params.id, 10));
+  if (!bot || !bot.is_bot) return errorResponse(res, 404, 'Not Found', 'Bot not found.');
+  if (!botOwnedByCaller(req, bot)) return errorResponse(res, 403, 'Forbidden', 'Not your bot.');
+  db.deleteBot(bot.id);
+  db.auditLog('bot_deleted', req.apiUser.id, `Bot @${bot.username}`);
+  responseEnvelope(res, { ok: true });
+});
+
 // Bot self-service: register a webhook endpoint. The HMAC secret is returned
 // exactly once; rotate it with /bots/webhook/rotate if it leaks.
 router.post('/bots/webhook', requireApiAuth('write'), (req, res) => {
