@@ -7,8 +7,10 @@
   if (effect !== 'matrix' && effect !== 'glitch') return;
   if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
 
-  // Hard cap: whatever happens, the page is restored after one second.
-  var MAX_MS = 1000;
+  // Hard cap: whatever happens, the page is restored after two seconds.
+  // The rain falls at one constant speed throughout; the extra time over the
+  // glitch is what lets every glyph run off the bottom at that same speed.
+  var MAX_MS = 2000;
   var timer = null;
   var raf = 0;
   var nodes = [];
@@ -41,6 +43,14 @@
     requestAnimationFrame(function () { el.classList.add('pfx-in'); });
   }
 
+  // Fade out on a fixed schedule, finishing on the cap so the cleanup timer only
+  // ever removes something that is already invisible.
+  function blendOut(ms) {
+    setTimeout(function () {
+      nodes.forEach(function (n) { n.classList.remove('pfx-in'); });
+    }, ms);
+  }
+
   // Elements that hold text directly — the page's "text".
   function textBlocks() {
     var out = [];
@@ -70,18 +80,16 @@
     for (var c = 0; c < cols; c++) drops.push(Math.random() * -(canvas.height / size));
 
     var start = Date.now();
-    // Rain normally, then stop spawning and let every remaining glyph flow off
-    // the bottom of the screen instead of having the effect cut off.
-    var drainAt = 420;
+    // Rain for a while, then stop spawning and let the glyphs run off the bottom
+    // of the screen — at the same constant speed as the rain itself.
+    var drainAt = 700;
     function draw() {
       var t = Date.now() - start;
       var spawning = t < drainAt;
-      var speed = spawning ? 1 : 1 + Math.min(2, (t - drainAt) / 160);
       // Erase the previous frames instead of painting black over them, so the
       // rain trails stay transparent and the page keeps its own background.
-      // Trails die faster once draining, so the screen really empties out.
       ctx.globalCompositeOperation = 'destination-out';
-      ctx.fillStyle = spawning ? 'rgba(0, 0, 0, 0.22)' : 'rgba(0, 0, 0, 0.45)';
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.22)';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.globalCompositeOperation = 'source-over';
       ctx.font = size + 'px monospace';
@@ -100,7 +108,7 @@
         ctx.fillText(glyphs.charAt(Math.floor(Math.random() * glyphs.length)), i * size, y - size);
         ctx.fillStyle = '#2fdc86';
         ctx.fillText(glyphs.charAt(Math.floor(Math.random() * glyphs.length)), i * size, y);
-        drops[i] += speed;
+        drops[i] += 1;
       }
       ctx.shadowBlur = 0;
       // Every glyph has left the screen: nothing to fade, just clear.
@@ -108,9 +116,12 @@
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         return;
       }
-      if (t < 960) raf = requestAnimationFrame(draw);
+      if (t < 1900) raf = requestAnimationFrame(draw);
     }
     raf = requestAnimationFrame(draw);
+    // Fade on a fixed schedule from the start, so a slow frame rate can never
+    // leave the last glyphs being removed while they are still visible.
+    blendOut(1840);
 
     // Text flies in from all four sides, staggered so the last line settles ~920ms.
     var blocks = textBlocks();
@@ -139,6 +150,7 @@
   function runGlitch() {
     // Overlay only — the page content stays perfectly still.
     fadeIn(addNode(Object.assign(document.createElement('div'), { className: 'pfx-glitch-layer' })));
+    blendOut(840);
   }
 
   try {
@@ -146,12 +158,5 @@
     else runGlitch();
   } catch (e) {
     cleanup();
-    return;
   }
-
-  // Blend whatever is left out, finishing exactly on the one-second mark so the
-  // cleanup timer only ever removes something that is already invisible.
-  setTimeout(function () {
-    nodes.forEach(function (n) { n.classList.remove('pfx-in'); });
-  }, 840);
 })();

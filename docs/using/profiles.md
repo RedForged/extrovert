@@ -11,7 +11,7 @@ Every user has a profile page at `/u/<username>` and, more importantly, **full c
 | **Profile HTML** | Profile editor | sanitized, no JS |
 | **Profile CSS** | Profile editor | sanitized, no JS |
 | Avatar | Profile editor (upload) | JPEG/PNG/WebP, ≤10 MB |
-| Profile effect | Profile editor | `Matrix` or `Glitch` — plays once when someone opens your profile (1 s max) |
+| Profile effect | Profile editor | `Matrix` or `Glitch` — plays once when someone opens your profile (up to 2 s) |
 | Theme (light/dark) | `/settings` | global |
 | Referral code | Account sheet (your avatar in the navbar) | one per account |
 
@@ -66,17 +66,17 @@ settles into its normal state.
 
 - **Matrix** — green glyphs rain down over the page (no backdrop; the page keeps its own
   background) while the page's text flies in from all four sides. The rain then stops spawning and
-  the glyphs still on screen flow down and off the bottom.
+  the glyphs still on screen run off the bottom at that same constant speed.
 - **Glitch** — a CRT-style overlay across the whole viewport: fine scanlines, red/cyan chroma
   fringing and hatched tearing bands that shift in discrete steps. The page content itself doesn't
   move.
 
 Rules that apply to every effect:
 
-- Hard cap of **1 second** — the animation is timed to *finish* inside that budget: the matrix
-  drains its glyphs off the bottom of the screen, and whatever is still visible blends out over the
-  final ~160 ms. A timer then removes the already-invisible layers and any inline styles they set,
-  so a slow or interrupted frame can't leave the page broken.
+- Budgeted, not open-ended: the glitch runs about a second and the matrix about 1.6 — long enough
+  for every glyph to fall off the screen at the rain's own speed. Both blend out over the final
+  ~160 ms before a timer removes the (by then invisible) layers and any inline styles they set, so
+  a slow or interrupted frame can't leave the page broken.
 - Never blocks interaction — the effect layers are `pointer-events: none`, so clicks and scrolling
   work throughout.
 - Skipped entirely when the visitor's system requests reduced motion (`prefers-reduced-motion`).

@@ -32,7 +32,7 @@
       <label for="edit-bio">Bio</label>
       <textarea name="bio" id="edit-bio" rows="2" maxlength="280"><%= bio %></textarea>
 
-      <label for="edit-effect">Profile effect <span class="muted">(plays once when someone opens your profile — 1 second, max)</span></label>
+      <label for="edit-effect">Profile effect <span class="muted">(plays once when someone opens your profile — up to 2 seconds)</span></label>
       <select name="effect" id="edit-effect">
         <option value="" <%= !effect ? 'selected' : '' %>>None</option>
         <option value="matrix" <%= effect === 'matrix' ? 'selected' : '' %>>Matrix</option>
