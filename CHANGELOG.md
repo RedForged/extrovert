@@ -8,11 +8,14 @@ release: the codebase carries its version in `package.json`, and the sections
 ## [Unreleased]
 
 ### Features
-- **Sealed attachments in DMs**: attach a photo or file to a direct message with the **+** button.
-  The browser encrypts it with a fresh AES-256-GCM key before upload, and the key travels inside the
-  MLS-encrypted message — the server stores an opaque blob with no name, type or extension, and the
-  ciphertext reveals neither the URL nor the filename. Recipients decrypt and render images/video
-  inline (other files become download links). Sender and recipient both verified live.
+- **Sealed attachments in DMs and rooms**: attach a photo or file with the **+** button. The browser
+  encrypts it with a fresh AES-256-GCM key before upload, and the key travels inside the MLS-encrypted
+  message — the server stores an opaque blob with no name, type or extension, and the ciphertext
+  reveals neither the URL nor the filename. Recipients decrypt and render images/video inline (other
+  files become download links). Verified live in a DM (sender and recipient) and in a room channel.
+- **Post attachments**: the composer now accepts any file the Drive accepts, not just images and video.
+  Images and video render inline; other files become a download link labelled with the original
+  filename. Everything counts against the uploader's Drive.
 - **Drive**: every upload (chat attachments, post media, stickers, avatars, API media) now lands in one
   per-user storage pool with a **50 MB default quota** that admins change at `/admin/storage`
   (`EXTV_DRIVE_QUOTA_BYTES` as the fallback). There is no per-file limit — a file only has to fit in

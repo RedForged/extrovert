@@ -68,7 +68,11 @@
       var cacheKey = mls && mls.roomCacheKey ? mls.roomCacheKey(msgId, ciphertext) : 'room:' + msgId;
 
       function finish(plain, cacheIt) {
-        textEl.textContent = plain;
+        if (window.ExtrovertFiles && window.ExtrovertFiles.render) {
+          window.ExtrovertFiles.render(textEl, plain);
+        } else {
+          textEl.textContent = plain;
+        }
         textEl.classList.remove('e2ee-pending');
         if (cacheIt && mls && mls.rememberPlaintext) mls.rememberPlaintext(cacheKey, plain);
       }

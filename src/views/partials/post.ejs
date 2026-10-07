@@ -28,10 +28,15 @@
 
   <% if (item.body) { %><div class="post-body"><%- mdRender(item.body) %></div><% } %>
   <% if (item.editedAt) { %><div class="post-edited"><a href="/posts/<%= item.interactId %>/history?type=post" class="edited-link" title="<%= new Date(item.editedAt).toLocaleString() %>">(edited)</a></div><% } %>
-  <% if (item.mediaPath && item.type === 'photo') { %>
-    <img class="post-media" src="<%= item.mediaPath %>" alt="photo">
-  <% } else if (item.mediaPath && item.type === 'video') { %>
-    <video class="post-media" controls src="<%= item.mediaPath %>"></video>
+  <% if (item.mediaPath) { %>
+    <% var _mext = (String(item.mediaPath).match(/\.[a-z0-9]+$/i) || [''])[0].toLowerCase(); %>
+    <% if (['.jpg','.jpeg','.png','.gif','.webp','.bmp','.avif'].includes(_mext)) { %>
+      <img class="post-media" src="<%= item.mediaPath %>" alt="photo">
+    <% } else if (['.mp4','.webm','.mov','.mkv','.avi'].includes(_mext)) { %>
+      <video class="post-media" controls src="<%= item.mediaPath %>"></video>
+    <% } else { %>
+      <a class="btn ghost small" style="margin-top:10px" href="<%= item.mediaPath %>" download><%- include('icon', { name: 'doc', size: 13 }) %> Download <%= driveFileName(item.mediaPath) || 'attachment' %></a>
+    <% } %>
   <% } %>
 
   <div class="post-stats">

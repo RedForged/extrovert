@@ -3118,6 +3118,10 @@ function deleteUserFileByPath(root, relPath) {
   return row;
 }
 
+function getUserFileByPath(root, relPath) {
+  return db.prepare(`SELECT * FROM user_files WHERE root = ? AND path = ?`).get(root, relPath);
+}
+
 // Drop a file's accounting row and unlink it. Tolerates either half missing.
 function removeStoredFile(root, relPath) {
   const row = deleteUserFileByPath(root, relPath);
@@ -3576,7 +3580,7 @@ module.exports = {
   // drive / user files
   FILE_ROOTS, fileDiskPath, splitStoredPath, createUserFile, getUserFiles, getUserFileById, getUserFileUsage,
   getAllUserFileUsage, getTotalUserFileUsage, deleteUserFile, deleteUserFileByPath, removeStoredFile,
-  countPostsUsingMedia,
+  getUserFileByPath, countPostsUsingMedia,
   backfillDriveFiles, pruneOrphanDriveFiles, getDriveQuotaBytes, setDriveQuotaBytes, DRIVE_QUOTA_DEFAULT_BYTES,
   // idempotency
   getIdempotencyKey, setIdempotencyKey,

@@ -82,9 +82,12 @@
     </div>
     <form class="room-input" id="room-send-form" data-channel-id="<%= firstChannel ? firstChannel.id : '' %>">
       <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-      <input type="text" name="body" placeholder="Message #<%= firstChannel ? firstChannel.name : '' %>" aria-label="Message #<%= firstChannel ? firstChannel.name : '' %>" autocomplete="off" required>
+      <input type="text" name="body" placeholder="Message #<%= firstChannel ? firstChannel.name : '' %>" aria-label="Message #<%= firstChannel ? firstChannel.name : '' %>" autocomplete="off">
       <button class="btn" type="submit"><%- include('../partials/icon', { name: 'arrowRight', size: 15 }) %> Send</button>
+      <button class="btn ghost" type="button" id="room-attach-btn" style="padding:6px 10px" title="Attach a file (sealed in your browser)" aria-label="Attach a file"><%- include('../partials/icon', { name: 'plus', size: 16 }) %></button>
+      <input type="file" id="room-attach-input" hidden>
     </form>
+    <div class="attach-chip" id="room-attach-chip" hidden></div>
   </main>
 </div>
 <div class="report-overlay" id="report-overlay" role="dialog" aria-modal="true" aria-labelledby="report-modal-title" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:1000;align-items:center;justify-content:center">

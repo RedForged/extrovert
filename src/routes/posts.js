@@ -39,12 +39,9 @@ router.post('/', drive.quotaGuard(), drive.single('media'), (req, res) => {
 
   let mediaPath = null;
   if ((type === 'photo' || type === 'video') && req.file) {
-    // Post media is public, so it is stored as-is (never sealed).
-    const mime = String(req.file.mimetype || '');
-    if (!mime.startsWith('image/') && !mime.startsWith('video/')) {
-      drive.discardUpload(req);
-      return res.status(400).send('Attach an image or a video.');
-    }
+    // Post media is public, so it is stored as-is (never sealed). Any file the
+    // Drive accepts can ride along; the feed renders images/video inline and
+    // everything else as a download.
     const stored = drive.acceptUpload(req, res, { kind: 'post', userId: user.id });
     if (!stored.ok) {
       if (stored.exceeded) return drive.rejectFull(req, res, stored.state);

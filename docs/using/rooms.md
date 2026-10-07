@@ -72,6 +72,14 @@ Room messages are **end-to-end encrypted with MLS (RFC 9420)**, the same protoco
 - **Delete** — author, or anyone with `MANAGE_MESSAGES`, or an instance admin.
 - **Report** — any member can report a message with a reason; it lands in the admin reports queue (see [Admin](admin.md)).
 
+## Sending files and photos
+
+The **+** button next to Send attaches a file to a room message. Like DMs, it is **sealed in your
+browser** first (AES-256-GCM, key inside the MLS-encrypted message), so the server stores an opaque
+blob with no name, type or extension and can't tell what was shared with the channel. Images and
+video render inline after decryption; anything else becomes a download link. Sealed files count
+against your [Drive](drive.md) quota.
+
 ## Room E2EE bootstrap for implementers
 
 Modern clients can implement room E2EE with the MLS device flow:

@@ -35,14 +35,68 @@ document.addEventListener('DOMContentLoaded', function() {
     switchChannel(cid, link.querySelector('span').textContent);
   });
 
+  // Staged attachment for the room: sealed in the browser before upload, with
+  // the key travelling inside the room's encrypted message.
+  var roomStagedFile = null;
+
+  function clearRoomStaged() {
+    roomStagedFile = null;
+    var chip = document.getElementById('room-attach-chip');
+    if (chip) { chip.hidden = true; chip.textContent = ''; }
+    var inp = document.getElementById('room-attach-input');
+    if (inp) inp.value = '';
+  }
+
+  function sealAndUploadRoomFile(file, text) {
+    return window.ExtrovertFiles.seal(file).then(function (sealed) {
+      var fd = new FormData();
+      fd.append('_csrf', getCsrf());
+      fd.append('file', sealed.blob, 'sealed.bin');
+      return fetch('/drive/upload?sealed=1', {
+        method: 'POST',
+        headers: { 'X-Requested-With': 'XMLHttpRequest', Accept: 'application/json' },
+        body: fd,
+      }).then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (j) {
+          if (!r.ok) throw new Error(j && j.message ? j.message : 'Upload failed (' + r.status + ')');
+          return window.ExtrovertFiles.envelope({
+            u: j.url, k: sealed.key, i: sealed.iv, s: j.size,
+            n: file.name, m: file.type || 'application/octet-stream', t: text,
+          });
+        });
+      });
+    });
+  }
+
+  var roomAttachBtn = document.getElementById('room-attach-btn');
+  var roomAttachInput = document.getElementById('room-attach-input');
+  var roomAttachChip = document.getElementById('room-attach-chip');
+  if (roomAttachBtn && roomAttachInput) {
+    roomAttachBtn.addEventListener('click', function () { roomAttachInput.click(); });
+    roomAttachInput.addEventListener('change', function () {
+      var f = roomAttachInput.files && roomAttachInput.files[0];
+      roomStagedFile = f || null;
+      if (roomAttachChip) {
+        roomAttachChip.hidden = !f;
+        roomAttachChip.textContent = f
+          ? f.name + ' · ' + (window.ExtrovertFiles ? window.ExtrovertFiles.humanSize(f.size) : '') + ' — sealed in your browser (click to remove)'
+          : '';
+      }
+    });
+  }
+  if (roomAttachChip) {
+    roomAttachChip.addEventListener('click', function () { clearRoomStaged(); });
+  }
+
   sendForm.addEventListener('submit', function(e) {
     e.preventDefault();
     var cid = sendForm.dataset.channelId;
     if (!cid) return;
     var input = sendForm.querySelector('input[name="body"]');
     var body = input.value.trim();
-    if (!body) return;
+    if (!body && !roomStagedFile) return;
     input.disabled = true;
+    var sentPlaintext = body;
 
     var csrf = getCsrf();
     var url = '/rooms/' + roomId() + '/channels/' + cid + '/send';
@@ -65,9 +119,10 @@ document.addEventListener('DOMContentLoaded', function() {
           return;
         }
         if (d.id && window.ExtrovertMLS && window.ExtrovertMLS.rememberPlaintext) {
-          window.ExtrovertMLS.rememberPlaintext(window.ExtrovertMLS.roomCacheKey(d.id, sentCiphertext), body);
+          window.ExtrovertMLS.rememberPlaintext(window.ExtrovertMLS.roomCacheKey(d.id, sentCiphertext), sentPlaintext);
         }
         input.value = '';
+        clearRoomStaged();
         input.disabled = false;
         input.focus();
         loadMessages(cid);
@@ -77,7 +132,13 @@ document.addEventListener('DOMContentLoaded', function() {
     var sentCiphertext = null;
     var e2ee = window.ExtrovertRoomE2EE;
     if (e2ee) {
-      e2ee.encryptMessage(body).then(function(r) {
+      var prep = (roomStagedFile && window.ExtrovertFiles)
+        ? sealAndUploadRoomFile(roomStagedFile, body)
+        : Promise.resolve(body);
+      prep.then(function (payload) {
+        sentPlaintext = payload;
+        return e2ee.encryptMessage(payload);
+      }).then(function(r) {
         sentCiphertext = r.ciphertext;
         doPost('proto=mls&ciphertext=' + encodeURIComponent(r.ciphertext));
       }).catch(function(err) {

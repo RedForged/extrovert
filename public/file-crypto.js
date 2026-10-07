@@ -85,5 +85,73 @@
     }
   }
 
-  window.ExtrovertFiles = { seal: seal, open: open, envelope: envelope, parse: parse, prefix: PREFIX };
+  // Renders decrypted plaintext into an element: a sealed attachment, a sticker
+  // path, or plain text. Shared by the DM and room clients.
+  function humanSize(bytes) {
+    var n = Number(bytes) || 0;
+    if (n >= 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + ' MB';
+    if (n >= 1024) return Math.round(n / 1024) + ' KB';
+    return n + ' B';
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  function render(el, plaintext) {
+    if (!el) return;
+    var env = parse(plaintext);
+
+    if (!env) {
+      if (plaintext && plaintext.indexOf('/uploads/stickers/') === 0) {
+        el.innerHTML = '<img src="' + escapeHtml(plaintext) + '" class="sticker-inline" style="max-width:120px;max-height:120px;vertical-align:middle" alt="sticker">';
+        return;
+      }
+      el.textContent = plaintext;
+      return;
+    }
+
+    el.textContent = '';
+    if (env.t) {
+      var cap = document.createElement('div');
+      cap.className = 'att-caption';
+      cap.textContent = env.t;
+      el.appendChild(cap);
+    }
+    var holder = document.createElement('div');
+    holder.className = 'att-file';
+    holder.textContent = 'Decrypting…';
+    el.appendChild(holder);
+
+    var mime = String(env.m || '');
+    open(env.u, env.k, env.i, mime).then(function (blob) {
+      var url = URL.createObjectURL(blob);
+      holder.textContent = '';
+      if (mime.indexOf('image/') === 0) {
+        var img = document.createElement('img');
+        img.className = 'att-media';
+        img.src = url;
+        img.alt = env.n || 'attachment';
+        img.title = env.n || '';
+        holder.appendChild(img);
+      } else if (mime.indexOf('video/') === 0) {
+        var vid = document.createElement('video');
+        vid.className = 'att-media';
+        vid.controls = true;
+        vid.src = url;
+        holder.appendChild(vid);
+      } else {
+        var a = document.createElement('a');
+        a.className = 'btn ghost small att-download';
+        a.href = url;
+        a.download = env.n || 'attachment';
+        a.textContent = (env.n || 'File') + ' · ' + humanSize(env.s || blob.size);
+        holder.appendChild(a);
+      }
+    }).catch(function () {
+      holder.textContent = 'Could not open attachment.';
+    });
+  }
+
+  window.ExtrovertFiles = { seal: seal, open: open, envelope: envelope, parse: parse, render: render, humanSize: humanSize, prefix: PREFIX };
 })();

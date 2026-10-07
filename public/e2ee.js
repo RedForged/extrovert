@@ -304,58 +304,18 @@
   }
 
   function renderAttachment(bubble, env) {
-    bubble.textContent = '';
-    if (env.t) {
-      var cap = document.createElement('div');
-      cap.className = 'att-caption';
-      cap.textContent = env.t;
-      bubble.appendChild(cap);
+    if (window.ExtrovertFiles && window.ExtrovertFiles.render) {
+      window.ExtrovertFiles.render(bubble, window.ExtrovertFiles.envelope(env));
+      return;
     }
-    var holder = document.createElement('div');
-    holder.className = 'att-file';
-    holder.textContent = 'Decrypting…';
-    bubble.appendChild(holder);
-
-    var mime = String(env.m || '');
-    window.ExtrovertFiles.open(env.u, env.k, env.i, mime).then(function (blob) {
-      var url = URL.createObjectURL(blob);
-      holder.textContent = '';
-      if (mime.indexOf('image/') === 0) {
-        var img = document.createElement('img');
-        img.className = 'att-media';
-        img.src = url;
-        img.alt = env.n || 'attachment';
-        img.title = env.n || '';
-        holder.appendChild(img);
-      } else if (mime.indexOf('video/') === 0) {
-        var vid = document.createElement('video');
-        vid.className = 'att-media';
-        vid.controls = true;
-        vid.src = url;
-        holder.appendChild(vid);
-      } else {
-        var a = document.createElement('a');
-        a.className = 'btn ghost small att-download';
-        a.href = url;
-        a.download = env.n || 'attachment';
-        a.textContent = (env.n || 'File') + ' · ' + humanSize(env.s || blob.size);
-        holder.appendChild(a);
-      }
-    }).catch(function () {
-      holder.textContent = 'Could not open attachment.';
-    });
+    bubble.textContent = 'Attachment unsupported in this browser.';
   }
 
   // Fills a bubble from decrypted plaintext: sticker, sealed attachment, or text.
   function renderBubble(bubble, plaintext) {
     if (!bubble) return;
-    var env = window.ExtrovertFiles ? window.ExtrovertFiles.parse(plaintext) : null;
-    if (env) {
-      renderAttachment(bubble, env);
-      return;
-    }
-    if (plaintext && plaintext.indexOf('/uploads/stickers/') === 0) {
-      bubble.innerHTML = '<img src="' + esc(plaintext) + '" class="sticker-inline" style="max-width:120px;max-height:120px;vertical-align:middle" alt="sticker">';
+    if (window.ExtrovertFiles && window.ExtrovertFiles.render) {
+      window.ExtrovertFiles.render(bubble, plaintext);
       return;
     }
     bubble.textContent = plaintext;

@@ -331,6 +331,14 @@ app.use('/drive/f', express.static(DRIVE_DIR, {
   },
 }));
 
+// Original filename of a stored Drive file (for download links); '' if unknown.
+app.locals.driveFileName = function driveFileName(storedPath) {
+  const split = db.splitStoredPath(storedPath);
+  if (!split) return '';
+  const row = db.getUserFileByPath(split.root, split.path);
+  return row && row.name ? row.name : '';
+};
+
 app.locals.relTime = function relTime(ts) {
   const s = Math.max(1, Math.floor((Date.now() - ts) / 1000));
   if (s < 60) return s + 's';

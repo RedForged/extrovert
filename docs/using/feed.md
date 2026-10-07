@@ -81,9 +81,20 @@ Engagement counts are computed against the **effective (original) content** and 
 
 It's the algorithm's "curiosity" signal: a comment without a like is a person *engaging* with an author, not with one specific post. It rewards the author's overall body of work for that one viewer instead of inflating a single post.
 
+## Attachments
+
+A post can carry one attachment, and it need not be an image or video: the composer accepts any file
+the Drive accepts. Images and video render inline in the feed; every other type renders as a download
+link labelled with the original filename.
+
+Attachments are stored in the uploader's [Drive](drive.md) under `data/drive/`, are public (posts are
+public — this is the opposite of sealed chat attachments), and count against the uploader's Drive
+quota. Deleting the post removes the file and frees its space.
+
 ## Media handling
 
-- Web uploads accept image/video by extension whitelist (`src/routes/posts.js`); the API accepts a narrower set (`src/routes/api-v1.js`).
+- Web uploads go through the [Drive](drive.md) pipeline (`src/drive.js`) and accept any type the Drive's
+  safe-extension list allows; the API accepts a narrower set (`src/routes/api-v1.js`).
 - Files are stored with random hex names and `nosniff` headers when served.
 - API media metadata (dimensions) is extracted with `sharp` for images.
 - Stickers and avatars are separate media features — see [Stickers](stickers.md) and [Profiles](profiles.md).
