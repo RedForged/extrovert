@@ -14,7 +14,7 @@
             <% } %>
           <% } %>
         </div>
-        <div class="handle">@<%= profileUser.username %></div>
+        <div class="handle">@<%= profileUser.username %><% if (pronouns && pronouns.length) { %><span class="pronouns"><%= pronouns.join(' · ') %></span><% } %></div>
         <% if (profileUser.bio) { %><p class="bio"><%= profileUser.bio %></p><% } %>
         <div class="profile-stats">
           <a href="/u/<%= profileUser.username %>/followers" title="Followers"><span class="stat-dot dot-friends"></span><%= followerCount %> follower<%= followerCount === 1 ? '' : 's' %></a>

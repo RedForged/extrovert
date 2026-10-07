@@ -953,6 +953,19 @@ label { display: block; font-size: var(--fs-sm); color: var(--text-secondary); m
 .profile-header .spacer { flex: 1; }
 .bio { color: var(--text-secondary); margin: 10px 0 0; line-height: 1.6; max-width: 540px; }
 
+/* ── Pronouns ─────────────────────────────────────────────────────── */
+
+.pronouns {
+  margin-left: 10px; padding-left: 10px; font-weight: 400;
+  border-left: 1px solid var(--border-soft); color: var(--text-muted);
+}
+
+.pronoun-rows { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+.pronoun-row { display: flex; align-items: center; gap: 8px; }
+.pronoun-row input { margin: 0; max-width: 240px; }
+.pronoun-row .pronoun-remove { padding: 2px 10px; font-size: 1.05rem; line-height: 1.4; }
+.pronoun-remove[hidden] { display: none; }
+
 /* counts framed by the ring motif */
 .profile-stats { display: inline-flex; align-items: center; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
 .profile-stats a, .profile-stats .stat-pip {

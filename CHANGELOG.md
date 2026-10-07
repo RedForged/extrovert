@@ -8,6 +8,10 @@ release: the codebase carries its version in `package.json`, and the sections
 ## [Unreleased]
 
 ### Features
+- **Pronouns**: profiles can list pronouns as free text — two fields by default, up to six — shown
+  next to the handle and exposed through the API (`pronouns` on account objects, and accepted by
+  `PATCH /api/v1/accounts/update_credentials`). Values are length-capped, stripped of control
+  characters, and escaped on render.
 - **Profile effects**: a profile can opt into a **Matrix** or **Glitch** effect that plays once
   when someone opens the page — green glyph rain falling over the page with its text flying in
   from all sides, or a subtle whole-page scanline glitch. The matrix rain falls at a constant speed —

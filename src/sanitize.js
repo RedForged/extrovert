@@ -61,4 +61,35 @@ function sanitizeProfileHTML(html) {
   return clean;
 }
 
-module.exports = { sanitizeProfileHTML, sanitizeCSS };
+// Pronouns are free text (e.g. "he/him", "they/them" or something custom),
+// stored as a JSON array of up to 6 short strings.
+const PRONOUN_FIELDS_MAX = 6;
+const PRONOUN_LENGTH_MAX = 24;
+
+// Read side: stored JSON -> array of usable strings. Never throws.
+function parsePronouns(stored) {
+  if (!stored) return [];
+  let list;
+  try { list = JSON.parse(stored); } catch (e) { return []; }
+  if (!Array.isArray(list)) return [];
+  return list
+    .filter((p) => typeof p === 'string' && p.trim())
+    .map((p) => p.trim().slice(0, PRONOUN_LENGTH_MAX))
+    .slice(0, PRONOUN_FIELDS_MAX);
+}
+
+// Write side: form fields (one or many) -> the JSON string to store. Returns
+// undefined for input that isn't a string or an array of them, so callers can
+// tell "clear them" (empty string/array) apart from "ignore this".
+function sanitizePronouns(input) {
+  if (typeof input !== 'string' && !Array.isArray(input)) return undefined;
+  const list = typeof input === 'string' ? [input] : input;
+  const clean = list
+    .filter((p) => typeof p === 'string')
+    .map((p) => p.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, PRONOUN_LENGTH_MAX))
+    .filter(Boolean)
+    .slice(0, PRONOUN_FIELDS_MAX);
+  return JSON.stringify(clean);
+}
+
+module.exports = { sanitizeProfileHTML, sanitizeCSS, parsePronouns, sanitizePronouns, PRONOUN_FIELDS_MAX, PRONOUN_LENGTH_MAX };

@@ -638,6 +638,13 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
                 properties: {
                   display_name: { type: 'string', maxLength: 100 },
                   bio: { type: 'string', maxLength: 500 },
+                  pronouns: {
+                    type: 'array',
+                    maxItems: 6,
+                    items: { type: 'string', maxLength: 24 },
+                    example: ['he/him', 'they/them'],
+                    description: 'Up to 6 free-text pronoun fields. Empty values are dropped.',
+                  },
                   theme: { type: 'string', enum: ['light', 'dark', 'default'] },
                 },
               },

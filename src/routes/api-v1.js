@@ -14,7 +14,7 @@ const { requireApiAuth, clientAppAuth, generateToken, VALID_SCOPES } = require('
 const { signIdToken, ISSUER } = require('../oidc');
 const { getAccountIds } = require('../accounts');
 const bcrypt = require('bcryptjs');
-const { sanitizeProfileHTML, sanitizeCSS } = require('../sanitize');
+const { sanitizeProfileHTML, sanitizeCSS, parsePronouns, sanitizePronouns } = require('../sanitize');
 const { getOnlineUsers, getUserPresence, sendDmEvent, cancelPendingCallByToken, broadcastGatewayEvent, getGatewayLatestSeq, updateUserRoomSubscriptions, pushRoomSessionKeyToRecipient } = require('../webrtc-signaling');
 const { onNotification } = require('../notif-broadcaster');
 const dm = require('../dm');
@@ -137,6 +137,7 @@ function serializeAccount(user, currentUserId) {
     display_name: user.display_name,
     avatar: user.avatar || null,
     bio: user.bio || '',
+    pronouns: parsePronouns(user.pronouns),
     created_at: user.created_at,
     statuses_count: db.countPostsByUser(user.id),
     followers_count: db.countFollowers(user.id),
@@ -1488,14 +1489,22 @@ router.get('/accounts/verify_credentials', requireApiAuth('read'), (req, res) =>
 });
 
 router.patch('/accounts/update_credentials', requireApiAuth('profile'), (req, res) => {
-  const { display_name, bio, theme, html, css } = req.body || {};
+  const { display_name, bio, pronouns, theme, html, css } = req.body || {};
   if (display_name !== undefined) req.apiUser.display_name = String(display_name).trim().slice(0, 100);
   if (bio !== undefined) req.apiUser.bio = String(bio).trim().slice(0, 500);
   if (theme !== undefined && ['light', 'dark', 'default'].includes(theme)) {
     req.apiUser.theme = theme;
     db.setUserTheme(req.apiUser.id, theme);
   }
-  db.updateUserProfile(req.apiUser.id, { displayName: req.apiUser.display_name, bio: req.apiUser.bio });
+  const patch = { displayName: req.apiUser.display_name, bio: req.apiUser.bio };
+  if (pronouns !== undefined) {
+    const cleanPronouns = sanitizePronouns(pronouns);
+    if (cleanPronouns !== undefined) {
+      req.apiUser.pronouns = cleanPronouns;
+      patch.pronouns = cleanPronouns;
+    }
+  }
+  db.updateUserProfile(req.apiUser.id, patch);
 
   if (html !== undefined || css !== undefined) {
     const existing = db.getCustomization(req.apiUser.id);

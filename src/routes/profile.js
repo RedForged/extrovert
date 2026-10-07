@@ -15,7 +15,7 @@ const {
   setAvatar,
 } = require('../db');
 const { canView } = require('../network');
-const { sanitizeProfileHTML, sanitizeCSS } = require('../sanitize');
+const { sanitizeProfileHTML, sanitizeCSS, parsePronouns, sanitizePronouns, PRONOUN_FIELDS_MAX, PRONOUN_LENGTH_MAX } = require('../sanitize');
 
 const router = express.Router();
 
@@ -157,6 +157,7 @@ router.get('/:username', (req, res) => {
       mutual: viewer && viewer.id !== profileUser.id && areMutualFollowers(viewer.id, profileUser.id),
       referralCount,
       effect: custom.effect || '',
+      pronouns: parsePronouns(profileUser.pronouns),
     });
   }
 });
@@ -176,6 +177,9 @@ router.get('/:username/edit', (req, res) => {
     displayName: viewer.display_name,
     bio: viewer.bio,
     effect: custom.effect || '',
+    pronouns: parsePronouns(viewer.pronouns),
+    pronounFieldsMax: PRONOUN_FIELDS_MAX,
+    pronounLengthMax: PRONOUN_LENGTH_MAX,
   });
 });
 
@@ -194,9 +198,10 @@ router.post('/:username/edit', (req, res) => {
   const PROFILE_EFFECTS = ['matrix', 'glitch'];
   const rawEffect = String(req.body.effect || '').trim();
   const effect = PROFILE_EFFECTS.includes(rawEffect) ? rawEffect : '';
+  const pronouns = sanitizePronouns(req.body.pronoun);
 
   setCustomization(viewer.id, html, css, effect);
-  updateUserProfile(viewer.id, { displayName, bio });
+  updateUserProfile(viewer.id, { displayName, bio, pronouns });
   res.redirect('/u/' + profileUser.username);
 });
 

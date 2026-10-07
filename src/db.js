@@ -21,6 +21,7 @@ function init() {
       password_hash TEXT NOT NULL,
       display_name  TEXT NOT NULL,
       bio           TEXT NOT NULL DEFAULT '',
+      pronouns      TEXT NOT NULL DEFAULT '',
       created_at    INTEGER NOT NULL,
       theme         TEXT NOT NULL DEFAULT 'default',
       referral_code TEXT,
@@ -321,6 +322,7 @@ try { db.exec(`
 try { db.exec(`ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT 'default'`); } catch {}
 try { db.exec(`ALTER TABLE users ADD COLUMN bio TEXT NOT NULL DEFAULT ''`); } catch {}
 try { db.exec(`ALTER TABLE profile_customization ADD COLUMN effect TEXT NOT NULL DEFAULT ''`); } catch {}
+try { db.exec(`ALTER TABLE users ADD COLUMN pronouns TEXT NOT NULL DEFAULT ''`); } catch {}
 try { db.exec(`ALTER TABLE users ADD COLUMN developer_mode INTEGER NOT NULL DEFAULT 0`); } catch {}
 try { db.exec(`ALTER TABLE messages ADD COLUMN key_for_sender TEXT`); } catch {}
 try { db.exec(`ALTER TABLE messages ADD COLUMN key_for_recipient TEXT`); } catch {}
@@ -769,9 +771,15 @@ function getUserById(id) {
   return db.prepare(`SELECT * FROM users WHERE id = ?`).get(id);
 }
 
-function updateUserProfile(id, { displayName, bio }) {
-  db.prepare(`UPDATE users SET display_name = ?, bio = ? WHERE id = ?`)
-    .run(displayName, bio, id);
+function updateUserProfile(id, { displayName, bio, pronouns }) {
+  // Callers that don't mention pronouns (e.g. a partial API update) leave them alone.
+  if (pronouns === undefined) {
+    db.prepare(`UPDATE users SET display_name = ?, bio = ? WHERE id = ?`)
+      .run(displayName, bio, id);
+    return;
+  }
+  db.prepare(`UPDATE users SET display_name = ?, bio = ?, pronouns = ? WHERE id = ?`)
+    .run(displayName, bio, pronouns, id);
 }
 
 function setAvatar(id, avatarPath) {

@@ -8,6 +8,7 @@ Every user has a profile page at `/u/<username>` and, more importantly, **full c
 |---|---|---|
 | Display name | Profile editor | 60 chars |
 | Bio | Profile editor | 280 chars |
+| Pronouns | Profile editor | free text, 2 fields by default, up to 6 |
 | **Profile HTML** | Profile editor | sanitized, no JS |
 | **Profile CSS** | Profile editor | sanitized, no JS |
 | Avatar | Profile editor (upload) | JPEG/PNG/WebP, ≤10 MB |
@@ -58,6 +59,19 @@ Modern CSS is safe by itself (it can't run JavaScript); these rules keep profile
 .hero { padding: 24px; border-radius: 16px; background: linear-gradient(135deg, var(--primary-soft), var(--secondary-soft)); }
 .hero h1 { font-family: var(--font-display); }
 ```
+
+## Pronouns
+
+Pronouns are free text — there's no fixed list, so `she/her`, `he/they`, `they/them` or a custom
+label all work.
+
+- Two fields are shown by default. **Add field** takes it up to **6**; once there are more than two,
+  any row can be removed (never below two).
+- Each field holds up to 24 characters; empty fields aren't stored.
+- They appear on your profile next to your handle, joined for display — e.g. `@you he/him · they`.
+- With none set, nothing is shown, so untouched profiles look exactly as before.
+- The API exposes the same list as `pronouns` on account objects, and accepts it from
+  `PATCH /api/v1/accounts/update_credentials`.
 
 ## Profile effects
 
