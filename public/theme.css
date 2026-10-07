@@ -1421,6 +1421,38 @@ a.conv-row:hover { color: var(--primary); }
 .comment-menu .room-msg-delete:hover { background: var(--danger-soft); }
 .room-msg-menu { margin-left: 6px; align-self: center; }
 
+/* Post actions: Like/Share/Repost stay visible; the rest live behind a ⋯
+   dropdown on desktop as well (mobile already collapses .menu-dd). */
+.post-actions .menu-dd { display: block; position: relative; flex: none; margin-left: auto; }
+.post-actions .menu-dd > summary {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; border-radius: var(--radius-full); cursor: pointer;
+  color: var(--text-muted); background: var(--surface); border: 1px solid var(--border-soft);
+}
+.post-actions .menu-dd > summary:hover { color: var(--text); background: var(--surface-2); }
+.post-actions .menu-dd > summary::-webkit-details-marker { display: none; }
+.post-actions .menu-dd > summary::marker { content: ''; }
+.post-actions .menu-dd > .menu-dd-pop {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 60;
+  min-width: 200px; padding: 4px; display: flex; flex-direction: column; gap: 2px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.post-actions .menu-dd:not([open]) > .menu-dd-pop { display: none; }
+.post-actions .menu-dd > .menu-dd-pop > *,
+.post-actions .menu-dd > .menu-dd-pop > form { width: 100%; margin: 0; }
+.post-actions .menu-dd > .menu-dd-pop a,
+.post-actions .menu-dd > .menu-dd-pop button {
+  width: 100%; display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+  background: none; border: none; border-radius: var(--radius-sm);
+  color: var(--text); font-size: var(--fs-sm); cursor: pointer; text-align: left;
+}
+.post-actions .menu-dd > .menu-dd-pop a:hover,
+.post-actions .menu-dd > .menu-dd-pop button:hover { background: var(--surface-2); }
+.post-actions .menu-dd > .menu-dd-pop .post-danger { color: var(--danger); }
+.post-actions .menu-dd > .menu-dd-pop .post-danger:hover { background: var(--danger-soft); }
+.post-actions .post-owners { display: contents; }
+
 /* ── Report modal ─────────────────────────────────────────────────── */
 
 .report-overlay {

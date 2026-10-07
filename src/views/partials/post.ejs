@@ -53,9 +53,6 @@
       <input type="hidden" name="_csrf" value="<%= _token %>">
       <button class="<%= item.liked ? 'active' : '' %>"><%- include('icon', { name: item.liked ? 'heartFilled' : 'heart', size: 15, cls: 'ico' }) %> <%= item.liked ? 'Liked' : 'Like' %></button>
     </form>
-    <details class="menu-dd" open>
-      <summary title="More actions"><%- include('icon', { name: 'more', size: 15 }) %></summary>
-      <div class="menu-dd-pop">
     <form method="post" action="/posts/<%= item.interactId %>/share">
       <input type="hidden" name="_csrf" value="<%= _token %>">
       <button class="<%= item.shared ? 'active' : '' %>"><%- include('icon', { name: 'share', size: 15, cls: 'ico' }) %> <%= item.shared ? 'Shared' : 'Share' %></button>
@@ -64,20 +61,23 @@
       <input type="hidden" name="_csrf" value="<%= _token %>">
       <button><%- include('icon', { name: 'repost', size: 15, cls: 'ico' }) %> Repost</button>
     </form>
-    <% if (!item.isOwn && !item.followingAuthor) { %>
-      <form method="post" action="/posts/<%= item.interactId %>/follow-from">
-        <input type="hidden" name="_csrf" value="<%= _token %>">
-        <button class="boost-btn"><%- include('icon', { name: 'star', size: 15, cls: 'ico' }) %> Follow from post</button>
-      </form>
-    <% } %>
-    <% if (item.isOwn) { %>
-      <div class="post-owners">
-        <button class="edit-post-btn" data-post-id="<%= item.id %>"><%- include('icon', { name: 'edit', size: 15 }) %> Edit</button>
-        <a class="post-danger" href="/posts/<%= item.interactId %>/delete"><%- include('icon', { name: 'trash', size: 15 }) %> Delete</a>
-      </div>
-    <% } else { %>
-      <button type="button" class="report-item" data-report="post" data-report-id="<%= item.interactId %>"><%- include('icon', { name: 'flag', size: 15 }) %> Report</button>
-    <% } %>
+    <details class="menu-dd">
+      <summary title="More actions" aria-label="More actions"><%- include('icon', { name: 'more', size: 16 }) %></summary>
+      <div class="menu-dd-pop">
+        <% if (!item.isOwn && !item.followingAuthor) { %>
+          <form method="post" action="/posts/<%= item.interactId %>/follow-from">
+            <input type="hidden" name="_csrf" value="<%= _token %>">
+            <button class="boost-btn"><%- include('icon', { name: 'star', size: 15, cls: 'ico' }) %> Follow from post</button>
+          </form>
+        <% } %>
+        <% if (item.isOwn) { %>
+          <div class="post-owners">
+            <button class="edit-post-btn" data-post-id="<%= item.id %>"><%- include('icon', { name: 'edit', size: 15 }) %> Edit</button>
+            <a class="post-danger" href="/posts/<%= item.interactId %>/delete"><%- include('icon', { name: 'trash', size: 15 }) %> Delete</a>
+          </div>
+        <% } else { %>
+          <button type="button" class="report-item" data-report="post" data-report-id="<%= item.interactId %>"><%- include('icon', { name: 'flag', size: 15 }) %> Report</button>
+        <% } %>
       </div>
     </details>
   </div>
