@@ -73,6 +73,8 @@ settles into its normal state.
 
 Rules that apply to every effect:
 
+- Constant speed: the rain advances by elapsed time, not by frame, so it falls at the same rate on
+  a 60 Hz or a 144 Hz display, and doesn't speed up or slow down when the page drops frames.
 - Budgeted, not open-ended: the glitch runs about a second and the matrix about 1.6 — long enough
   for every glyph to fall off the screen at the rain's own speed. Both blend out over the final
   ~160 ms before a timer removes the (by then invisible) layers and any inline styles they set, so

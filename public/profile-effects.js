@@ -73,6 +73,7 @@
     var ctx = canvas.getContext('2d');
     var glyphs = 'アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホ0123456789';
     var size = 14;
+    var CELLS_PER_SEC = 60;
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
     var cols = Math.ceil(canvas.width / size) + 1;
@@ -80,21 +81,29 @@
     for (var c = 0; c < cols; c++) drops.push(Math.random() * -(canvas.height / size));
 
     var start = Date.now();
+    var last = start;
     // Rain for a while, then stop spawning and let the glyphs run off the bottom
     // of the screen — at the same constant speed as the rain itself.
     var drainAt = 700;
     function draw() {
-      var t = Date.now() - start;
+      var now = Date.now();
+      var t = now - start;
+      // Advance by elapsed time rather than by frame. Moves are identical no
+      // matter what the frame rate is doing, so the speed never changes.
+      var dt = Math.min(now - last, 120);
+      last = now;
       var spawning = t < drainAt;
+      var step = (dt / 1000) * CELLS_PER_SEC;
       // Erase the previous frames instead of painting black over them, so the
       // rain trails stay transparent and the page keeps its own background.
+      // Scaled the same way, so trail length doesn't shift with the frame rate.
       ctx.globalCompositeOperation = 'destination-out';
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.22)';
+      ctx.fillStyle = 'rgba(0, 0, 0, ' + Math.min(0.5, 0.22 * (dt / 16.7)).toFixed(3) + ')';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.globalCompositeOperation = 'source-over';
       ctx.font = size + 'px monospace';
       ctx.shadowColor = 'rgba(47, 220, 134, 0.7)';
-      ctx.shadowBlur = 6;
+      ctx.shadowBlur = 4;
       var alive = false;
       for (var i = 0; i < cols; i++) {
         var y = drops[i] * size;
@@ -108,7 +117,7 @@
         ctx.fillText(glyphs.charAt(Math.floor(Math.random() * glyphs.length)), i * size, y - size);
         ctx.fillStyle = '#2fdc86';
         ctx.fillText(glyphs.charAt(Math.floor(Math.random() * glyphs.length)), i * size, y);
-        drops[i] += 1;
+        drops[i] += step;
       }
       ctx.shadowBlur = 0;
       // Every glyph has left the screen: nothing to fade, just clear.

@@ -1140,7 +1140,7 @@ a.conv-row:hover { color: var(--primary); }
 .pfx-page.pfx-flying > * { animation: pfx-fly 520ms cubic-bezier(0.16, 1, 0.3, 1) both; }
 @keyframes pfx-fly {
   from {
-    opacity: 0; filter: blur(3px);
+    opacity: 0; filter: blur(2px);
     transform: translate3d(var(--pfx-x, 0), var(--pfx-y, 0), 0) scale(0.97);
     color: #7dffb8; text-shadow: 0 0 10px rgba(60, 255, 160, 0.5);
   }
