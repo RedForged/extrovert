@@ -413,4 +413,59 @@ document.addEventListener('DOMContentLoaded', function(){
     if (isNarrowMenuView()) return;
     Array.prototype.forEach.call(overflowMenus, function(d) { d.open = true; });
   });
+
+  // Account bottom sheet (Edit profile / Settings / Sign out).
+  var sheet = document.getElementById('account-sheet');
+  var sheetBackdrop = document.getElementById('account-sheet-backdrop');
+  var sheetChip = document.getElementById('account-chip');
+  if (sheet && sheetBackdrop && sheetChip) {
+    var lastFocused = null;
+    var closeTimer = null;
+
+    var openSheet = function() {
+      if (closeTimer) { clearTimeout(closeTimer); closeTimer = null; }
+      lastFocused = document.activeElement;
+      sheet.hidden = false;
+      sheetBackdrop.hidden = false;
+      requestAnimationFrame(function() {
+        sheet.classList.add('open');
+        sheetBackdrop.classList.add('open');
+      });
+      sheetChip.setAttribute('aria-expanded', 'true');
+      document.body.classList.add('sheet-open');
+      var first = sheet.querySelector('a[href], button');
+      if (first) first.focus();
+    };
+
+    var closeSheet = function() {
+      sheet.classList.remove('open');
+      sheetBackdrop.classList.remove('open');
+      sheetChip.setAttribute('aria-expanded', 'false');
+      document.body.classList.remove('sheet-open');
+      closeTimer = setTimeout(function() {
+        sheet.hidden = true;
+        sheetBackdrop.hidden = true;
+        closeTimer = null;
+      }, 260);
+      if (lastFocused && lastFocused.focus) lastFocused.focus();
+    };
+
+    sheetChip.addEventListener('click', function(e) {
+      e.preventDefault();
+      if (sheet.hidden) openSheet(); else closeSheet();
+    });
+    sheetBackdrop.addEventListener('click', closeSheet);
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape' && !sheet.hidden) closeSheet();
+    });
+    sheet.addEventListener('keydown', function(e) {
+      if (e.key !== 'Tab') return;
+      var items = sheet.querySelectorAll('a[href], button:not([disabled])');
+      if (!items.length) return;
+      var first = items[0];
+      var last = items[items.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    });
+  }
 });
