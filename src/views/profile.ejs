@@ -27,7 +27,7 @@
       <% if (locals.currentUser) { %>
         <% if (isOwn) { %>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <a class="btn ghost" href="/u/<%= profileUser.username %>/edit"><%- include('partials/icon', { name: 'edit', size: 15 }) %> Edit page</a>
+            <a class="btn ghost" href="/u/<%= profileUser.username %>/edit"><%- include('partials/icon', { name: 'edit', size: 15 }) %> Edit profile</a>
             <% if (referralCode) { %>
               <button class="btn ghost copy-ref" data-link="<%= baseUrl %>/register?ref=<%= referralCode %>"><%- include('partials/icon', { name: 'link', size: 15 }) %> Copy invite link</button>
             <% } else { %>

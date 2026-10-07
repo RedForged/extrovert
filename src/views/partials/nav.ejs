@@ -13,7 +13,6 @@
     <a href="/inbox" title="Notifications" class="<%= isActive('/inbox') ? 'active' : '' %>"><span class="nav-icon"><%- include('icon', { name: 'bell', size: 18 }) %></span><span class="nav-text">Notifications</span><% if (locals.unreadCount > 0) { %><sup class="badge"><%= unreadCount %></sup><% } %></a>
     <a href="/u/<%= currentUser.username %>" title="Profile" class="<%= _cp === '/u/' + currentUser.username ? 'active' : '' %> nav-overflow"><span class="nav-icon"><%- include('icon', { name: 'user', size: 18 }) %></span><span class="nav-text">Profile</span></a>
     <a href="/rooms" title="Rooms" class="<%= isActive('/rooms') ? 'active' : '' %> nav-overflow"><span class="nav-icon"><%- include('icon', { name: 'rooms', size: 18 }) %></span><span class="nav-text">Rooms</span></a>
-    <a href="/settings" title="Settings" class="<%= isActive('/settings') ? 'active' : '' %> nav-overflow"><span class="nav-icon"><%- include('icon', { name: 'settings', size: 18 }) %></span><span class="nav-text">Settings</span></a>
     <% if (locals.currentUser && locals.currentUser.is_admin) { %><a href="/admin" title="Admin" class="<%= isActive('/admin') ? 'active' : '' %> nav-overflow"><span class="nav-icon"><%- include('icon', { name: 'shield', size: 18 }) %></span><span class="nav-text">Admin</span><% if (locals.pendingReports > 0 || (locals.securityReports || 0) > 0) { %><sup class="badge"><%= (locals.pendingReports || 0) + (locals.securityReports || 0) %></sup><% } %></a><% } %>
     <% if (locals.currentUser) { %><a href="/security" title="Security &amp; responsible disclosure" class="<%= isActive('/security') ? 'active' : '' %> nav-overflow"><span class="nav-icon"><%- include('icon', { name: 'lock', size: 18 }) %></span><span class="nav-text">Security</span></a><% } %>
     <details class="menu-dd nav-more" open>
@@ -21,7 +20,6 @@
       <div class="menu-dd-pop">
         <a href="/u/<%= currentUser.username %>"><%- include('icon', { name: 'user', size: 15 }) %> Profile</a>
         <a href="/rooms"><%- include('icon', { name: 'rooms', size: 15 }) %> Rooms</a>
-        <a href="/settings"><%- include('icon', { name: 'settings', size: 15 }) %> Settings</a>
         <% if (locals.currentUser && locals.currentUser.is_admin) { %><a href="/admin"><%- include('icon', { name: 'shield', size: 15 }) %> Admin<% if (locals.pendingReports > 0 || (locals.securityReports || 0) > 0) { %> <sup class="badge"><%= (locals.pendingReports || 0) + (locals.securityReports || 0) %></sup><% } %></a><% } %>
         <a href="/security"><%- include('icon', { name: 'lock', size: 15 }) %> Security</a>
         <form method="post" action="/logout"><input type="hidden" name="_csrf" value="<%= locals.csrfToken %>"><button><%- include('icon', { name: 'logout', size: 15 }) %> Log out</button></form>
@@ -67,7 +65,7 @@
           <% if (locals.currentUser.avatar) { %><img src="<%= locals.currentUser.avatar %>" alt=""><% } else { %><span class="account-switcher-avatar-letter"><%= (locals.currentUser.display_name || locals.currentUser.username).slice(0,1).toUpperCase() %></span><% } %>
         </span>
         <span class="nav-text"><%= locals.currentUser.display_name %></span>
-        <%- include('icon', { name: 'more', size: 14 }) %>
+        <%- include('icon', { name: 'chevronDown', size: 15 }) %>
       </button>
     </span>
     <form method="post" action="/logout" class="nav-overflow" style="margin:0"><input type="hidden" name="_csrf" value="<%= locals.csrfToken %>"><button title="Log out of this account"><span class="nav-icon"><%- include('icon', { name: 'logout', size: 18 }) %></span><span class="nav-text">Log out</span></button></form>

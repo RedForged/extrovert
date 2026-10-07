@@ -385,7 +385,8 @@ h4 { font-size: var(--fs-lg); font-family: var(--font-body); font-weight: 700; l
 .account-switcher-summary:focus-visible {
   background: var(--surface-2); color: var(--text);
 }
-.account-switcher-summary > svg { opacity: 0.65; }
+.account-switcher-summary > svg { opacity: 0.65; transition: transform 200ms var(--ease-soft); }
+.account-switcher-summary[aria-expanded="true"] > svg { transform: rotate(180deg); }
 .account-switcher-avatar {
   display: inline-flex; width: 26px; height: 26px; border-radius: 50%;
   overflow: hidden; border: 1px solid var(--border-soft); flex: none;
