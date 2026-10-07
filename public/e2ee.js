@@ -181,13 +181,7 @@
     var existing = msg.id ? container.querySelector('[data-msg-id="' + msg.id + '"]') : null;
     if (existing) {
       var existingBubble = existing.querySelector('.chat-bubble');
-      if (existingBubble) {
-        if (plaintext.indexOf('/uploads/stickers/') === 0) {
-          existingBubble.innerHTML = '<img src="' + esc(plaintext) + '" class="sticker-inline" style="max-width:120px;max-height:120px;vertical-align:middle" alt="sticker">';
-        } else {
-          existingBubble.textContent = plaintext;
-        }
-      }
+      if (existingBubble) renderBubble(existingBubble, plaintext);
       scrollChatBottom();
       return;
     }
@@ -200,11 +194,7 @@
 
     var bubble = document.createElement('div');
     bubble.className = 'chat-bubble';
-    if (plaintext.indexOf('/uploads/stickers/') === 0) {
-      bubble.innerHTML = '<img src="' + esc(plaintext) + '" class="sticker-inline" style="max-width:120px;max-height:120px;vertical-align:middle" alt="sticker">';
-    } else {
-      bubble.textContent = plaintext;
-    }
+    renderBubble(bubble, plaintext);
     div.appendChild(bubble);
 
     var time = document.createElement('div');
@@ -266,9 +256,109 @@
       resolveMsgText(msgId, isOwn, body, function () {
         return window.ExtrovertMLS.decryptDmMessage(otherId, body);
       }).then(function (text) {
-        bubble.textContent = text;
+        renderBubble(bubble, text);
       });
     });
+  }
+
+  // ---- sealed attachments -------------------------------------------------
+  // A staged file is encrypted in the browser, uploaded as an opaque blob, and
+  // referenced from inside the MLS-encrypted message together with its key.
+  var stagedFile = null;
+
+  function humanSize(bytes) {
+    var n = Number(bytes) || 0;
+    if (n >= 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + ' MB';
+    if (n >= 1024) return Math.round(n / 1024) + ' KB';
+    return n + ' B';
+  }
+
+  function clearStaged() {
+    stagedFile = null;
+    var chip = document.getElementById('attachChip');
+    if (chip) {
+      chip.hidden = true;
+      chip.textContent = '';
+    }
+    var input = document.getElementById('attachInput');
+    if (input) input.value = '';
+  }
+
+  function uploadSealed(file) {
+    if (!window.ExtrovertFiles) return Promise.reject(new Error('Attachment support unavailable'));
+    return window.ExtrovertFiles.seal(file).then(function (sealed) {
+      var fd = new FormData();
+      fd.append('_csrf', csrfToken());
+      fd.append('file', sealed.blob, 'sealed.bin');
+      return fetch('/drive/upload?sealed=1', {
+        method: 'POST',
+        headers: { 'X-Requested-With': 'XMLHttpRequest', Accept: 'application/json' },
+        body: fd,
+      }).then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (j) {
+          if (!r.ok) throw new Error(j && j.message ? j.message : 'Upload failed (' + r.status + ')');
+          return { url: j.url, size: j.size, key: sealed.key, iv: sealed.iv };
+        });
+      });
+    });
+  }
+
+  function renderAttachment(bubble, env) {
+    bubble.textContent = '';
+    if (env.t) {
+      var cap = document.createElement('div');
+      cap.className = 'att-caption';
+      cap.textContent = env.t;
+      bubble.appendChild(cap);
+    }
+    var holder = document.createElement('div');
+    holder.className = 'att-file';
+    holder.textContent = 'Decrypting…';
+    bubble.appendChild(holder);
+
+    var mime = String(env.m || '');
+    window.ExtrovertFiles.open(env.u, env.k, env.i, mime).then(function (blob) {
+      var url = URL.createObjectURL(blob);
+      holder.textContent = '';
+      if (mime.indexOf('image/') === 0) {
+        var img = document.createElement('img');
+        img.className = 'att-media';
+        img.src = url;
+        img.alt = env.n || 'attachment';
+        img.title = env.n || '';
+        holder.appendChild(img);
+      } else if (mime.indexOf('video/') === 0) {
+        var vid = document.createElement('video');
+        vid.className = 'att-media';
+        vid.controls = true;
+        vid.src = url;
+        holder.appendChild(vid);
+      } else {
+        var a = document.createElement('a');
+        a.className = 'btn ghost small att-download';
+        a.href = url;
+        a.download = env.n || 'attachment';
+        a.textContent = (env.n || 'File') + ' · ' + humanSize(env.s || blob.size);
+        holder.appendChild(a);
+      }
+    }).catch(function () {
+      holder.textContent = 'Could not open attachment.';
+    });
+  }
+
+  // Fills a bubble from decrypted plaintext: sticker, sealed attachment, or text.
+  function renderBubble(bubble, plaintext) {
+    if (!bubble) return;
+    var env = window.ExtrovertFiles ? window.ExtrovertFiles.parse(plaintext) : null;
+    if (env) {
+      renderAttachment(bubble, env);
+      return;
+    }
+    if (plaintext && plaintext.indexOf('/uploads/stickers/') === 0) {
+      bubble.innerHTML = '<img src="' + esc(plaintext) + '" class="sticker-inline" style="max-width:120px;max-height:120px;vertical-align:middle" alt="sticker">';
+      return;
+    }
+    bubble.textContent = plaintext;
   }
 
   function initChat() {
@@ -278,6 +368,31 @@
     var otherId = sendForm.getAttribute('data-recipient');
     var otherUsername = sendForm.getAttribute('data-recipient-username');
     var input = sendForm.querySelector('input[name="body"]');
+
+    // Staging an attachment. The file stays in memory until send, then it is
+    // sealed, uploaded, and referenced from the encrypted message.
+    var attachBtn = document.getElementById('attachBtn');
+    var attachInput = document.getElementById('attachInput');
+    var attachChip = document.getElementById('attachChip');
+    if (attachBtn && attachInput) {
+      attachBtn.addEventListener('click', function () { attachInput.click(); });
+      attachInput.addEventListener('change', function () {
+        var f = attachInput.files && attachInput.files[0];
+        stagedFile = f || null;
+        if (attachChip) {
+          attachChip.hidden = !f;
+          attachChip.textContent = f
+            ? f.name + ' · ' + humanSize(f.size) + ' — sealed in your browser (click to remove)'
+            : '';
+        }
+      });
+    }
+    if (attachChip) {
+      attachChip.addEventListener('click', function () {
+        clearStaged();
+        if (attachChip) attachChip.hidden = true;
+      });
+    }
 
     scrollChatBottom();
 
@@ -322,9 +437,25 @@
         return;
       }
 
+      // A staged file is sealed and uploaded first; the key travels inside the
+      // encrypted message, so the server can neither read the file nor tell
+      // which conversation it belongs to.
+      var outgoing = plaintext;
+      var prep = stagedFile
+        ? uploadSealed(stagedFile).then(function (info) {
+            return window.ExtrovertFiles.envelope({
+              u: info.url, k: info.key, i: info.iv, s: info.size,
+              n: stagedFile.name, m: stagedFile.type || 'application/octet-stream', t: plaintext,
+            });
+          })
+        : Promise.resolve(plaintext);
+
       var initP = window.ExtrovertMLS.ready() ? Promise.resolve() : window.ExtrovertMLS.init();
       initP.then(function () {
-        return window.ExtrovertMLS.encryptDmMessage(otherId, plaintext);
+        return prep;
+      }).then(function (payload) {
+        outgoing = payload;
+        return window.ExtrovertMLS.encryptDmMessage(otherId, payload);
       }).then(function (res) {
         var usp = new URLSearchParams();
         usp.set('_csrf', csrfToken());
@@ -352,9 +483,10 @@
             return;
           }
           if (data.message) {
-            addOwnMsg(plaintext, data.message, otherUsername);
+            addOwnMsg(outgoing, data.message, otherUsername);
           }
           input.value = '';
+          clearStaged();
           input.disabled = false;
           input.focus();
         });
@@ -531,13 +663,13 @@
         resolveMsgText(String(msg.id), isOwn, msg.body, function () {
           return window.ExtrovertMLS.decryptDmMessage(otherId, msg.body);
         }).then(function (text) {
-          bubble.textContent = text;
+          renderBubble(bubble, text);
           if (isOwn && text.indexOf('[') === 0) {
             setTimeout(function () {
               resolveMsgText(String(msg.id), isOwn, msg.body, function () {
                 return window.ExtrovertMLS.decryptDmMessage(otherId, msg.body);
               }).then(function (text2) {
-                bubble.textContent = text2;
+                renderBubble(bubble, text2);
               });
             }, 800);
           }

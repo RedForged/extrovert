@@ -74,11 +74,14 @@
         data-security-active="<%= security.active ? '1' : '0' %>"
         style="position:relative">
     <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-    <input type="text" name="body" id="sticker-input-chat" placeholder="Type a message…" maxlength="2000" required autofocus aria-label="Type a message">
+    <input type="text" name="body" id="sticker-input-chat" placeholder="Type a message…" maxlength="2000" autofocus aria-label="Type a message">
     <button><%- include('partials/icon', { name: 'arrowRight', size: 16 }) %> Send</button>
+    <button class="btn ghost" type="button" id="attachBtn" style="padding:6px 10px" title="Attach a file (sealed in your browser)" aria-label="Attach a file"><%- include('partials/icon', { name: 'plus', size: 18 }) %></button>
+    <input type="file" id="attachInput" hidden>
     <button class="btn ghost sticker-btn" data-target="sticker-popup-chat" type="button" style="padding:6px 10px" title="Stickers" aria-label="Open stickers"><%- include('partials/icon', { name: 'smile', size: 18 }) %></button>
     <div id="sticker-popup-chat" style="display:none;position:absolute;bottom:100%;right:0;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);z-index:100;box-shadow:var(--shadow)"></div>
   </form>
+  <div class="attach-chip" id="attachChip" hidden></div>
   <div id="chat-send-error" class="muted" style="display:none;text-align:center;font-size:0.85rem;color:var(--danger);padding:6px 0"></div>
   <div id="dm-security-notice" class="card" style="display:<%= security.active ? 'block' : 'none' %>;text-align:center;padding:0.9rem 1rem;margin-top:10px">
     <p class="muted" style="margin:0;font-size:0.85rem"><%- include('partials/icon', { name: 'lock', size: 13 }) %> <strong>Additional Security is on.</strong> Messages are removed from the server as soon as both of you have received them — they live only on your devices.</p>

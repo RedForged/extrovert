@@ -992,6 +992,20 @@ label { display: block; font-size: var(--fs-sm); color: var(--text-secondary); m
 .pager .page-indicator { align-self: center; color: var(--text-muted); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
 .pager .pager-side { display: inline-flex; gap: 10px; }
 
+/* ── Sealed chat attachments ──────────────────────────────────────── */
+
+.attach-chip {
+  margin: 8px 0 0; padding: 6px 10px; font-size: 0.8rem; color: var(--text-secondary);
+  background: var(--surface-2); border: 1px dashed var(--border); border-radius: var(--radius);
+  cursor: pointer; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.attach-chip[hidden] { display: none; }
+
+.att-file { display: flex; flex-direction: column; gap: 6px; font-size: 0.82rem; color: var(--text-muted); }
+.att-media { max-width: 260px; max-height: 260px; border-radius: var(--radius); display: block; }
+.att-download { align-self: flex-start; }
+.att-caption { margin-bottom: 6px; }
+
 /* ── Drive ────────────────────────────────────────────────────────── */
 
 .usage-bar {

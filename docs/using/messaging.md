@@ -43,6 +43,21 @@ Messages are encrypted with **MLS (RFC 9420)**. The protocol is marked per messa
 | Live delivery | New messages are pushed in realtime over the WebSocket `new_dm` event to **every open tab** of the recipient (ciphertext only) |
 | Additional Security | Per-conversation opt-in (both users) that deletes messages from the server once both have received them — see below |
 
+## Sending files and photos
+
+Attach a file with the **+** button next to Send. In one message you can send text, a file, or both.
+
+- The file is **sealed in your browser** before it is uploaded: a fresh AES-256-GCM key encrypts it,
+  and that key travels inside the MLS-encrypted message. The server stores an opaque blob and never
+  learns the file's name, type or which conversation it belongs to — the stored file has no
+  extension, and its `user_files` row carries no name or MIME type.
+- The recipient's client decrypts it in memory and renders it (images and video inline, everything
+  else as a download link). Nothing is written to disk in the clear, on either side.
+- Sealed attachments count against your [Drive](../using/drive.md) quota like any other upload. If
+  the file doesn't fit in your remaining space you're told before anything is sent.
+- Deleting the message removes the reference; the blob stays in your Drive until you delete it there
+  (which is what frees the space).
+
 ## Additional Security mode
 
 A per-conversation mode for users who want **no server-side copy at all** once a message is delivered:
