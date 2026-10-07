@@ -5,11 +5,12 @@
       btns[i].addEventListener('click', function(){
         var url = this.getAttribute('data-link');
         var btn = this;
+        var label = btn.querySelector('.copy-ref-label') || btn;
         if(navigator.clipboard){
           navigator.clipboard.writeText(url).then(function(){
-            var orig = btn.textContent;
-            btn.textContent = 'Copied!';
-            setTimeout(function(){btn.textContent=orig},2000);
+            var orig = label.textContent;
+            label.textContent = 'Copied!';
+            setTimeout(function(){label.textContent=orig},2000);
           }).catch(function(){});
         }
       });

@@ -12,7 +12,7 @@
   <script src="/static/lib/mls.js?v=1"></script>
   <script src="/static/mls-client.js?v=9"></script>
   <script src="/static/e2ee.js?v=36"></script>
-  <script src="/static/copy-ref.js?v=2"></script>
+  <script src="/static/copy-ref.js?v=3"></script>
   <script src="/static/stickers.js?v=1"></script>
   <script src="/static/icons.js?v=2"></script>
   <script src="/static/interact.js?v=8"></script>
@@ -50,6 +50,15 @@
       <div class="sheet-divider"></div>
     <% } %>
     <a class="sheet-row" href="/u/<%= locals.currentUser.username %>/edit"><%- include('icon', { name: 'edit', size: 18 }) %> Edit profile</a>
+    <% if (locals.inviteUrl) { %>
+      <button type="button" class="sheet-row copy-ref" data-link="<%= locals.inviteUrl %>"><%- include('icon', { name: 'link', size: 18 }) %> <span class="copy-ref-label">Copy invite link</span></button>
+    <% } else { %>
+      <form method="post" action="/u/<%= locals.currentUser.username %>/referral" style="margin:0">
+        <input type="hidden" name="_csrf" value="<%= locals.csrfToken %>">
+        <input type="hidden" name="next" value="<%= locals.currentPath || '/' %>">
+        <button type="submit" class="sheet-row"><%- include('icon', { name: 'link', size: 18 }) %> Create invite link</button>
+      </form>
+    <% } %>
     <a class="sheet-row" href="/settings"><%- include('icon', { name: 'settings', size: 18 }) %> Settings</a>
     <form method="post" action="/logout" style="margin:0">
       <input type="hidden" name="_csrf" value="<%= locals.csrfToken %>">

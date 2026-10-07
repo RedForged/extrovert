@@ -24,17 +24,8 @@
         </div>
       </div>
       <span class="spacer"></span>
-      <% if (locals.currentUser) { %>
-        <% if (isOwn) { %>
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <a class="btn ghost" href="/u/<%= profileUser.username %>/edit"><%- include('partials/icon', { name: 'edit', size: 15 }) %> Edit profile</a>
-            <% if (referralCode) { %>
-              <button class="btn ghost copy-ref" data-link="<%= baseUrl %>/register?ref=<%= referralCode %>"><%- include('partials/icon', { name: 'link', size: 15 }) %> Copy invite link</button>
-            <% } else { %>
-              <form method="post" action="/u/<%= profileUser.username %>/referral" style="display:inline"><input type="hidden" name="_csrf" value="<%= csrfToken %>"><button class="btn ghost"><%- include('partials/icon', { name: 'link', size: 15 }) %> Create invite link</button></form>
-            <% } %>
-          </div>
-        <% } else if (following) { %>
+      <% if (locals.currentUser && !isOwn) { %>
+        <% if (following) { %>
           <form method="post" action="/unfollow/<%= profileUser.username %>"><input type="hidden" name="_csrf" value="<%= csrfToken %>"><button class="btn ghost"><%- include('partials/icon', { name: 'check', size: 15 }) %> Following</button></form>
         <% } else { %>
           <form method="post" action="/follow/<%= profileUser.username %>"><input type="hidden" name="_csrf" value="<%= csrfToken %>"><button class="btn"><%- include('partials/icon', { name: 'plus', size: 15 }) %> Follow</button></form>

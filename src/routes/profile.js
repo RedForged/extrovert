@@ -150,14 +150,12 @@ router.get('/:username', (req, res) => {
       finalHtml += postsHtml;
     }
     const referralCount = getReferralCount(profileUser.id);
-    const referralCode = getReferralCode(profileUser.id);
-    const baseUrl = req.protocol + '://' + req.get('host');
     res.render('profile', {
       profileUser, finalHtml, css, isOwn, following, canSeePosts,
       followerCount: countFollowers(profileUser.id),
       followingCount: countFollowing(profileUser.id),
       mutual: viewer && viewer.id !== profileUser.id && areMutualFollowers(viewer.id, profileUser.id),
-      referralCount, referralCode, baseUrl,
+      referralCount,
     });
   }
 });
@@ -281,7 +279,8 @@ router.post('/:username/referral', (req, res) => {
   const profileUser = getUserByUsername(req.params.username);
   if (!profileUser || profileUser.id !== viewer.id) return res.status(403).send('Not your profile.');
   setReferralCode(viewer.id, req.ip);
-  res.redirect('/u/' + viewer.username);
+  const next = typeof req.body.next === 'string' && req.body.next.startsWith('/') && !req.body.next.startsWith('//') ? req.body.next : null;
+  res.redirect(next || '/u/' + viewer.username);
 });
 
 module.exports = router;
