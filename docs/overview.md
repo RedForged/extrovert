@@ -39,7 +39,7 @@ Key consequences:
 | **Mutual followers** | Two users who both follow each other. |
 | **Room** | A group space (public or private) with channels and roles. |
 | **Channel** | A text or voice channel inside a room. |
-| **E2EE** | End-to-end encryption: direct messages use Olm (Signal-style), room messages use Megolm. |
+| **E2EE** | End-to-end encryption: direct messages and room messages both use MLS (RFC 9420). |
 
 ## The feed algorithm in one sentence
 
@@ -56,8 +56,8 @@ Realtime features (presence, calls, live DM delivery, native push) run over a si
 | Runtime | Node.js (≥22, uses the built-in `node:sqlite`) |
 | Server | Express 4 + `express-session` (SQLite-backed sessions) |
 | Database | SQLite (WAL mode), one file `data/extrovert.db` + `data/sessions.db` |
-| Views | EJS templates with a hand-rolled design system (`public/app.css`, Fraunces + Hanken Grotesk fonts) |
-| Encryption | `@matrix-org/olm` (devDependency, shipped to the browser as `public/lib/olm.js`/`olm.wasm`) |
+| Views | EJS templates with a hand-rolled design system (`public/theme.css`, Fraunces + Hanken Grotesk fonts) |
+| Encryption | `ts-mls` (RFC 9420), bundled for the browser as `public/lib/mls.js` from `src/client-mls/` via esbuild (`npm run build:mls`) |
 | Media | `sharp` for image processing (avatars, stickers, dimensions) |
 | Push | `web-push` (VAPID) for browsers; WebSocket push channel for native clients |
 | Realtime | `ws` (WebSocket) for signaling/presence/calls |

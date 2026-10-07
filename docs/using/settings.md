@@ -7,17 +7,17 @@
 You can sign in to several Extrovert accounts on the same browser and switch
 between them without logging out:
 
-- **Switch** — use the account menu in the top bar (your avatar/name), or open
+- **Switch** — open the account sheet (the chevron next to your avatar in the navbar), or open
   `/account/switch` directly. Clicking another account makes it active; every
   other account stays signed in.
-- **Add** — choose **Add another account** from the account menu (or visit
-  `/login?add=1`). The login page shows which accounts this device already has
-  and adds the new one to the list.
+- **Add** — choose **Add another account** in the account sheet (shown when more than one
+  account is signed in) or visit `/login?add=1`. The login page shows which accounts this
+  device already has and adds the new one to the list.
 - **Remove** — `/account/switch` has a remove button per account; removing the
   last account signs the device out entirely.
 - **Log out** removes *the active account only*; if other accounts remain you
-  stay signed in as the next one. **Sign out of all accounts** (in the account
-  menu) ends the whole device session.
+  stay signed in as the next one. **Sign out of all accounts** lives on
+  `/account/switch` and ends the whole device session.
 
 When an OAuth app asks for authorization while several accounts are signed in,
 the consent page includes an **Authorize as** picker — you choose which account
@@ -29,14 +29,21 @@ does not affect the others' sessions.
 
 Choose **Light** or **Dark** (dark is the default). Applied via `public/theme.css`; stored per account.
 
-## Developer settings
+## Account sheet
 
-A per-account toggle (off by default) that reveals developer-facing links — including the **Security** page (`/security`) — in the navigation. Ordinary users see a leaner nav; the `/security` page itself remains directly reachable by URL regardless. The setting is stored in the `developer_mode` column.
+Your avatar in the navbar (with a chevron) opens a bottom sheet holding the account
+actions: **Edit profile**, **Create invite link** / **Copy invite link**, **Settings**,
+**Sign out**, and — when more than one account is signed in — the account switcher rows.
+Top-level navigation no longer carries Settings or Security; this sheet is the way in.
+
+Everything else is on the Settings page (`/settings`), which links to **Security**
+(2FA & passkeys), **Bots**, **Developer applications** and the documentation. Those links
+are always visible.
 
 ## Account deletion
 
 - `GET /settings/delete` shows a confirmation page; `POST /settings/delete` permanently deletes your account and destroys your session.
-- Deletion is thorough (`deleteUser` in `src/db.js`): your posts (and their likes/comments/shares/follow-from records/notifications/reposts), follows, DMs, keys, stickers, profile customization, room membership/messages, join requests, group-session material, and room-creation references are removed. Users you referred are orphaned (`referred_by` cleared); since your account row is deleted, your referral code stops working.
+- Deletion is thorough (`deleteUser` in `src/db.js`): your posts (and their likes/comments/shares/follow-from records/notifications/reposts), follows, DMs, keys, stickers, profile customization, room membership/messages, join requests, MLS device material, and room-creation references are removed, and **the bots you own are deleted with you**. Users you referred are orphaned (`referred_by` cleared); since your account row is deleted, your referral code stops working.
 
 ## Developer center (`/settings/developers`)
 
@@ -48,4 +55,4 @@ This is the OAuth app manager:
 
 ## What's *not* in settings
 
-Profile editing (display name, bio, custom HTML/CSS, avatar) lives in the profile editor at `/u/<username>/edit` — see [Profiles](profiles.md). Referral-link generation is on your profile page.
+Profile editing (display name, bio, custom HTML/CSS, avatar) lives in the profile editor at `/u/<username>/edit` — see [Profiles](profiles.md). Invite links are created and copied from the account sheet.

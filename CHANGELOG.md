@@ -8,6 +8,16 @@ release: the codebase carries its version in `package.json`, and the sections
 ## [Unreleased]
 
 ### Features
+- **Account sheet**: the avatar chip in the navbar opens a bottom sheet with Edit profile,
+  Create/Copy invite link, Settings and Sign out (the account switcher rows appear there too
+  when several accounts are signed in). Settings and Security are no longer top-bar items,
+  the profile page shows identity only, and its old "Edit page" button is now "Edit profile"
+  inside the sheet. Settings → Security carries the responsible-disclosure link.
+- **Voice channel indicators**: joining a channel turns the microphone on and shows the call
+  bar (channel name, timer, `Mic on`/`Speaking`/`Muted` chip), and the member list marks who
+  is speaking — including you — from a locally measured, adaptive audio level.
+- **Delete bots**: from **Settings → Bots** or `DELETE /api/v1/bots/:id`; deleting an account
+  takes the bots it owns with it.
 - **Cross-device DM history**: the password-encrypted backup vault (v3) now
   carries every per-conversation Olm session + baseline pickle, not just the
   account and self-session pair. A new device unlocks with the password and
@@ -43,6 +53,22 @@ release: the codebase carries its version in `package.json`, and the sections
 - **`HOST`** environment variable: the interface the server binds. Set it to
   `127.0.0.1` when a reverse proxy on the same host terminates TLS, so port
   3000 is not reachable directly.
+
+### Fixes
+- **Desktop menus no longer disappear**: the global outside-click handler closed every
+  overflow menu (`details.menu-dd`) even on desktop, so clicking the chat bar hid the room
+  sidebar's control list and the post actions until a reload. Closing now only happens below
+  600px, and menus reopen when the window grows back.
+- **Room voice calls between members who don't mutually follow each other**: channel answers
+  carried no `channel_id` and were dropped by the 1:1 follower check. Each peer also gets its
+  own audio element now (3+ person channels are audible), and a duplicated WebSocket connect
+  can no longer tear a call down.
+- **Bots**: deleting a bot no longer fails on foreign keys (`bot_tokens`/`bot_webhooks` rows
+  are removed with the account), and the room message API no longer throws on an undefined
+  `group_session_id`.
+- **Docs**: the wiki, README and OpenAPI spec now describe MLS (RFC 9420) instead of the
+  retired Olm/Megolm stack, with corrected rate limits, invite and navigation behavior,
+  voice behavior, example bots and the previously undocumented bot and `/mls/*` endpoints.
 
 ## [1.0.3] - 2026-08-30
 

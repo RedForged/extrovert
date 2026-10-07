@@ -42,7 +42,7 @@ Clients subscribe to specific topics using `{ "action": "subscribe", "topic": "<
 | Topic | Events Broadcasted | Description |
 |---|---|---|
 | `timeline:home` | `post_create`, `comment_create`, `post_delete` | Realtime home timeline updates |
-| `room:<id>` | `message_create`, `message_delete`, `member_join`, `member_leave`, `room_session_key`, `typing` | Room text and member events (membership enforced). `room_session_key` is pushed in realtime when a peer shares a Megolm session. |
+| `room:<id>` | `message_create`, `message_delete`, `member_join`, `member_leave`, `room_session_key`, `typing` | Room text and member events (membership enforced). `room_session_key` is legacy Megolm plumbing kept for older clients; MLS clients decrypt from their own group state. |
 | `notifications` | `notification_new` | Push notifications to active client |
 | `presence` | `user_online`, `user_offline`, `otk_low` | Presence updates of mutual followers, plus proactive `otk_low` warnings when one-time prekeys fall below 10. |
 
@@ -61,7 +61,7 @@ Clients subscribe to specific topics using `{ "action": "subscribe", "topic": "<
 
 All broadcast events carry a strictly monotonic sequence number (`seq`) backed by a 500-event ring buffer on the server.
 
-For Megolm-encrypted room messages, if the receiving client has a pending session key for the message's `group_session_id`, the server automatically inlines `session_key` directly in `data` so the client decrypts instantly with **zero round-trips**:
+For **legacy Megolm** clients the server inlines a pending `session_key` directly in `data` when it has one for the message's `group_session_id`, so those clients decrypt without an extra round trip. MLS clients ignore the field — they decrypt from their own MLS group state:
 
 ```json
 {
@@ -124,6 +124,8 @@ In addition to the event gateway, `/ws` handles WebRTC 1:1 call signaling and ro
 | `user_joined_channel` / `user_left_channel` | `{channel_id, username, display_name?}` | Room voice-channel membership changes. |
 | `call` (push channel) | `{type:"call", from, from_display, cancel_token}` | Native call wake-up. |
 | `missed_call` (push channel) | `{type:"missed_call", from, from_display}` | Native missed-call notification. |
+
+Voice-channel audio is peer-to-peer; the gateway only carries signaling. The speaking indicators are client-side: joining a channel turns the microphone on, each member's speaking state is derived locally from the audio level (no server event is involved), and the call bar shows the channel name plus a `Mic on` / `Speaking` / `Muted` chip.
 
 ## Notification SSE
 

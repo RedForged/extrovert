@@ -21,7 +21,7 @@ Flow (client scripts in `public/webrtc.js` / `webrtc-ui.js`):
 | 4 | `ice_candidate {to, candidate}` | Relayed to the peer |
 | 5 | `call_end {to}` / `call_decline {to}` | Tear down; both sides clear `in_call` |
 
-Calls are only possible between **mutual followers** (checked server-side). While `in_call`, further incoming calls get `user_busy`.
+1:1 calls are only possible between **mutual followers** (checked server-side). Voice channels have no such requirement — any member of the channel can talk to any other. While `in_call`, further 1:1 incoming calls get `user_busy`.
 
 ## Offline calls (ringing an offline user)
 
@@ -40,9 +40,11 @@ When the callee is offline:
 Voice channels are rooms-with-audio: members join a channel and talk peer-to-peer within it.
 
 - `join_channel {channel_id}` → server replies `channel_joined {self, members}` and broadcasts `user_joined_channel` to other room members; `leave_channel` broadcasts `user_left_channel`.
+- **Joining turns your microphone on** (the browser asks for permission) and shows the **call bar** — channel name, timer, and a mic chip that reads `Mic on`, `Speaking` or `Muted`.
 - Offers/answers/candidates route within the channel: `call_offer {channel_id, to, sdp}` → `incoming_call` to the targeted member, `call_answer`/`ice_candidate`/`call_end`/`call_decline` similarly (`to` is optional).
-- Disconnecting removes you from all voice channels and tells the room you left.
-- `GET /api/v1/rooms/:id` includes voice-channel member counts; the room page shows who's in each voice channel.
+- **Speaking indicators:** your own audio level is measured locally and shown next to each member in the channel's list (your row is marked "you"); the mic chip switches to `Speaking` while you talk and to `Muted` when your mic is off.
+- Disconnecting — or navigating away from the room page — stops your microphone and removes you from all voice channels, telling the room you left.
+- The room page shows who is in each voice channel (the REST endpoint `GET /api/v1/rooms/:id` returns channels without rosters).
 
 ## Native/mobile push channel
 

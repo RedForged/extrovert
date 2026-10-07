@@ -12,7 +12,7 @@ Every user has a profile page at `/u/<username>` and, more importantly, **full c
 | **Profile CSS** | Profile editor | sanitized, no JS |
 | Avatar | Profile editor (upload) | JPEG/PNG/WebP, ≤10 MB |
 | Theme (light/dark) | `/settings` | global |
-| Referral code | "Generate referral link" on your profile | one per account |
+| Referral code | Account sheet (your avatar in the navbar) | one per account |
 
 ## Profile HTML & CSS
 
@@ -71,7 +71,7 @@ Modern CSS is safe by itself (it can't run JavaScript); these rules keep profile
 
 ## Referrals
 
-Every account can generate a single referral code ("Generate referral link" on your profile). The resulting link looks like `/register?ref=<code>` and shows the referrer's name on the registration page.
+Every account can generate a single referral code: the account sheet (your avatar in the navbar) offers **Create invite link**, and **Copy invite link** from then on. The resulting link looks like `/register?ref=<code>` and shows the referrer's name on the registration page.
 
 - A sign-up through a referral link records `referred_by` and the registrant's IP on the referrer's account (`referrer_ip`).
 - **Anti-farming:** a registration is rejected with "You can't use a referral from your own network" if the registrant's IP matches the referrer's stored IP.

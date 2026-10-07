@@ -1,6 +1,6 @@
 # REST API overview
 
-Base path: `/api/v1` · Live docs: `/developers/docs` (Swagger UI) and `/developers/openapi.json` (OpenAPI 3.1, also at `/api/v1/openapi.json`).
+Base path: `/api/v1` · Live docs: `/developers/docs` (Swagger UI) and `/developers/openapi.json` (OpenAPI 3.1; `/api/v1/openapi.json` redirects there).
 
 ## Conventions
 
@@ -81,7 +81,9 @@ Clients can register in two ways:
 | `notifications` | Notifications list/clear/unread/SSE |
 | `read:direct` | Conversations, message history, keys/bundles |
 | `write:direct` | Send/edit/delete messages, publish keys |
-| `profile` | `update_credentials`, avatar upload |
+| `profile` | `update_credentials`, avatar upload, account tokens and sessions |
+| `email` | Email address changes |
+| `admin` | Instance administration (admin accounts only) |
 
 Scopes are checked **exactly** — a token must contain each required scope (there is no hierarchy: `write` does not imply `read`). Registering an app defaults its scope list to `read`.
 
@@ -91,7 +93,7 @@ Scopes are checked **exactly** — a token must contain each required scope (the
 |---|---|
 | **120 requests/minute** on `/api/*` | OAuth bearer token when present, otherwise IP |
 
-See `X-RateLimit-Limit` / `X-RateLimit-Remaining` / `X-RateLimit-Reset` headers. Web endpoints have separate IP limits (30/min auth, 60/min other POSTs).
+See `X-RateLimit-Limit` / `X-RateLimit-Remaining` / `X-RateLimit-Reset` headers. Web endpoints have separate limits (30/min auth per IP, 240/min other authenticated POSTs per user, 600/min on E2EE crypto paths).
 
 ## CORS
 

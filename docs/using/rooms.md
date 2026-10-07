@@ -21,7 +21,7 @@ Rooms are shared group spaces with multiple **channels**, a **role & permission*
 
 | Type | Purpose |
 |---|---|
-| `text` | Megolm-encrypted chat (see E2EE below) |
+| `text` | MLS-encrypted chat (see E2EE below) |
 | `voice` | Real-time voice channel over WebRTC (see [Calls](calls.md)) |
 
 Channel management requires `MANAGE_CHANNELS`:
@@ -51,23 +51,20 @@ Permissions are a bitmask on each role:
 - **Transfer founder:** the founder can hand the room to any member (`/rooms/:id/transfer`); the old founder drops to the default role.
 - Instance admins bypass room permissions everywhere.
 
-## Messaging & E2EE (Megolm)
+## Messaging & E2EE (MLS)
 
-Room messages are **end-to-end encrypted with Megolm** (group-session ratchet) — the server stores ciphertext only:
+Room messages are **end-to-end encrypted with MLS (RFC 9420)**, the same protocol as direct messages — the server stores ciphertext only:
 
 | Concept | Notes |
 |---|---|
-| Group session | One Megolm outbound session per (room, sender). `publishRoomGroupSession` creates/rotates it; rotation deletes the old session so new members can't read history. |
-| Session keys | Wrapped in the recipient's **1:1 Olm session** and stored server-side as pending key deliveries (`room_group_session_keys`). |
-| Publish | `POST /rooms/:id/session` with `keys: [{recipient_id, encrypted_key}]` and `member_ids` (to mark members covered). `rotate: true` starts a fresh session. Pushes `room_session_key` in real time to connected recipients via WebSocket. |
-| Atomic Sync | `POST /rooms/:id/session/sync` — publishes keys for room members, covers keyless members (`member_ids`), returns inbound pending keys for the caller, acks delivered keys (`ack_key_ids`), and lists `missing_members` in 1 round-trip. |
-| Fetch pending | `GET /rooms/:id/session/keys` — the client decrypts each key with its 1:1 Olm session with the sender (filtered to this room). |
-| Acknowledge | `POST /rooms/:id/session/keys/delivered` with `key_ids`. |
-| Status | `GET /rooms/:id/session/status` — who has your key, and which covered members have an empty key (you should re-share to them). |
-| Prekey bundles | `GET /rooms/:id/bundles` — batch Olm prekey bundle fetch for all room members in 1 call. Supports `?missing_for_session=<sessionId>` and `?claim=1` (pass `claim=1` when wrapping a session to consume prekeys). Multi-device clients must iterate `devices[]` to encrypt to all devices per member. |
-| Zero-latency keys | When a member sends a message, subscribers needing that sender's session key have it automatically inlined as `session_key` directly inside the `message_create` WebSocket event, allowing immediate decryption without an extra round trip. |
+| Group | One MLS group per room channel, over the channel's members. Membership changes (join, leave, kick, role removal) are MLS commits. |
+| Devices | Every member device joins through a Welcome; the server addresses keys per device, never per username. |
+| Key packages | Public MLS KeyPackages live at `/mls/keypackages`; adding a member consumes one of theirs. |
+| Commit log | The server keeps the ordered MLS commits for a group (`GET /mls/groups/<groupId>/commits`) so clients can apply the current epoch. |
+| Realtime | New ciphertext is broadcast over `/ws` as `room:<id>` `message_create` gateway events; clients decrypt locally. |
+| Late joiners | A device added at a later epoch can read only from the point it joined — earlier history stays private. |
 
-**Server enforcement:** a non-sticker room message must carry `proto: "megolm"`, a `ciphertext` (<= 20,000 chars), and a `group_session_id` that matches the sender's current session (or a superseded session within the 15-minute rotation grace period) — otherwise `400 End-to-end encryption required. Room messages must be Megolm-encrypted.` Sticker messages (body starts with `/uploads/stickers/`) are allowed as plaintext paths.
+**Server enforcement:** a non-sticker room message must carry `proto: "mls"` and a `ciphertext` of at most 20,000 characters — otherwise the server replies **426 Upgrade Required** (`LegacyProtocolRetired: …`). Sticker messages (body starts with `/uploads/stickers/`) are allowed as plaintext paths.
 
 ### Message operations
 
@@ -77,15 +74,10 @@ Room messages are **end-to-end encrypted with Megolm** (group-session ratchet) �
 
 ## Room E2EE bootstrap for implementers
 
-Modern clients can implement room E2EE in just two optimized steps:
+Modern clients can implement room E2EE with the MLS device flow:
 
-1. **Batch prekeys & atomic sync:**
-   - Fetch missing member bundles with `GET /rooms/:id/bundles?missing_for_session=<sessionId>&claim=1`.
-   - Iterate each member's `devices[]` and encrypt your Megolm session key with each device's 1:1 Olm session.
-   - Atomically publish keys, cover any keyless members via `member_ids`, retrieve pending keys for yourself, and ack via `POST /rooms/:id/session/sync`.
-2. **Realtime decryption:**
-   - Inbound session keys arrive in real time over `/ws` via the `room_session_key` event, or inlined directly within `message_create` events.
-   - Once unwrapped with your 1:1 Olm session, import into your Megolm inbound session and decrypt the channel message.
-   - Periodic rotation (`rotate: true`) invalidates old sessions, keeping past history private from late joiners.
+1. **Devices & key packages:** register the device (`POST /mls/device/register`) and publish public key packages (`POST /mls/keypackages`). Adding a member consumes one of theirs (`GET /mls/keypackages/:userId`).
+2. **Build the group:** create the channel's group (`POST /mls/groups/init`) — every member device is added through a Welcome it picks up from `GET /mls/welcomes` (acknowledged with `/mls/welcomes/ack`). Later membership changes go through `POST /mls/groups/:groupId/proposals` and `…/commit`, with the ordered history at `GET /mls/groups/:groupId/commits`.
+3. **Send & receive:** post ciphertext with the room message endpoint (`proto: "mls"`) and decrypt incoming `message_create` events locally; the commit log keeps every device on the same epoch.
 
-The protocol and client ergonomics are exercised by `scripts/client-e2ee-test.js`, `scripts/megolm-room-test.js`, and `scripts/megolm-integration-test.js`.
+The protocol and client ergonomics are exercised by `npm run test:mls` (`scripts/mls-conformance-test.js`, `scripts/mls-db-test.js`, `scripts/mls-api-test.js`, `scripts/mls-e2ee-chat-test.js`, `scripts/mls-welcome-recovery-test.js`, `scripts/mls-client-regression-test.js`) and cross-checked against the Rust implementation with `npm run test:interop`.

@@ -9,7 +9,7 @@ A social network where you can **only discover content from friends and friends-
 <p align="center">
   <a href="LICENSE"><img alt="License: GPL-3.0-or-later" src="https://img.shields.io/badge/License-GPL--3.0--or--later-blue.svg"></a>
   <a href="https://github.com/AxoIsAxo/extrovert/actions/workflows/ci.yml"><img alt="Build status" src="https://img.shields.io/github/actions/workflow/status/AxoIsAxo/extrovert/ci.yml?branch=master"></a>
-  <a href="#development--testing"><img alt="164 tests" src="https://img.shields.io/badge/tests-164-brightgreen.svg"></a>
+  <a href="#development--testing"><img alt="all suites pass" src="https://img.shields.io/badge/tests-all_suites_pass-brightgreen.svg"></a>
   <a href="https://hub.docker.com/r/axoisaxo/extrovert"><img alt="Docker image size" src="https://img.shields.io/docker/image-size/axoisaxo/extrovert"></a>
   <a href="https://github.com/AxoIsAxo/extrovert/issues"><img alt="PRs welcome" src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg"></a>
 </p>
@@ -40,8 +40,8 @@ The signature motif is three concentric rings: **you** (inner), your **friends**
 | **Profiles** | Fully customizable profile pages — every user can write their own **HTML and CSS** (no JavaScript) |
 | **Social** | Follow, like, comment, share, repost, "follow because of a post" |
 | **Discovery** | [Discover](docs/using/discovery.md) page: search users, friend-of-friend suggestions, network-bound post search |
-| **Messaging** | End-to-end-encrypted direct messages between mutual followers (Signal-style Olm); optional **Additional Security** mode deletes messages from the server once both users have received them (device-only copies) |
-| **Rooms** | Group spaces with channels (text + voice), role-based permissions, E2EE group chat (Megolm), voice calls |
+| **Messaging** | End-to-end-encrypted direct messages between mutual followers (MLS, RFC 9420); optional **Additional Security** mode deletes messages from the server once both users have received them (device-only copies) |
+| **Rooms** | Group spaces with channels (text + voice), role-based permissions, E2EE group chat (MLS), voice calls |
 | **Calls** | Peer-to-peer WebRTC calls with presence, offline-call rings, and push wake-ups |
 | **Notifications** | Inbox, unread badges, realtime SSE stream, web push |
 | **Stickers** | Personal sticker packs usable in posts, comments, and messages |
@@ -73,7 +73,7 @@ part of CI too.
 - `npm run test:owasp` — OWASP Top 10 (2021) security suite (47 tests)
 - `npm run test:asvs` — OWASP ASVS v4.0 suite (57 tests; automatable subset, with a MANUAL_REVIEW/N-A scorecard)
 - `npm run seed:client` — Seed deterministic fixtures and PATs for client testing (`alice`, `bob`, `charlie`)
-- plus crypto, Megolm, live-DM, secure-DM, and session suites — see [Development & testing](docs/development.md)
+- plus the MLS suites (`npm run test:mls`, `test:ietf`, `test:interop`, `test:scale`), OAuth, 2FA, passkeys, captcha, email and render suites — see [Development & testing](docs/development.md)
 
 ## Documentation index
 
@@ -113,4 +113,4 @@ part of CI too.
 
 Extrovert is free software: you can redistribute it and/or modify it under the terms of the **GNU General Public License, version 3 or any later version** — see [LICENSE](LICENSE) for the full text. It is distributed in the hope that it will be useful, but **without any warranty**; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GPLv3 for details.
 
-The app includes bundled third-party software under their own licenses (e.g. [`@matrix-org/olm`](https://gitlab.matrix.org/matrix-org/olm) under the Apache-2.0 license).
+The app includes bundled third-party software under their own licenses (e.g. [`ts-mls`](https://www.npmjs.com/package/ts-mls), the RFC 9420 implementation bundled into `public/lib/mls.js`).

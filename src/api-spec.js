@@ -200,18 +200,18 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
   paths: {
     // --- Bots (planned.md F5) ---
     '/bots': {
-      post: { tags: ['Bots'], summary: 'Admin: create a bot account and its first long-lived token (the raw token is returned exactly once)', responses: { 201: { description: 'Created' }, 403: { description: 'Admins only' } } },
-      get: { tags: ['Bots'], summary: 'Admin: list bot accounts', responses: { 200: { description: 'OK' } } },
+      post: { tags: ['Bots'], summary: 'Create a bot you own and its first long-lived token (the raw token is returned exactly once)', responses: { 201: { description: 'Created' }, 403: { description: 'Bot limit reached' } } },
+      get: { tags: ['Bots'], summary: 'List your bot accounts (admins: every bot)', responses: { 200: { description: 'OK' } } },
     },
     '/bots/{id}': {
       delete: { tags: ['Bots'], summary: 'Delete a bot you own, with its tokens, webhook and content (admins: any bot)', responses: { 200: { description: 'OK' }, 403: { description: 'Not your bot' }, 404: { description: 'Bot not found' } } },
     },
     '/bots/{id}/tokens': {
-      post: { tags: ['Bots'], summary: 'Admin: issue an additional bot token (returned once)', responses: { 201: { description: 'Created' } } },
-      get: { tags: ['Bots'], summary: "Admin: list a bot's token prefixes (never the secrets)", responses: { 200: { description: 'OK' } } },
+      post: { tags: ['Bots'], summary: 'Issue an additional bot token (returned once)', responses: { 201: { description: 'Created' } } },
+      get: { tags: ['Bots'], summary: "List a bot's token prefixes (never the secrets)", responses: { 200: { description: 'OK' } } },
     },
     '/bots/{id}/tokens/{tokenId}': {
-      delete: { tags: ['Bots'], summary: 'Admin: revoke a bot token', responses: { 200: { description: 'OK' } } },
+      delete: { tags: ['Bots'], summary: 'Revoke a bot token', responses: { 200: { description: 'OK' } } },
     },
     '/bots/webhook': {
       post: { tags: ['Bots'], summary: 'Bot: register a webhook URL; the HMAC signing secret is returned exactly once', responses: { 200: { description: 'OK' } } },
@@ -700,13 +700,13 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
       get: {
         summary: 'List personal access tokens for the authenticated user',
         tags: ['Accounts'],
-        security: [{ oauth2: ['read'] }, { bearerAuth: [] }],
+        security: [{ oauth2: ['profile'] }, { bearerAuth: [] }],
         responses: { '200': { description: 'List of tokens' } },
       },
       post: {
         summary: 'Create a personal access token',
         tags: ['Accounts'],
-        security: [{ oauth2: ['write'] }, { bearerAuth: [] }],
+        security: [{ oauth2: ['profile'] }, { bearerAuth: [] }],
         requestBody: {
           required: true,
           content: {
@@ -730,7 +730,7 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
       delete: {
         summary: 'Revoke a personal access token',
         tags: ['Accounts'],
-        security: [{ oauth2: ['write'] }, { bearerAuth: [] }],
+        security: [{ oauth2: ['profile'] }, { bearerAuth: [] }],
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
         responses: { '200': { description: 'Token revoked' }, '404': { description: 'Token not found' } },
       },
@@ -739,7 +739,7 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
       get: {
         summary: 'List active sessions for the user',
         tags: ['Accounts'],
-        security: [{ oauth2: ['read'] }, { bearerAuth: [] }],
+        security: [{ oauth2: ['profile'] }, { bearerAuth: [] }],
         responses: { '200': { description: 'List of active sessions' } },
       },
     },
@@ -747,7 +747,7 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
       delete: {
         summary: 'Revoke an active session',
         tags: ['Accounts'],
-        security: [{ oauth2: ['write'] }, { bearerAuth: [] }],
+        security: [{ oauth2: ['profile'] }, { bearerAuth: [] }],
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
         responses: { '200': { description: 'Session revoked' }, '404': { description: 'Session not found' } },
       },
@@ -1495,27 +1495,29 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
         responses: { '200': { description: 'List of join requests' } },
       },
+    },
+    '/api/v1/rooms/{id}/requests/{reqId}/approve': {
       post: {
-        summary: 'Approve or reject a join request',
+        summary: 'Approve a join request',
         tags: ['Rooms'],
         security: [{ oauth2: ['write'] }, { bearerAuth: [] }],
-        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
-        requestBody: {
-          required: true,
-          content: {
-            'application/json': {
-              schema: {
-                type: 'object',
-                required: ['request_id', 'action'],
-                properties: {
-                  request_id: { type: 'integer' },
-                  action: { type: 'string', enum: ['approve', 'reject'] },
-                },
-              },
-            },
-          },
-        },
-        responses: { '200': { description: 'Join request handled' } },
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'integer' } },
+          { name: 'reqId', in: 'path', required: true, schema: { type: 'integer' } },
+        ],
+        responses: { '200': { description: 'Join request approved' } },
+      },
+    },
+    '/api/v1/rooms/{id}/requests/{reqId}/reject': {
+      post: {
+        summary: 'Reject a join request',
+        tags: ['Rooms'],
+        security: [{ oauth2: ['write'] }, { bearerAuth: [] }],
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'integer' } },
+          { name: 'reqId', in: 'path', required: true, schema: { type: 'integer' } },
+        ],
+        responses: { '200': { description: 'Join request rejected' } },
       },
     },
     '/api/v1/rooms/{id}/invite': {
@@ -1552,7 +1554,7 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
         responses: { '200': { description: '{ data: { messages: [...], next: id-or-null } }' } },
       },
       post: {
-        summary: 'Send a room message (must be Megolm-encrypted unless it is a sticker path)',
+        summary: 'Send a room message (MLS-encrypted — proto: "mls" — unless it is a sticker path)',
         tags: ['Rooms'],
         security: [{ oauth2: ['write'] }],
         parameters: [
@@ -1564,9 +1566,9 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
             type: 'object',
             properties: {
               body: { type: 'string', description: 'Sticker path (/uploads/stickers/...) or empty' },
-              proto: { type: 'string', enum: ['megolm'], default: 'megolm' },
+              proto: { type: 'string', enum: ['mls'], default: 'mls' },
               ciphertext: { type: 'string', maxLength: 20000 },
-              group_session_id: { type: 'string' },
+              group_session_id: { type: 'string', nullable: true, description: 'Always null (legacy Megolm field)' },
             },
           }}},
         },
@@ -1809,11 +1811,11 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
             type: 'object',
             required: ['body'],
             properties: {
-              body: { type: 'string', maxLength: 5000, description: 'Empty for encrypted messages, or a sticker path (/uploads/stickers/...) which skips encryption' },
-              proto: { type: 'string', enum: ['olm', 'rsa'], default: 'olm' },
-              sender_ciphertext: { type: 'string', maxLength: 5000, description: 'Olm payload (required unless the body is a sticker path)' },
-              key_for_sender: { type: 'string' },
-              key_for_recipient: { type: 'string' },
+              body: { type: 'string', maxLength: 65536, description: 'MLS ciphertext, or a sticker path (/uploads/stickers/...) which skips encryption' },
+              proto: { type: 'string', enum: ['mls'], default: 'mls' },
+              sender_ciphertext: { type: 'string', maxLength: 65536, description: 'Your own encrypted copy (MLS), optional' },
+              key_for_sender: { type: 'string', description: 'Legacy RSA field, ignored' },
+              key_for_recipient: { type: 'string', description: 'Legacy RSA field, ignored' },
             },
           }}},
         },
@@ -1897,11 +1899,11 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
             type: 'object',
             required: ['body'],
             properties: {
-              body: { type: 'string', maxLength: 5000, description: 'Empty for encrypted messages, or a sticker path which skips encryption' },
-              proto: { type: 'string', enum: ['olm', 'rsa'] },
-              sender_ciphertext: { type: 'string', maxLength: 5000, description: 'Olm payload (required unless the body is a sticker path)' },
-              key_for_sender: { type: 'string' },
-              key_for_recipient: { type: 'string' },
+              body: { type: 'string', maxLength: 65536, description: 'MLS ciphertext, or a sticker path which skips encryption' },
+              proto: { type: 'string', enum: ['mls'] },
+              sender_ciphertext: { type: 'string', maxLength: 65536, description: 'Your own encrypted copy (MLS), optional' },
+              key_for_sender: { type: 'string', description: 'Legacy RSA field, ignored' },
+              key_for_recipient: { type: 'string', description: 'Legacy RSA field, ignored' },
             },
           }}},
         },

@@ -1,6 +1,6 @@
 //! Minimal Extrovert bot (planned.md F5.6).
 //!
-//! Setup (as an instance admin):
+//! Setup (any account can create a bot — admins are not required):
 //!   POST /api/v1/bots {"username":"echo_bot"} -> data.token (shown once)
 //!
 //! Run:
@@ -74,8 +74,8 @@ impl Bot {
             "follow" => {
                 self.api(
                     reqwest::Method::POST,
-                    "/follow",
-                    Some(json!({ "uri": username })),
+                    &format!("/accounts/{actor_id}/follow"),
+                    None,
                 )
                 .await?;
                 println!("followed back @{username}");

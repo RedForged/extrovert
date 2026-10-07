@@ -39,10 +39,10 @@ The sanitizer discards anything not on the whitelist (e.g. `script`, `iframe`, `
 DMs require **mutual followers** — both of you must follow each other.
 
 ### Is the server able to read my messages?
-For current (Olm) messages the server stores ciphertext only and enforces encryption. The legacy `rsa` protocol stores ciphertext wrapped for sender/recipient. The stored RSA private key is client-encrypted. The honest caveat: key distribution has no transparency log — verify **safety numbers** with your contacts for high-value conversations (see [Security](security.md)).
+Messages are encrypted with **MLS (RFC 9420)** and the server stores ciphertext only — it rejects anything that isn't a valid MLS message (`426 Upgrade Required`). The honest caveat: key distribution has no transparency log, so verify devices with your contacts for high-value conversations (see [Security](security.md)).
 
 ### What happens if I lose my browser?
-If your client uploaded a password-encrypted **account backup** (`/chats/prekeys/backup`), a new browser can download and decrypt it. Otherwise your private keys are gone — you'll need to publish new keys, and old sessions can't be decrypted by you.
+If your client uploaded a password-encrypted **account backup** (`/mls/backup`), a new browser can download and decrypt it. Otherwise your private keys are gone — you'll need to publish new key packages, and old sessions can't be decrypted by you.
 
 ## Rooms & calls
 
@@ -50,7 +50,7 @@ If your client uploaded a password-encrypted **account backup** (`/chats/prekeys
 A **share** is a lightweight boost signal (notifies the author, +60 to the post's feed score). A **repost** re-publishes the content into your own stream as a post of its own — it surfaces content to *your* network.
 
 ### Why are room messages "end-to-end encrypted required"?
-Room chat is Megolm-encrypted and the server rejects plaintext messages. Stickers (paths under `/uploads/stickers/`) are the exception.
+Room chat is MLS-encrypted (RFC 9420) and the server rejects plaintext messages. Stickers (paths under `/uploads/stickers/`) are the exception.
 
 ### How do offline calls work?
 The call is queued for 120 seconds, a `missed_call` notification is created, and the callee's devices are woken with a push (web push for browsers, WebSocket push for native). If the callee reconnects in time they get rung; otherwise the caller gets `call_unanswered`.

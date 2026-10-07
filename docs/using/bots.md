@@ -16,8 +16,8 @@ their followers and followings — following is what puts someone in a bot's net
 ## Quick start
 
 1. **Create your bot** — anyone can, Discord-style (self-hosted, owned by its creator):
-   use **Settings → Bots** in the web UI (create, issue/revoke tokens, manage the webhook),
-   or the API:
+   use **Settings → Bots** in the web UI (create, issue/revoke tokens, manage the webhook,
+   delete the bot), or the API:
 
    ```bash
    curl -X POST https://extrovert.redforged.eu/api/v1/bots \
@@ -53,6 +53,10 @@ their followers and followings — following is what puts someone in a bot's net
 - `POST /api/v1/bots/:id/tokens` (owner/admin) — issue another token; `GET` lists prefixes
   only; `DELETE /api/v1/bots/:id/tokens/:tokenId` revokes. Every issuance/revocation is
   audit-logged. The **Settings → Bots** page does all of this without curl.
+- `DELETE /api/v1/bots/:id` — **delete a bot** you own (admins: any bot). Its tokens, webhook
+  registration and content are removed with it, and deleting your own account deletes the
+  bots you own. The bot card in **Settings → Bots** has a **Delete bot** button behind a
+  confirmation.
 - `is_bot` is exposed on accounts (`GET /api/v1/accounts/:id`) and shown as a **bot** badge on
   profiles so people always know when they're talking to software.
 

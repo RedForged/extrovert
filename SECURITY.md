@@ -18,7 +18,7 @@ Current security posture is documented in [docs/security.md](docs/security.md). 
 | 2 | **Open redirect** via Referer | `back()` functions now reject `//evil.com` protocol-relative URLs; login `next` uses `safeRedirect()` |
 | 3 | **File upload MIME spoofing** | Whitelist-based extension validation server-side (`.jpg`, `.png`, `.mp4`, etc.) — MIME type alone is no longer trusted |
 | 4 | **`data:` URI on `<img>` → SVG XSS** | Removed `data` from `allowedSchemesByTag.img` in sanitize-html config |
-| 5 | **No rate limiting** | `express-rate-limit` added: 30 req/min on auth routes, 60 req/min on all other POST endpoints, 120 req/min on `/api/*` (keyed on OAuth bearer token when present, else IP) |
+| 5 | **No rate limiting** | `express-rate-limit` added: 30 req/min on auth routes (per IP), 240 req/min on other authenticated POSTs (per user), 600 req/min on E2EE crypto/transport POSTs, 120 req/min on `/api/*` (keyed on OAuth bearer token when present, else IP). All limits are configurable via `EXTV_*_RATE_LIMIT`. |
 | 6 | **No security headers** | `helmet` added with CSP (no external scripts), `X-Frame-Options`, `X-Content-Type-Options`, etc. |
 | 7 | **Weak session secret** | `SESSION_SECRET` env var is now **required** — server exits at startup if unset; `.env.example` added |
 | 8 | **Missing `secure`/`sameSite` cookie flags** | `sameSite: 'lax'`, `secure` in production (`EXTV_COOKIE_SECURE` to override) |

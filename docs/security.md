@@ -44,8 +44,9 @@ Security researchers may test the software under the conditions on the in-app **
 
 ## Rate limiting
 
-- 30 req/min on login/register (per IP)
-- 60 req/min on other web POSTs (per IP)
+- 30 req/min on login/register (per IP — `EXTV_AUTH_RATE_LIMIT`)
+- 240 req/min on other authenticated web POSTs (per user — `EXTV_ACTION_RATE_LIMIT`)
+- 600 req/min on the E2EE crypto/transport POSTs (`/chats/`, `/rooms/`, `/mls/` — `EXTV_CRYPTO_RATE_LIMIT`)
 - 120 req/min on `/api/*` (per OAuth token, falling back to per IP)
 - 10 req/5 min on second-factor verification (`/login/totp`, `/passkeys/*`, OAuth factor step)
 
@@ -61,10 +62,9 @@ connect-src 'self' ws: wss:; frame-ancestors 'none'
 
 ## E2EE threat model
 
-- DMs (Olm) and room messages (Megolm) are encrypted client-side; the server stores ciphertext and public key material only.
-- The server **enforces** encryption: plaintext non-sticker messages are rejected with `400`.
-- One-time prekeys are claimed atomically on bundle fetch; session keys are delivered wrapped in 1:1 Olm sessions.
-- The stored *encrypted* RSA private key is client-encrypted — the server cannot decrypt it.
+- DMs and room messages are encrypted client-side with MLS (RFC 9420); the server stores ciphertext and public MLS material only (KeyPackages, Welcomes, the ordered commit log).
+- The server **enforces** encryption: a non-sticker message that isn't `proto: "mls"` is rejected with `426 Upgrade Required`.
+- KeyPackages are consumed atomically when a peer fetches them (`/mls/keypackages/:userId`), and private MLS state never leaves the client.
 - The client can upload a password-encrypted account backup for recovery.
 - **Limitation:** there is no key-transparency/consistency verification beyond user-comparable safety numbers (ed25519 fingerprints); a malicious server could in principle substitute keys. Verify safety numbers for high-value conversations.
 

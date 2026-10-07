@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Minimal Extrovert bot (planned.md F5.6) — proves the "any language" claim.
 
-Setup (as an instance admin):
+Setup (any account can create a bot — admins are not required):
     curl -X POST "$EXTROVERT_URL/api/v1/bots" \
-      -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+      -H "Authorization: Bearer $YOUR_TOKEN" -H 'Content-Type: application/json' \
       -d '{"username":"echo_bot","display_name":"Echo Bot"}'
   -> response.data.token is the bot token (shown once).
 
@@ -58,7 +58,7 @@ def handle(event: dict) -> None:
         api("POST", "/statuses", {"type": "text", "body": text})
         print("replied to mention from", actor["username"])
     elif etype == "follow":
-        api("POST", "/follow", {"uri": actor["username"]})
+        api("POST", f"/accounts/{actor['id']}/follow")
         print("followed back", actor["username"])
 
 

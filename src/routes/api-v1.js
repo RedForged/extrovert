@@ -2927,7 +2927,7 @@ router.post('/rooms/:id/channels/:cid/messages', requireApiAuth('write'), requir
     proto: isSticker ? 'plain' : proto,
     body: isSticker ? body : '',
     ciphertext: isSticker ? null : ciphertext,
-    group_session_id: isSticker ? null : groupSessionId,
+    group_session_id: null,
     created_at: new Date().toISOString(),
   };
   if (clientId) msgData.client_id = String(clientId);

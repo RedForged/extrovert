@@ -1,5 +1,11 @@
 # Extrovert E2EE — Encryption Bug Audit
 
+> [!NOTE]
+> **Historical document.** This audit covers the retired Olm/Megolm stack (libolm 3.2.15),
+> which was removed when Extrovert moved to MLS (RFC 9420). It is kept for the record and
+> does **not** describe the current encryption stack — see
+> [Direct messages](using/messaging.md) and [Rooms & voice channels](using/rooms.md).
+
 Scope: every file touching encryption/decryption of messages (DMs via Olm, rooms
 via Megolm, key transport, backups, and the supporting server endpoints).
 Method: full read of `public/e2ee.js`, `public/room-e2ee.js`, `public/rooms.js`,

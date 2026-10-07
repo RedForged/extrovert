@@ -16,7 +16,7 @@ Upload rules:
 - Formats: JPEG, PNG, GIF, WebP, BMP.
 - Max size: **500 KB**.
 - Files over 250 KB that aren't GIFs are **auto-compressed** with `sharp` (JPEG/PNG/WebP at quality 70) when the result is smaller.
-- Stored at `uploads/stickers/<timestamp>-<rand>.<ext>`, served from `/uploads/stickers/…`.
+- Stored at `uploads/stickers/<random-hex>.<ext>`, served from `/uploads/stickers/…`.
 
 ## Using stickers
 

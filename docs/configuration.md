@@ -28,7 +28,7 @@ Extrovert is configured entirely through environment variables. There is no conf
 | `EXTV_SECOND_FACTOR_RATE_LIMIT` | no | `10` | Second-factor verification attempts per 5 minutes (login challenge + passkey ceremonies). |
 | `EXTV_OAUTH_FACTOR_RATE_LIMIT` | no | `10` | Second-factor attempts per 5 minutes on the OAuth authorize endpoint. |
 | `EXTV_ACTION_RATE_LIMIT` | no | `240` | General authenticated POST actions per minute per user (posts, follows, likes, …). |
-| `EXTV_CRYPTO_RATE_LIMIT` | no | `600` | E2EE crypto/transport POSTs per minute per user (`/chats/*/claim`, `/chats/*/send`, `/chats/rekey/*`, …). Set generously — throttling these is what breaks Olm decryption. |
+| `EXTV_CRYPTO_RATE_LIMIT` | no | `600` | E2EE crypto/transport POSTs per minute per user (the `/chats/`, `/rooms/` and `/mls/` prefixes). Set generously — throttling these is what breaks message delivery. |
 
 ### `.env` files
 
@@ -104,10 +104,12 @@ mass registration via curl/POST is stopped outright.
 | Limit | Scope | Key |
 |---|---|---|
 | 30 req/min | `POST /login` and `POST /register` | IP |
-| 60 req/min | All other `POST` web routes | IP |
+| 240 req/min | Authenticated `POST` web routes | user |
+| 600 req/min | E2EE crypto/transport `POST`s (`/chats/`, `/rooms/`, `/mls/`) | user |
 | 120 req/min | `/api/*` | OAuth bearer token, fallback IP |
+| 10 req/5 min | Second-factor verification (`/login/totp`, `/passkeys/*`, OAuth factor step) | IP |
 
-These are constants in `src/server.js` and not configurable via environment variables.
+All of these are configurable through the `EXTV_*_RATE_LIMIT` variables listed below.
 
 ## Hard limits (not configurable)
 
@@ -115,7 +117,8 @@ These are constants in `src/server.js` and not configurable via environment vari
 |---|---|
 | Post body | 5,000 chars (API; web trims) |
 | Comment body | 1,000 chars |
-| DM body | 5,000 chars |
+| DM ciphertext | 65,536 chars |
+| Room message ciphertext | 20,000 chars |
 | Media upload | 60 MB per file |
 | Avatar upload | 10 MB per file |
 | Sticker upload | 500 KB per file |

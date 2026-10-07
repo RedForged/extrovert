@@ -43,11 +43,11 @@ Full flow documentation: [OAuth 2.0 & OpenID Connect](oauth-oidc.md).
 | PATCH | `/accounts/update_credentials` | Bearer (`profile`) | Update `display_name` (≤100), `bio` (≤500), `theme` (`light`/`dark`/`default`), `html` (custom profile markup ≤20k chars, sanitized), and `css` (custom profile styles ≤10k chars, sanitized). |
 | POST | `/accounts/avatar` | Bearer (`profile`) | Multipart `avatar` (image, ≤10 MB) → resized 200×200 JPEG. |
 | DELETE | `/accounts/me` | Bearer (`write`) | Permanently delete your account. Body: `password`*. |
-| GET | `/accounts/tokens` | Bearer (`read` or `profile`) | List your personal access tokens (`id, name, token_prefix, scopes, created_at, expires_at`). |
-| POST | `/accounts/tokens` | Bearer (`write` or `profile`) | Create a Personal Access Token (`name`*, `scopes`, `expires_in_days`). Returns full `token` (shown once). |
-| DELETE | `/accounts/tokens/:id` | Bearer (`write` or `profile`) | Revoke a personal access token. |
-| GET | `/accounts/sessions` | Bearer (`read` or `profile`) | List your active login sessions. |
-| DELETE | `/accounts/sessions/:id` | Bearer (`write` or `profile`) | Revoke an active login session. |
+| GET | `/accounts/tokens` | Bearer (`profile`) | List your personal access tokens (`id, name, token_prefix, scopes, created_at, expires_at`). |
+| POST | `/accounts/tokens` | Bearer (`profile`) | Create a Personal Access Token (`name`*, `scopes`, `expires_in_days`). Returns full `token` (shown once). |
+| DELETE | `/accounts/tokens/:id` | Bearer (`profile`) | Revoke a personal access token. |
+| GET | `/accounts/sessions` | Bearer (`profile`) | List your active login sessions. |
+| DELETE | `/accounts/sessions/:id` | Bearer (`profile`) | Revoke an active login session. |
 | GET | `/accounts/relationships?id=1,2,3` | Bearer (`read`) | Batch: `[{id, following, followed_by}]`. |
 | GET | `/accounts/:id` | Bearer (`read`) | Account (404 if outside your network). |
 | GET | `/accounts/:id/statuses` | Bearer (`read`) | Posts, newest first, `limit`+`cursor`. Network-gated. |
@@ -168,10 +168,11 @@ Engagement counts always target the **original** content (reposts don't split en
 | POST | `/rooms/:id/members/:uid/kick` | Bearer (`write`) | Kick member from room (`MANAGE_MEMBERS`). |
 | POST | `/rooms/:id/transfer` | Bearer (`write`) | Transfer founder ownership (`target_user_id`*). |
 | GET | `/rooms/:id/requests` | Bearer (`read`) | List pending join requests for private room. |
-| POST | `/rooms/:id/requests` | Bearer (`write`) | Approve or reject join request (`request_id`*, `action`: `approve`/`reject`). |
+| POST | `/rooms/:id/requests/:reqId/approve` | Bearer (`write`) | Approve a join request. |
+| POST | `/rooms/:id/requests/:reqId/reject` | Bearer (`write`) | Reject a join request. |
 | POST | `/rooms/:id/invite` | Bearer (`write`) | Invite user to room (`username`*). |
 | GET | `/rooms/:id/channels/:cid/messages` | Bearer (`read`) | Channel history, newest last, `cursor` (message id) → next 50. |
-| POST | `/rooms/:id/channels/:cid/messages` | Bearer (`write`) | Send. Must be `proto:"megolm"` + `ciphertext` + `group_session_id` (current session) unless the body is a sticker path. Broadcasts `message_create`. |
+| POST | `/rooms/:id/channels/:cid/messages` | Bearer (`write`) | Send. Non-sticker messages must be `proto:"mls"` with a `ciphertext` (≤20,000 chars); sticker paths are sent as plaintext bodies. Broadcasts `message_create`. |
 | DELETE | `/rooms/:id/channels/:cid/messages/:mid` | Bearer (`write`) | Delete message (author or `MANAGE_MESSAGES`). Broadcasts `message_delete`. |
 | POST | `/rooms/:id/session` | Bearer (`write`) | Publish/rotate your Megolm session. Body: `keys:[{recipient_id, encrypted_key}]`, `member_ids:[]`, `rotate`. Pushes `room_session_key` to recipients via WebSocket in realtime. |
 | POST | `/rooms/:id/session/sync` | Bearer (`write`) | **Unified Room Key Sync:** Atomically publish new keys (`keys: [{recipient_id, encrypted_key}]`), cover keyless members (`member_ids: []`), receive pending keys for yourself, ACK delivered keys (`ack_key_ids`), and inspect `missing_members` in 1 round-trip. |
@@ -182,6 +183,10 @@ Engagement counts always target the **original** content (reposts don't split en
 | GET | `/rooms/:id/bundle/:username` | Bearer (`read`) | Single member's Olm bundle for room key-sharing. |
 
 Rooms support 100% REST API parity alongside the web UI under `/rooms/*`.
+
+> The `/rooms/:id/session*` and `/rooms/:id/bundle*` rows above are the retired Megolm
+> key-distribution surface, kept for older clients. MLS clients use the `/mls/*` endpoints
+> (see below) and the channel message endpoint with `proto: "mls"`.
 
 ## Direct messages
 
@@ -196,12 +201,57 @@ All require mutual followers with the peer.
 | GET | `/conversations/prekeys/backup` | Bearer (`read:direct`) | Your stored account backup. |
 | GET | `/conversations/prekeys/count` | Bearer (`read:direct`) | Remaining one-time prekeys. |
 | GET | `/conversations/:username` | Bearer (`read:direct`) | History, newest first + `next` cursor; `limit` ≤100. |
-| POST | `/conversations/:username/messages` | Bearer (`write:direct`) | Send. Non-sticker messages must be `proto:"olm"` with `sender_ciphertext`. |
+| POST | `/conversations/:username/messages` | Bearer (`write:direct`) | Send. Non-sticker messages must be `proto:"mls"` with the ciphertext in `body` (≤65,536 chars) and your encrypted self-copy in `sender_ciphertext`. |
 | GET | `/conversations/:username/bundle` | Bearer (`read:direct`) | Peer's Olm bundle (claims one one-time prekey). |
 | GET | `/conversations/:username/safety` | Bearer (`read:direct`) | Both sides' ed25519 + curve25519 keys. |
 | GET | `/conversations/:username/keys` | Bearer (`read:direct`) | Peer's legacy public key. |
-| PATCH | `/messages/:id` | Bearer (`write:direct`) | Edit (author only, ≤5000, re-encrypted). |
+| PATCH | `/messages/:id` | Bearer (`write:direct`) | Edit (author only, ≤65,536, re-encrypted). |
 | DELETE | `/messages/:id` | Bearer (`write:direct`) | Delete (author only). |
+
+> The `/conversations/keys*`, `/conversations/prekeys*`, `…/bundle` and `…/safety` rows are
+> the retired Olm key surface, kept for older clients; MLS clients do their key exchange
+> through `/mls/*`.
+
+## Bots
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| POST | `/bots` | Bearer (`write`) | Create a bot you own; returns its first long-lived token (shown once). |
+| GET | `/bots` | Bearer (`read`) | Your bots (admins: all). |
+| DELETE | `/bots/:id` | Bearer (`write`) | Delete a bot you own (admins: any). Tokens, webhook and content go with it. |
+| POST | `/bots/:id/tokens` | Bearer (`write`) | Issue another token (returned once). |
+| GET | `/bots/:id/tokens` | Bearer (`read`) | Token prefixes (never the secrets). |
+| DELETE | `/bots/:id/tokens/:tokenId` | Bearer (`write`) | Revoke a token. |
+| POST | `/bots/webhook` | Bearer (`write`) | Bot: register a webhook URL; the HMAC signing secret is returned once. |
+| POST | `/bots/webhook/rotate` | Bearer (`write`) | Bot: rotate the webhook signing secret. |
+| GET | `/bot/me` | Bearer (`read`) | Own identity (bots and humans). |
+| GET | `/timelines/mentions` | Bearer (`read`) | Posts that mentioned you — the reply-bot trigger source. |
+
+## MLS (end-to-end encryption)
+
+The device/group endpoints the E2EE client drives (`src/routes/mls.js`, mounted at `/mls`,
+authenticated with the web session):
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/mls/device/register` | Register this browser profile as an MLS device. |
+| GET | `/mls/devices` | List your devices. |
+| DELETE | `/mls/devices/:deviceId` | Remove a device. |
+| POST | `/mls/keypackages` | Publish public KeyPackages for a device. |
+| GET | `/mls/keypackages/status` | How many KeyPackages remain. |
+| GET | `/mls/keypackages/:userId` | Fetch (and consume) a peer's KeyPackages. |
+| POST | `/mls/keypackages/consume` | Mark KeyPackages as consumed. |
+| GET | `/mls/welcomes` | Pending Welcomes addressed to your devices. |
+| POST | `/mls/welcomes/ack` | Acknowledge Welcomes. |
+| POST | `/mls/groups/init` | Create an MLS group. |
+| POST | `/mls/groups/:groupId/proposals` | Submit a proposal. |
+| POST | `/mls/groups/:groupId/commit` | Submit a commit (membership or key change). |
+| GET | `/mls/groups/:groupId/commits` | The ordered commit log for a group. |
+| POST | `/mls/backup` | Store your password-encrypted client backup. |
+| GET | `/mls/config` | Server MLS settings (`legacy_e2ee_enabled: false`). |
+
+Payload shapes live in the client (`public/mls-client.js`) and are exercised by the suites
+under `scripts/mls-*.js` (`npm run test:mls`).
 
 ## Announcement
 

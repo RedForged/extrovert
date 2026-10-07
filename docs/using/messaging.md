@@ -9,31 +9,25 @@ Direct messages are **end-to-end encrypted**, and — consistent with the networ
 
 ## Encryption model
 
-Two generations of message protocol, stored per message in the `proto` column:
+Messages are encrypted with **MLS (RFC 9420)**. The protocol is marked per message in the `proto` column (`mls`), and the server **enforces** it: a non-sticker message whose `proto` isn't `mls` is rejected with **426 Upgrade Required** (`LegacyProtocolRetired: …`). The ciphertext lives in `body` (≤ 65,536 characters) and your own encrypted self-copy in `sender_ciphertext` — the server stores nothing else.
 
-| proto | Scheme | Ciphertext columns |
+### Your key material (the server only stores public or encrypted parts)
+
+| Concept | Where | Contents |
 |---|---|---|
-| `rsa` | Legacy: per-message RSA wrapping | `key_for_sender`, `key_for_recipient` |
-| `olm` | Signal-style Olm (current) | `sender_ciphertext` |
-
-The server **enforces** encryption: any non-sticker message that isn't Olm-encrypted is rejected (`End-to-end encryption required. All messages must be Olm-encrypted.`). The server only ever stores ciphertext for Olm messages.
-
-### Your key material (server only stores public parts)
-
-| Concept | Stored where | Contents |
-|---|---|---|
-| RSA public key + encrypted private key | `user_public_keys` | Legacy keypair; the private key is stored **encrypted** (client-encrypted) so the server can't use it. |
-| Olm identity | `olm_identity` | Curve25519 `identity_key`, `ed25519_key` (for safety numbers), a `fallback_key`, and an optional client-encrypted `backup`. |
-| One-time prekeys | `olm_prekeys` | Published Curve25519 public prekeys; **claimed (marked used) atomically** when someone fetches your bundle. |
-
-Your private halves (account, identity, session states) always live client-side. The only exception is the *encrypted* RSA private key, which the server stores but can never read.
+| MLS devices | `/mls/device/register`, `/mls/devices` | One MLS device per browser profile; the account can list and remove them. |
+| Key packages | `/mls/keypackages` | Public MLS KeyPackages, published per device and **consumed** when a peer starts a group with you. |
+| MLS group state | client only | Epoch and message secrets stay in the browser; the server keeps ciphertext plus your encrypted self-copy. |
+| Welcomes | `/mls/welcomes`, `/mls/welcomes/ack` | Pending MLS Welcome messages addressed to your devices. |
+| History backup | `/mls/backup` | Optional password-encrypted account backup, restorable on a new browser session. |
 
 ### Key lifecycle
 
-- **Publish:** your client uploads its identity + prekey bundle (`POST /chats/prekeys` web, or `POST /api/v1/conversations/prekeys` API). The server responds with how many one-time prekeys remain available (`available`).
-- **Fetch a peer's bundle:** `GET /chats/<username>/bundle` (or the API twin) — returns their identity key, ed25519 key, fallback key, and **one claimed one-time prekey**. Claiming consumes the prekey, forcing peers to publish fresh ones.
-- **Backup / recovery:** the client can upload a password-encrypted account backup (`backup` in `prekeys`) and download it later (`GET /chats/prekeys/backup`) to recover a new browser session.
-- **Safety numbers:** `GET /chats/<username>/safety` returns both users' ed25519 + curve25519 keys so clients can render a compare-and-verify safety number.
+- **Publish:** your client registers its device (`POST /mls/device/register`) and uploads public key packages (`POST /mls/keypackages`); `GET /mls/keypackages/status` reports how many are left.
+- **Start a conversation:** fetching a peer's packages (`GET /mls/keypackages/:userId`) **consumes** them. The initiator creates the group (`POST /mls/groups/init`) and the peer picks up the Welcome (`GET /mls/welcomes`).
+- **Change the group:** membership and key changes are MLS commits (`POST /mls/groups/:groupId/proposals`, `…/commit`), with the ordered history under `GET /mls/groups/:groupId/commits` so every device lands on the same epoch.
+- **Backup / recovery:** `POST /mls/backup` stores a password-encrypted copy of your client state.
+- **Config:** `GET /mls/config` reports the server's MLS settings, including `legacy_e2ee_enabled: false`.
 
 ## Conversation features
 
@@ -41,9 +35,9 @@ Your private halves (account, identity, session states) always live client-side.
 |---|---|
 | List | `/chats` — last message preview, unread counts, **online presence** per conversation, and the peer's curve25519 key |
 | History | Oldest-first thread; API returns newest-first with a cursor for backward pagination |
-| Send | Body ≤ 5,000 chars; must be Olm-encrypted unless it's a sticker path |
+| Send | `proto: "mls"` with a ciphertext ≤ 65,536 chars; sticker paths are sent as plaintext |
 | Stickers | A message whose body starts with `/uploads/stickers/` is allowed as a plaintext sticker path (see [Stickers](stickers.md)) |
-| Edit | Author only, up to 5,000 chars, re-encrypted; recorded in edit history, marked "(edited)" |
+| Edit | Author only, up to 65,536 chars, re-encrypted; recorded in edit history, marked "(edited)" |
 | Delete | API: `DELETE /api/v1/messages/:id`; the record (including ciphertext) is removed |
 | Read state | Unread counts per conversation; opening a thread marks it read |
 | Live delivery | New messages are pushed in realtime over the WebSocket `new_dm` event to **every open tab** of the recipient (ciphertext only) |
@@ -65,7 +59,7 @@ Sending a DM creates a `message` notification for the recipient (inbox + SSE + b
 
 ## Sending messages via API
 
-Example (Olm protocol):
+Example:
 
 ```
 POST /api/v1/conversations/alice/messages
@@ -73,22 +67,21 @@ Authorization: Bearer <token>
 Content-Type: application/json
 
 {
-  "body": "ciphertext…",                // or the raw body for sticker paths
-  "proto": "olm",
-  "sender_ciphertext": "…",
-  "key_for_sender": "…",                // optional legacy fields
-  "key_for_recipient": "…"
+  "body": "mls-ciphertext…",        // ciphertext, or the plaintext path for a sticker
+  "proto": "mls",
+  "sender_ciphertext": "…",         // your own encrypted copy, for your other devices
+  "sender_device_id": "…"
 }
 ```
 
-Both participants must be mutual followers or the server returns `403`.
+Both participants must be mutual followers or the server returns `403`; a missing or non-`mls` protocol returns `426`.
 
 ## Migration & legacy data
 
-Older messages created under the RSA scheme remain readable by clients that support `proto: rsa`. New messages default to Olm. The `messages` table carries `proto`, `sender_ciphertext`, and `edited_at` columns via automatic migration.
+Extrovert's earlier Olm/Megolm stack has been retired. The client no longer bundles it, and the server refuses to accept anything but `proto: "mls"` — the response is `426 Upgrade Required` with a message telling the client to refresh. `GET /mls/config` reports `legacy_e2ee_enabled: false`.
 
 ## Client-side notes (for implementers)
 
-- The web client implements the Olm flows in `public/e2ee.js`; the Olm library is bundled as `public/lib/olm.js` + `olm.wasm` (no external CDN).
-- The self-session design: the client persists its self-inbound session at creation baseline so history ratchets are stable across reloads (guarded by `scripts/self-session-test.js` and `scripts/session-reload-test.js`).
-- Protocol regression tests: `scripts/crypto-test.js` (Olm), `scripts/megolm-room-test.js` (group), `scripts/live-dm-test.js` (WS delivery), `scripts/secure-dm-test.js` (Additional Security mode), `scripts/multidevice-decrypt-test.js` (multi-device / key-rotation DM decryption).
+- The web client implements the MLS flows in `public/e2ee.js`, on top of the bundled RFC 9420 implementation: `public/lib/mls.js`, built from `src/client-mls/` with `npm run build:mls` (no external CDN).
+- History is restored from the device-local store plus the optional password-encrypted backup (`/mls/backup`).
+- Regression coverage lives in the MLS suites — `npm run test:mls` runs `scripts/mls-conformance-test.js`, `scripts/mls-db-test.js`, `scripts/mls-api-test.js`, `scripts/mls-e2ee-chat-test.js`, `scripts/mls-welcome-recovery-test.js` and `scripts/mls-client-regression-test.js`; `npm run test:ietf` checks the RFC vectors and `npm run test:interop` cross-checks against the Rust implementation.

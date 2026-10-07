@@ -36,7 +36,7 @@ src/
     notifications.js   /inbox
     chats.js           DMs: threads, send/edit, pubkey/prekeys/backup/bundle/safety
     rooms.js           rooms, channels, roles, members, join requests, reports,
-                       Megolm session endpoints, voice members
+                       MLS device/group endpoints, voice members
     settings.js        theme, account deletion, developer OAuth apps
     admin.js           user management, rooms, reports, announcement
     stickers.js        upload/manage/sticker list
@@ -49,11 +49,11 @@ src/
     docs.js            Swagger UI + OpenAPI JSON
   views/               EJS templates (feed, profile, chat, rooms/, admin…)
 public/
-  app.css theme.css    Design system + themes (Fraunces, Hanken Grotesk)
+  theme.css            Design system + themes (Fraunces, Hanken Grotesk)
   *.js                 Client logic: compose, interact, e2ee, rooms, room-e2ee,
                        webrtc, webrtc-ui, webrtc-room, stickers, avatar,
                        push-register, announcement, admin, copy-ref
-  lib/olm.js + .wasm   Bundled Olm (no CDN)
+  lib/mls.js           Bundled MLS (RFC 9420, no CDN)
   sw.js                Service worker for call push notifications
   manifest.webmanifest PWA manifest
 scripts/
@@ -61,11 +61,10 @@ scripts/
   api-test.js          npm run test:api — API integration tests (node --test)
   owasp-test.js        npm run test:owasp — OWASP Top 10 security suite (node --test)
   asvs-test.js         npm run test:asvs — OWASP ASVS v4.0 suite, automatable subset (node --test)
-  crypto-test.js       npm run test:crypto — Olm protocol regression tests
-  megolm-room-test.js  npm run test:megolm — group E2EE session/rotation tests
-  megolm-integration-test.js — server-side Megolm endpoint flow
-  live-dm-test.js      npm run test:live-dm — WS new_dm delivery test
-  self-session-test.js / session-reload-test.js — DM ratchet reload regression
+  mls-conformance-test.js / mls-db-test.js / mls-api-test.js — npm run test:mls — protocol, schema and endpoint suites
+  mls-e2ee-chat-test.js / mls-welcome-recovery-test.js / mls-client-regression-test.js — end-to-end chat, welcome recovery, client regressions
+  mls-ietf-vectors-test.js — npm run test:ietf — RFC 9420 test vectors
+  mls-rs-interop-test.js — npm run test:interop — interop against the Rust harness in scripts/interop-mls-rs/
   test-offline-call.js — offline-call flow vs real signaling server (isolated DB)
   smoke.sh             HTTP end-to-end smoke test
   smoke_media.sh       upload + repost smoke test
@@ -83,11 +82,10 @@ scripts/
 | test:api | `npm run test:api` | API integration suite (`node --test`) |
 | test:owasp | `npm run test:owasp` | OWASP Top 10 security suite (access control, crypto-at-rest, injection, XSS, misconfig, dependency audit, auth, CSRF, logging, SSRF) |
 | test:asvs | `npm run test:asvs` | OWASP ASVS v4.0 suite — automatable Level 1 (+ select L2) items mapped to chapter/ID (V2–V14), with a MANUAL_REVIEW/N-A scorecard for non-automatable items |
-| test:crypto | `npm run test:crypto` | Olm protocol regression |
-| test:megolm | `npm run test:megolm` | Megolm room-session tests |
-| test:megolm:integration | `npm run test:megolm:integration` | Server Megolm flow |
-| test:live-dm | `npm run test:live-dm` | Live WS DM delivery |
-| test:self-session / test:session-reload | — | DM ratchet reload regressions |
+| test:mls | `npm run test:mls` | MLS conformance, DB, API, E2EE chat, welcome recovery and client regression suites |
+| test:ietf | `npm run test:ietf` | RFC 9420 test vectors |
+| test:interop | `npm run test:interop` | Interop against the Rust MLS harness |
+| test:scale | `npm run test:scale` | MLS group scale benchmark |
 | test:client | `npm run test:client` | Client API parity test suite (`node --test`) |
 | test:bootstrap | `npm run test:bootstrap` | Client bootstrap route test suite (`node --test`) |
 | test:client-e2ee | `npm run test:client-e2ee` | Client E2EE room batching & realtime push suite (`node --test`) |
@@ -108,17 +106,18 @@ node scripts/test-offline-call.js   # offline-call flow, isolated DB
 - `scripts/owasp-test.js` boots the full app (session + CSRF for web routes, Bearer tokens for the API) and covers the OWASP Top 10 (2021): broken access control, crypto failures (bcrypt + OAuth tokens hashed at rest), injection/SQLi/XSS, insecure design (rate limiting, referral anti-farming), misconfiguration (helmet headers, no stack leaks), vulnerable components (`npm audit`), auth failures (session regeneration, enumeration), integrity failures (CSRF, open redirects, prototype pollution), logging (audit log), and SSRF (push endpoint validation). It runs `npm audit` for A06 and skips gracefully offline.
 - `scripts/asvs-test.js` maps tests to OWASP ASVS v4.0 chapter/IDs (V2 Authentication, V3 Sessions, V4 Access, V5 Validation, V6 Stored Crypto, V7 Error/Logging, V8 Data Protection, V10 Malicious Code, V11 Business Logic, V12 Files, V13 API, V14 Config). It runs with `TRUST_PROXY=loopback` + `X-Forwarded-Proto: https` so the Secure-cookie requirement (3.1.3) is exercised like production. Items that cannot be black-box verified (V1, TLS/proxy config V9, business-logic review, etc.) are listed in the suite's scorecard as MANUAL_REVIEW with guidance, never counted as passing.
 - The signaling tests spin up a real `WebSocketServer` and drive it with mock HTTP upgrade requests.
-- The Olm/Megolm tests use the real `@matrix-org/olm` package to validate the exact protocol patterns the browser frontend (`public/e2ee.js`, `public/room-e2ee.js`) relies on.
+- The MLS suites run against the real `ts-mls` implementation, the same code the browser loads (`src/client-mls/`, bundled to `public/lib/mls.js` with `npm run build:mls`).
 
 ## Client-side crypto modules
 
 | File | Responsibility |
 |---|---|
-| `public/e2ee.js` | 1:1 DM crypto (Olm), key publishing, bundle fetching, safety numbers, backup |
-| `public/room-e2ee.js` | Room Megolm sessions, key wrap/unwrap via 1:1 Olm, rotation |
+| `public/e2ee.js` | Client E2EE entry point (MLS): device keys, group state, backups |
+| `public/room-e2ee.js` | Room E2EE glue: joins the room's MLS groups, decrypts channel messages |
+| `public/lib/mls.js` | Bundled MLS implementation (`src/client-mls/`, `npm run build:mls`) |
 | `public/webrtc.js` / `webrtc-ui.js` | 1:1 calls + UI |
 | `public/webrtc-room.js` | Voice channels |
-| `public/rooms.js` | Room chat UI + Megolm send/receive |
+| `public/rooms.js` | Room chat UI + MLS send/receive |
 | `public/push-register.js` | VAPID subscription registration |
 | `public/sw.js` | Push service worker (call notifications) |
 
