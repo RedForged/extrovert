@@ -58,8 +58,6 @@
   }
 
   function runMatrix() {
-    fadeIn(addNode(Object.assign(document.createElement('div'), { className: 'pfx-overlay' })));
-
     var canvas = addNode(Object.assign(document.createElement('canvas'), { className: 'pfx-canvas' }));
     fadeIn(canvas);
     var ctx = canvas.getContext('2d');
@@ -73,18 +71,25 @@
 
     var start = Date.now();
     function draw() {
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.28)';
+      // Erase the previous frames instead of painting black over them, so the
+      // rain trails stay transparent and the page keeps its own background.
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.22)';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.globalCompositeOperation = 'source-over';
       ctx.font = size + 'px monospace';
+      ctx.shadowColor = 'rgba(47, 220, 134, 0.7)';
+      ctx.shadowBlur = 6;
       for (var i = 0; i < cols; i++) {
         var y = drops[i] * size;
-        ctx.fillStyle = '#c9ffe4';
+        ctx.fillStyle = '#b6ffd8';
         ctx.fillText(glyphs.charAt(Math.floor(Math.random() * glyphs.length)), i * size, y - size);
         ctx.fillStyle = '#2fdc86';
         ctx.fillText(glyphs.charAt(Math.floor(Math.random() * glyphs.length)), i * size, y);
         if (y > canvas.height && Math.random() > 0.96) drops[i] = 0;
         drops[i] += 1;
       }
+      ctx.shadowBlur = 0;
       if (Date.now() - start < 900) raf = requestAnimationFrame(draw);
     }
     raf = requestAnimationFrame(draw);
@@ -112,7 +117,7 @@
     });
     page.classList.add('pfx-flying');
 
-    // Blend the layer out on the same one-second budget as everything else,
+    // Blend the rain out on the same one-second budget as everything else,
     // so the effect finishes by fading instead of being cut off.
     setTimeout(function () {
       nodes.forEach(function (n) { n.classList.remove('pfx-in'); });

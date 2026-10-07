@@ -1131,12 +1131,6 @@ a.conv-row:hover { color: var(--primary); }
 
 /* ── Profile effects (opt-in per profile, 1 second max) ───────────── */
 
-.pfx-overlay {
-  position: fixed; inset: 0; z-index: 9990; pointer-events: none;
-  background: #000; opacity: 0; transition: opacity 220ms ease-in-out;
-}
-.pfx-overlay.pfx-in { opacity: 1; transition-duration: 180ms; }
-
 .pfx-canvas {
   position: fixed; inset: 0; z-index: 9991; pointer-events: none;
   opacity: 0; transition: opacity 220ms ease-in-out;
@@ -1179,7 +1173,7 @@ a.conv-row:hover { color: var(--primary); }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .pfx-overlay, .pfx-canvas, .pfx-slice { display: none !important; }
+  .pfx-canvas, .pfx-slice { display: none !important; }
   .pfx-page.pfx-flying > *, .pfx-page.pfx-glitching { animation: none !important; }
 }
 

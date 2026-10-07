@@ -64,8 +64,8 @@ Modern CSS is safe by itself (it can't run JavaScript); these rules keep profile
 Pick one in the profile editor; it plays **once** when someone opens your profile, then the page
 settles into its normal state.
 
-- **Matrix** — the page goes black-green, glyphs rain down a canvas, and the page's text flies in
-  from all four sides before the layer lifts.
+- **Matrix** — green glyphs rain down over the page (no backdrop; the page keeps its own
+  background) while the page's text flies in from all four sides.
 - **Glitch** — the page jitters with chromatic offsets and glowing horizontal slices.
 
 Rules that apply to every effect:
