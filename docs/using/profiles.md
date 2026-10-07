@@ -66,7 +66,8 @@ settles into its normal state.
 
 - **Matrix** — green glyphs rain down over the page (no backdrop; the page keeps its own
   background) while the page's text flies in from all four sides.
-- **Glitch** — the page jitters with chromatic offsets and glowing horizontal slices.
+- **Glitch** — the whole page picks up a subtle scanline tear: micro displacement, faint hue
+  shifts and a fine scanline layer over every part of the viewport.
 
 Rules that apply to every effect:
 

@@ -1147,33 +1147,42 @@ a.conv-row:hover { color: var(--primary); }
   to { opacity: 1; filter: none; transform: none; color: inherit; text-shadow: none; }
 }
 
+/* Whole-page glitch: a micro displacement of the content plus a fine scanline
+   and tear layer covering the viewport, so every part of the page is affected
+   instead of a few stray blocks. */
 .pfx-page.pfx-glitching { animation: pfx-glitch 900ms steps(2, end) both; }
 @keyframes pfx-glitch {
   0% { transform: none; filter: none; }
-  10% { transform: translate3d(-5px, 1px, 0) skewX(-1.4deg); filter: hue-rotate(45deg) saturate(1.7); }
-  25% { transform: translate3d(4px, -1px, 0); filter: hue-rotate(-45deg) saturate(1.5); }
-  40% { transform: translate3d(-3px, 2px, 0) skewX(1deg); filter: none; }
-  55% { transform: translate3d(3px, 0, 0); filter: hue-rotate(30deg) saturate(1.6); }
-  70% { transform: translate3d(-2px, -1px, 0); filter: none; }
-  85% { transform: translate3d(1px, 0, 0); filter: hue-rotate(-20deg); }
+  12% { transform: translate3d(-1.5px, 0.5px, 0) skewX(-0.35deg); filter: hue-rotate(12deg) saturate(1.08); }
+  28% { transform: translate3d(1.5px, -0.5px, 0); filter: hue-rotate(-12deg) saturate(1.06); }
+  44% { transform: translate3d(-1px, 0.5px, 0) skewX(0.3deg); filter: none; }
+  60% { transform: translate3d(1px, 0, 0); filter: hue-rotate(8deg) saturate(1.05); }
+  76% { transform: translate3d(-0.5px, -0.5px, 0); filter: none; }
+  88% { transform: translate3d(0.5px, 0, 0); filter: hue-rotate(-6deg); }
   100% { transform: none; filter: none; }
 }
 
-.pfx-slice {
-  position: fixed; left: 0; right: 0; height: var(--pfx-h, 8px);
-  z-index: 9992; pointer-events: none; opacity: 0; mix-blend-mode: screen;
-  background: linear-gradient(90deg, rgba(126, 255, 178, 0.16), rgba(92, 223, 224, 0.14), rgba(255, 92, 138, 0.12));
-  animation: pfx-slice 420ms steps(3, end) both;
+.pfx-glitch-layer {
+  position: fixed; inset: -2px; z-index: 9992; pointer-events: none;
+  opacity: 0; transition: opacity 220ms ease-in-out; mix-blend-mode: overlay;
+  background-image:
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.05) 0 1px, rgba(0, 0, 0, 0.055) 1px 3px),
+    repeating-linear-gradient(0deg, rgba(126, 255, 178, 0.05) 0 2px, transparent 2px 8px),
+    repeating-linear-gradient(90deg, rgba(92, 223, 224, 0.035) 0 1px, transparent 1px 5px);
+  animation: pfx-glitch-layer 900ms steps(3, end) both;
 }
-.pfx-slice.pfx-in { opacity: 1; }
-@keyframes pfx-slice {
-  0% { transform: translate3d(var(--pfx-dx, 8px), 0, 0); opacity: 0.9; }
-  50% { transform: translate3d(calc(var(--pfx-dx, 8px) * -1), 0, 0); opacity: 0.55; }
-  100% { transform: none; opacity: 0; }
+.pfx-glitch-layer.pfx-in { opacity: 1; transition-duration: 180ms; }
+@keyframes pfx-glitch-layer {
+  0% { transform: none; background-position: 0 0, 0 0, 0 0; }
+  20% { transform: translate3d(-2px, 0, 0); background-position: 0 1px, 0 -2px, -2px 0; }
+  40% { transform: translate3d(1px, 1px, 0); background-position: 0 -1px, 0 2px, 2px 0; }
+  60% { transform: translate3d(-1px, 0, 0); background-position: 0 2px, 0 -1px, -1px 0; }
+  80% { transform: translate3d(1px, -1px, 0); background-position: 0 -2px, 0 1px, 1px 0; }
+  100% { transform: none; background-position: 0 0, 0 0, 0 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .pfx-canvas, .pfx-slice { display: none !important; }
+  .pfx-canvas, .pfx-glitch-layer { display: none !important; }
   .pfx-page.pfx-flying > *, .pfx-page.pfx-glitching { animation: none !important; }
 }
 

@@ -126,15 +126,7 @@
 
   function runGlitch() {
     page.classList.add('pfx-glitching');
-    for (var i = 0; i < 7; i++) {
-      var bar = addNode(document.createElement('div'));
-      bar.className = 'pfx-slice';
-      bar.style.setProperty('--pfx-h', (4 + Math.round(Math.random() * 26)) + 'px');
-      bar.style.top = Math.round(Math.random() * 92) + 'vh';
-      bar.style.setProperty('--pfx-dx', ((Math.random() < 0.5 ? -1 : 1) * (6 + Math.round(Math.random() * 26))) + 'px');
-      bar.style.animationDelay = Math.round(i * 60) + 'ms';
-      fadeIn(bar);
-    }
+    fadeIn(addNode(Object.assign(document.createElement('div'), { className: 'pfx-glitch-layer' })));
   }
 
   try {
