@@ -3,6 +3,7 @@
     <h2>Settings</h2>
     <% if (locals.mailError) { %><div class="flash err"><span class="flash-ico"><%- include('partials/icon', { name: 'alert', size: 18 }) %></span><span><%= mailError %></span></div><% } %>
     <% if (locals.mailSent) { %><div class="flash ok"><span class="flash-ico"><%- include('partials/icon', { name: 'check', size: 18 }) %></span><span>Verification email sent — check your inbox (and spam folder).</span></div><% } %>
+    <% if (locals.mailNotice) { %><div class="flash"><span class="flash-ico"><%- include('partials/icon', { name: 'alert', size: 18 }) %></span><span><%= mailNotice %></span></div><% } %>
     <form method="post">
       <input type="hidden" name="_csrf" value="<%= csrfToken %>">
       <label for="settings-theme">Theme</label>

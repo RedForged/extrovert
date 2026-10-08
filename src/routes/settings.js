@@ -22,7 +22,7 @@ function emailStatusFor(user) {
   };
 }
 
-function renderSettings(res, user, { mailError = null, mailSent = false } = {}) {
+function renderSettings(res, user, { mailError = null, mailSent = false, mailNotice = null } = {}) {
   const usage = drive.quotaState(user.id);
   res.render('settings', {
     theme: getUserTheme(user.id),
@@ -35,7 +35,25 @@ function renderSettings(res, user, { mailError = null, mailSent = false } = {}) 
     fmt: drive.fmt,
     mailError,
     mailSent,
+    mailNotice,
   });
+}
+
+// A mailer result of { captured: true } means the message was written to
+// data/outbox on this server instead of being delivered — telling the user
+// "sent" in that case is how a broken mail setup looks like nothing happening.
+function mailOutcomeFlash(result) {
+  if (result && result.captured) {
+    const file = result.messageId ? ` (data/outbox/${result.messageId}.eml)` : '';
+    return {
+      mailNotice: 'This server could not deliver the email, so it was saved on the server instead' + file +
+        '. An admin can open that file and pass the link on, or fix the mail configuration at /admin/mail.',
+    };
+  }
+  if (result && result.ok === false) {
+    return { mailError: 'The email could not be delivered: ' + (result.error || 'unknown error') + '. Check /admin/mail on the server.' };
+  }
+  return { mailSent: true };
 }
 
 router.get('/', (req, res) => {
@@ -107,7 +125,7 @@ router.post('/email', (req, res) => {
   db.setUserEmail(user.id, email);
   db.deleteEmailVerification(user.id);
   emailVerify.sendVerificationEmail({ userId: user.id, to: email, req })
-    .then(() => renderSettings(res, db.getUserById(user.id), { mailSent: true }))
+    .then((result) => renderSettings(res, db.getUserById(user.id), mailOutcomeFlash(result)))
     .catch((err) => {
       console.error('settings/email: send failed', err);
       renderSettings(res, db.getUserById(user.id), {
@@ -129,7 +147,7 @@ router.post('/email/resend', (req, res) => {
     return renderSettings(res, user, { mailError: `Please wait ${waitSec}s before requesting another email.` });
   }
   emailVerify.sendVerificationEmail({ userId: user.id, to: user.email, req })
-    .then(() => renderSettings(res, db.getUserById(user.id), { mailSent: true }))
+    .then((result) => renderSettings(res, db.getUserById(user.id), mailOutcomeFlash(result)))
     .catch((err) => {
       console.error('settings/email/resend: send failed', err);
       renderSettings(res, db.getUserById(user.id), {
