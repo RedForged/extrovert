@@ -129,9 +129,19 @@ async function main() {
   ok(afterSave.text.includes('hello from alice'), 'posts still injected after save');
   ok(!/<script>alert\(1\)<\/script>/.test(afterSave.text), 'injected script never reaches the page');
 
-  console.log('\n/edit redirects into the in-page editor:');
+  console.log('\nEdit redirects into the in-page editor:');
   const editRedirect = await alice.get('/u/alice/edit');
   ok(editRedirect.status === 302, '/u/alice/edit redirects (302)');
+
+  console.log('\nCustom font is declared and offered in the editor:');
+  db.createUserFile({ userId: aliceId, kind: 'font', root: 'uploads', path: 'drive/test-font.ttf', mime: 'font/ttf', size: 1234, name: 'My Test Font.ttf' });
+  db.setUserFont(aliceId, '/uploads/drive/test-font.ttf');
+  const withFont = await alice.get('/u/alice');
+  ok(/@font-face[^}]*font-family: 'My Test Font'/.test(withFont.text), 'owner page injects the @font-face');
+  ok(withFont.text.includes('/u/alice/font?v='), '@font-face points at the stable font URL');
+  ok(withFont.text.includes('data-font-family="My Test Font"'), 'font family exposed to the editor');
+  const visitorView = await bob.get('/u/alice');
+  ok(/@font-face[^}]*font-family: 'My Test Font'/.test(visitorView.text), 'visitors get the custom font too');
 
   console.log('\nProfile fields save (auto-save endpoint):');
   const fieldsSave = await alice.post('/u/alice/edit/profile', {

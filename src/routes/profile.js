@@ -238,6 +238,7 @@ router.get('/:username', async (req, res, next) => {
 
     const custom = getCustomization(profileUser.id);
     const template = buildTemplate(custom);
+    const font = fontInfoFor(profileUser);
     const fragments = await buildProfileFragments(res, {
       viewer, profileUser, isOwn, canSeePosts, mutual, following,
       pronouns: parsePronouns(profileUser.pronouns),
@@ -245,9 +246,17 @@ router.get('/:username', async (req, res, next) => {
     const pageHtml = substituteSlots(sanitizeProfileHTML(template), fragments);
     const rawCss = custom.css && custom.css.trim() ? custom.css : DEFAULT_PROFILE_CSS;
 
+    // The uploaded custom font is declared for every viewer, so it is usable by
+    // name everywhere (in the editor's Font menu too) without a pasted snippet.
+    let css = sanitizeCSS(rawCss);
+    if (font) {
+      css = "@font-face { font-family: '" + font.family + "'; src: url('/u/"
+        + encodeURIComponent(profileUser.username) + "/font?v=" + font.id + "'); font-display: swap; }\n" + css;
+    }
+
     res.render('profile', {
       pageHtml,
-      css: sanitizeCSS(rawCss),
+      css,
       effect: custom.effect || '',
       isOwn,
       editor: isOwn ? {
@@ -256,7 +265,7 @@ router.get('/:username', async (req, res, next) => {
         pronouns: parsePronouns(profileUser.pronouns),
         pronounFieldsMax: PRONOUN_FIELDS_MAX,
         pronounLengthMax: PRONOUN_LENGTH_MAX,
-        customFont: fontInfoFor(profileUser),
+        customFont: font,
         templateHtml: template,
       } : null,
     });

@@ -25,6 +25,9 @@ release: the codebase carries its version in `package.json`, and the sections
   (avatar, name, bio, pronouns, effect, font) in a left panel and a collapsible HTML box, and **every
   edit auto-saves** (`POST /u/:username/edit/profile` for the fields, `/edit/visual` for the styling);
   `/u/:username/edit` now redirects to `?edit=1`.
+- **Custom fonts in the editor**: an uploaded profile font now has its `@font-face` injected
+  automatically for every viewer and appears **by name in the styling panel's Font menu**, so there's
+  no copy-paste snippet any more; the family is also usable directly in raw CSS.
 - **Report anything**: a single report flow reachable from a **⋯ menu** on posts, comments and
   profiles, plus the existing Report chip on room messages. Reports land in one admin queue
   (`/admin/reports`) that shows the type, context, the content (or the reporter's copy for encrypted

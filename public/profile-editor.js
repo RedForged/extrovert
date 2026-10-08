@@ -90,10 +90,12 @@
       root: root, editing: false, username: username, csrf: meta('csrf-token'),
       styleEl: document.getElementById('ev-user-css'),
       target: null, lastElement: null, hoverTarget: null, raf: null,
-      dirty: false, saveTimer: null, statusEl: null,
+      dirty: false, saveTimer: null, statusEl: null, fontFamily: '',
       ui: null, panel: null, outline: null, hover: null, nodes: {},
     };
     currentState = state;
+    var fieldsEl = document.getElementById('ev-fields');
+    if (fieldsEl && fieldsEl.dataset && fieldsEl.dataset.fontFamily) state.fontFamily = fieldsEl.dataset.fontFamily;
 
     toggle.addEventListener('click', function (e) {
       if (e && e.preventDefault) e.preventDefault();
@@ -483,6 +485,15 @@
 
   // ---------- panel ----------
 
+  // Font choices, including the user's uploaded custom font when they have one.
+  function fontOptions(state) {
+    var opts = FONTS.slice();
+    if (state.fontFamily) {
+      opts.push([state.fontFamily + ' (yours)', "'" + String(state.fontFamily).replace(/'/g, '') + "'"]);
+    }
+    return opts;
+  }
+
   function renderPanel(state) {
     var body = state.nodes.body;
     body.textContent = '';
@@ -524,7 +535,7 @@
     section(state, body, 'Text', [
       pxControl(state, 'Font size', 'font-size', 8, 48),
       selectControl(state, 'Weight', 'font-weight', WEIGHTS),
-      selectControl(state, 'Font', 'font-family', FONTS),
+      selectControl(state, 'Font', 'font-family', fontOptions(state)),
       segmentedControl(state, 'Align', 'text-align', [['left', 'Left'], ['center', 'Center'], ['right', 'Right']]),
       textControl(state, 'Line height', 'line-height'),
       textControl(state, 'Letter spacing', 'letter-spacing'),
