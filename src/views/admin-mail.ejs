@@ -184,17 +184,21 @@
       <code>dig +short TXT <%= records.domain %></code> once published. MX is only for receiving and is not needed —
       Extrovert only sends. See <a href="/docs/mail">docs/mail.md</a> for the full setup.
     </p>
+    <p class="muted" style="font-size:0.8rem;margin:2px 0 6px">
+      Copy each value <strong>without</strong> the surrounding quotes shown in your provider's list view — the DNS
+      provider adds those itself. Paste the value exactly as it appears below.
+    </p>
     <% if (records.dkim) { %>
       <label>DKIM — TXT, host <code><%= records.selector %>._domainkey.<%= records.domain %></code></label>
-      <textarea rows="4" readonly onclick="this.select()" style="font-family:monospace;font-size:0.8rem">"<%= records.dkim %>"</textarea>
+      <textarea rows="4" readonly onclick="this.select()" style="font-family:monospace;font-size:0.8rem"><%= records.dkim %></textarea>
     <% } else { %>
       <p class="muted">Set a From domain / DKIM domain first to see the DKIM record.</p>
     <% } %>
     <% if (records.domain) { %>
       <label>SPF — TXT, host <code><%= records.domain %></code></label>
-      <textarea rows="2" readonly onclick="this.select()" style="font-family:monospace;font-size:0.8rem">"<%= records.spf %>"</textarea>
+      <textarea rows="2" readonly onclick="this.select()" style="font-family:monospace;font-size:0.8rem"><%= records.spf %></textarea>
       <label>DMARC — TXT, host <code>_dmarc.<%= records.domain %></code></label>
-      <textarea rows="3" readonly onclick="this.select()" style="font-family:monospace;font-size:0.8rem">"<%= records.dmarc %>"</textarea>
+      <textarea rows="3" readonly onclick="this.select()" style="font-family:monospace;font-size:0.8rem"><%= records.dmarc %></textarea>
     <% } else { %>
       <p class="muted">Set a From domain / DKIM domain first to see the SPF and DMARC records.</p>
     <% } %>
