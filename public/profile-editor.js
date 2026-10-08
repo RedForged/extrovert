@@ -139,11 +139,7 @@
       buildUI(state);
       state.ui.hidden = false;
       startLoop(state);
-      // Open on the whole-page part, so page-wide options (font, colours,
-      // background) are the first thing offered.
-      var pagePart = null;
-      for (var pi = 0; pi < PARTS.length; pi++) if (PARTS[pi].selector === 'body') pagePart = PARTS[pi];
-      select(state, pagePart ? { kind: 'rule', selector: 'body', part: pagePart, el: document.body } : null);
+      select(state, null); // start with nothing selected — pick a part to style
     } else {
       if (state.raf) { cancelAnimationFrame(state.raf); state.raf = null; }
       state.hoverTarget = null;
@@ -536,7 +532,7 @@
     body.textContent = '';
     body.appendChild(partPicker(state));
     if (!state.target) {
-      body.appendChild(note('Click a part of your profile to style it — or pick one above.'));
+      body.appendChild(note('Click a part of your profile to style it, or pick one above. For page-wide options (font, colours, background) choose “Page (whole page)”.'));
       return;
     }
     var t = state.target;

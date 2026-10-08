@@ -69,7 +69,7 @@ when you exit**, so a later refresh just shows the page.
   presets; *Edges* (border width, style, colour, corner radius); *Spacing* (padding, margin); *Text*
   (size, weight, font, alignment, line height, letter spacing); *Effects* (opacity, shadow); *Layout*
   (display, width, height, gap).
-- **Page-wide options.** The editor opens on **Page (whole page)**: set the **Page font**, text
+- **Page-wide options.** Choose **Page (whole page)** in the Part menu: set the **Page font**, text
   colour and background there and they apply everywhere (header and posts included). Two more parts
   sit under **Page** — **Content links** (`.wrap a`) and **Content width** (`.wrap`). These write
   plain `body` / `.wrap` rules, so they never touch the app's nav.
