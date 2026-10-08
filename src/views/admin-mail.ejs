@@ -13,7 +13,7 @@
         <span>
           Last verification email<%= lastMail.to ? ' to ' + lastMail.to : '' %>:
           <% if (lastMail.delivered) { %><strong>delivered</strong>
-          <% } else if (lastMail.captured) { %><strong>not delivered</strong> — saved on the server as <code>data/outbox/<%= lastMail.messageId %>.eml</code> (outbound mail isn't reaching anyone yet)
+          <% } else if (lastMail.captured) { %><strong>not delivered</strong> — saved on the server as <code>data/outbox/<%= lastMail.messageId %>.eml</code><% if (lastMail.error) { %><br><span class="muted">Reason: <%= lastMail.error %></span><% } else { %> (outbound mail isn't reaching anyone yet)<% } %>
           <% } else { %><strong>delivery failed</strong>: <%= lastMail.error || 'unknown error' %>
           <% } %>
           · <%= new Date(lastMail.at).toLocaleString() %>
