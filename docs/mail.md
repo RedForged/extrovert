@@ -75,6 +75,38 @@ your DNS provider, using your current settings.
   block outbound port 25 by default (AWS EC2, GCP, Azure) — if direct
   delivery hangs, either enable port 25 egress or use `EXTV_MAIL_RELAY`.
 
+### Sending from a residential IP
+
+Consumer connections are commonly listed on **Spamhaus PBL**, a *policy* list of
+address ranges that should not originate mail. Receivers that consult it reject
+you at `RCPT`, and it is not a delisting you can request — only your ISP can
+change how the address is classified:
+
+```
+554 5.7.1 Service unavailable; Client host [<your-ip>] blocked using zen.spamhaus.org
+```
+
+Seeing this means direct-to-MX delivery cannot work from that address, no matter
+how correct your DNS is. Use a relay — an MTA on a VPS you control, or your
+ISP's authenticated submission server:
+
+- Set the relay host/port and SMTP username/password in `/admin/mail`
+  (`EXTV_MAIL_RELAY`, `EXTV_MAIL_USERNAME`, `EXTV_MAIL_PASSWORD`). They apply
+  immediately, without a restart.
+- Authorize the relay's sending IP in SPF — `v=spf1 mx a ip4:<relay-ip> -all` —
+  or the relayed mail fails SPF. The **SPF IP** field in `/admin/mail` fills
+  that mechanism for you; re-publish the SPF record afterwards.
+- Leave DKIM enabled. It still signs, stays aligned with your From domain, and
+  carries DMARC even when SPF alignment differs.
+- Check the Relay address **and** the `Connect <host>:25` line in the panel's
+  "Test the mail path" before assuming a DNS problem.
+
+Check whether an IP is listed (empty answer = not listed):
+
+```bash
+dig +short $(echo <ip> | awk -F. '{print $4"."$3"."$2"."$1}').zen.spamhaus.org
+```
+
 ## How verification works
 
 1. The user provides an email (registration form, `/settings`, or the REST
