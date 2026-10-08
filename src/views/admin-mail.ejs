@@ -144,19 +144,23 @@
         <code>noreply@yourdomain.com</code>) above and save, and these records will use that domain instead.
       </span></div>
     <% } %>
+    <% var _labels = records.domain.split('.'); %>
+    <% var _hasSub = _labels.length > 2; %>
+    <% var _rel = _hasSub ? _labels.slice(0, -2).join('.') : '@'; %>
     <p class="muted" style="font-size:0.85rem;margin:-4px 0 10px">
-      All three are plain <strong>TXT</strong> records. The host below is the <em>full</em> DNS name. Most providers
-      append the domain you registered for you — then you only type the part <em>left of it</em>. For example, if you
-      registered <code>redforged.eu</code> and the mail domain is <code><%= records.domain %></code>, the host boxes are:
+      All three are plain <strong>TXT</strong> records. The host below is the <em>full</em> DNS name; most providers
+      append the domain you registered for you, so you type only the part <em>left of</em> it.
     </p>
     <ul class="muted" style="font-size:0.8rem;margin:-6px 0 10px 18px;padding:0">
-      <li>SPF → <code><%= records.domain.replace(/^\S+?\./, '') %></code><%= records.domain.split('.').length > 2 ? ' (the whole name is ' + records.domain + '; SPF has no prefix)' : '' %></li>
-      <li>DKIM → <code><%= records.selector %>._domainkey.<%= records.domain.replace(/^\S+?\./, '') %></code></li>
-      <li>DMARC → <code>_dmarc.<%= records.domain.replace(/^\S+?\./, '') %></code></li>
+      <li>SPF → <code><%= _rel %></code> (full name <code><%= records.domain %></code>) — SPF always lives at the bare
+        domain; a <code>_spf</code>-style prefix means it is never found</li>
+      <li>DKIM → <code><%= records.selector %>._domainkey.<%= _rel %></code> (full name
+        <code><%= records.selector %>._domainkey.<%= records.domain %></code>)</li>
+      <li>DMARC → <code>_dmarc.<%= _rel %></code> (full name <code>_dmarc.<%= records.domain %></code>)</li>
     </ul>
     <p class="muted" style="font-size:0.85rem;margin:-6px 0 10px">
-      If your provider instead wants the full name, use exactly the host shown on each record below. SPF lives at the
-      bare domain (no <code>_spf</code> or similar) — a prefix there means it will never be found. Verify with
+      That assumes you registered <code><%= _hasSub ? _labels.slice(-2).join('.') : records.domain %></code> — if your
+      registered domain differs (e.g. a <code>co.uk</code> name), type the full name instead. Verify with
       <code>dig +short TXT <%= records.domain %></code> once published. MX is only for receiving and is not needed —
       Extrovert only sends. See <a href="/docs/mail">docs/mail.md</a> for the full setup.
     </p>
