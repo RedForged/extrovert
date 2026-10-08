@@ -220,9 +220,9 @@
     var state = currentState;
     if (!state || !state.editing) return;
     var el = e.target;
-    if (el === state.root || !state.root.contains(el)) { state.hover.hidden = true; return; }
+    if (el === state.root || !state.root.contains(el)) { if (state.hover) state.hover.hidden = true; return; }
     var t = resolveTarget(state, el);
-    drawBox(state.hover, t.el, 'hover', t.part.label || '');
+    setLayer(state.hover, targetElements(state, t), 'hover', t.part.label || '');
   }
 
   function onClick(e) {
@@ -245,23 +245,42 @@
     renderPanel(state);
   }
 
-  function paintOutline(state) {
-    if (!state.target) { state.outline.hidden = true; return; }
-    drawBox(state.outline, state.target.el, 'sel', state.target.part.label || '');
+  // A target is one object across the page: a rule target highlights *every*
+  // matching element (all posts), an inline target just the one element.
+  function targetElements(state, target) {
+    if (!target) return [];
+    if (target.kind === 'inline') return [target.el];
+    var els = [];
+    try { els = Array.prototype.slice.call(state.root.querySelectorAll(target.selector)); } catch (e) {}
+    if (!els.length && target.selector === 'body') els = [document.body];
+    if (!els.length && target.el) els = [target.el];
+    return els;
   }
 
-  function drawBox(box, el, kind, label) {
-    if (!box) return;
-    if (!el || !el.getBoundingClientRect) { box.hidden = true; return; }
-    var r = el.getBoundingClientRect();
-    if (r.width === 0 && r.height === 0) { box.hidden = true; return; }
-    box.hidden = false;
-    box.className = kind === 'hover' ? 'ev-hoverbox' : 'ev-selbox';
-    box.style.top = r.top + 'px';
-    box.style.left = r.left + 'px';
-    box.style.width = r.width + 'px';
-    box.style.height = r.height + 'px';
-    box.textContent = label;
+  function paintOutline(state) {
+    if (!state.target) { if (state.outline) state.outline.hidden = true; return; }
+    setLayer(state.outline, targetElements(state, state.target), 'sel', state.target.part.label || '');
+  }
+
+  function setLayer(layer, els, kind, label) {
+    if (!layer) return;
+    layer.textContent = '';
+    if (!els || !els.length) { layer.hidden = true; return; }
+    var labeled = false;
+    els.forEach(function (el) {
+      if (!el || !el.getBoundingClientRect) return;
+      var r = el.getBoundingClientRect();
+      if (r.width === 0 && r.height === 0) return;
+      var b = document.createElement('div');
+      b.className = 'ev-box ' + kind + (!labeled && label ? ' labeled' : '');
+      b.style.top = r.top + 'px';
+      b.style.left = r.left + 'px';
+      b.style.width = r.width + 'px';
+      b.style.height = r.height + 'px';
+      if (!labeled && label) { b.textContent = label; labeled = true; }
+      layer.appendChild(b);
+    });
+    layer.hidden = layer.children.length === 0;
   }
 
   function hideOverlay(state) {
@@ -338,9 +357,12 @@
     head.className = 'ev-part-title';
     head.textContent = t.part.label;
     body.appendChild(head);
-    body.appendChild(note(t.kind === 'rule'
-      ? 'Applies to every “' + t.part.label.toLowerCase() + '” on your page.'
-      : 'Applies to this element only.'));
+    var n = targetElements(state, t).length;
+    body.appendChild(note(t.kind === 'inline'
+      ? 'Applies to this element only.'
+      : (n > 1
+        ? 'One shared template — this restyles all ' + n + ' matching elements on your page.'
+        : 'Shared style — applies wherever this part appears.')));
 
     if (t.kind === 'inline' && isTextOnly(t.el)) {
       body.appendChild(textControl(state, 'Text', '@text'));

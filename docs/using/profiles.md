@@ -57,13 +57,14 @@ visitors while a side panel lets you restyle it — no tags, no class names.
 - **Pick a part.** Hover the page: the editor outlines what you're about to change and names it
   ("Post text", "Bio", "Follower stats", …). Click to select it, or choose any part from the **Part**
   menu (Header, Posts, Comments, Page).
+- **A part is one object, not one element.** Selecting a post part highlights **every** post at once
+  and it says so — "One shared template — this restyles all 3 matching elements". You're editing the
+  post template, so a single change restyles all your posts; you never edit an individual post. Only
+  your own authored elements are treated as single elements.
 - **Use the controls.** *Colour* (text, background, borders) with a palette of the theme's own colours
   and gradient presets; *Edges* (border width, style, colour, corner radius); *Spacing* (padding,
   margin); *Text* (size, weight, font, alignment, line height, letter spacing); *Effects* (opacity,
   shadow); *Layout* (display, width, height, gap).
-- **One change restyles every instance.** Styling a post writes a CSS rule for that part, so **all**
-  your posts update together — you never edit an individual post. Styling one of your own elements
-  affects only that element.
 - **Keep the power.** *Add property* takes any CSS declaration by hand, and *Raw CSS for this part*
   exposes the rule underneath. Everything is plain CSS in your profile stylesheet.
 
