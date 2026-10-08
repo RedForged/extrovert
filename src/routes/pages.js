@@ -4,6 +4,7 @@ const express = require('express');
 const { db, getMyStickers, searchUsers } = require('../db');
 const { buildFeed } = require('../feed');
 const { foafIds, friendIds } = require('../network');
+const { buildPostScopeCss } = require('../post-scope');
 
 const router = express.Router();
 
@@ -42,7 +43,10 @@ router.get('/', (req, res) => {
 
   const stickers = getMyStickers(user.id);
 
-  res.render('feed', { items, page, hasMore, q, discoverResults, suggested, stickers });
+  // Posts carry their author's profile style into the feed (scoped to each post).
+  const scopeCss = buildPostScopeCss(items);
+
+  res.render('feed', { items, page, hasMore, q, discoverResults, suggested, stickers, scopeCss });
 });
 
 // Compose.

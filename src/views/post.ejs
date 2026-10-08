@@ -1,5 +1,5 @@
-<%- include('partials/header') %>
-  <%- include('partials/post', { item: item }) %>
+<%- include('partials/header', { headExtraCss: scopeCss }) %>
+  <%- include('partials/post', { item: item, scoped: true }) %>
   <div class="center" style="margin-top:1.2rem">
     <a class="btn ghost" href="/"><%- include('partials/icon', { name: 'arrowLeft', size: 15 }) %> Back to feed</a>
   </div>

@@ -1,4 +1,4 @@
-<%- include('partials/header', { wrapClass: 'feed-wrap' }) %>
+<%- include('partials/header', { wrapClass: 'feed-wrap', headExtraCss: scopeCss }) %>
 <div class="feed-layout">
   <aside class="feed-sidebar feed-sidebar-left">
     <div class="card">
@@ -37,7 +37,7 @@
         <a class="btn" href="/compose"><%- include('partials/icon', { name: 'plus', size: 16 }) %> Write the first post</a>
       </div>
     <% } else { %>
-      <%- include('partials/post-list', { items: items }) %>
+      <%- include('partials/post-list', { items: items, scoped: true }) %>
       <div class="pager">
         <span class="pager-side">
           <% if (page > 1) { %>

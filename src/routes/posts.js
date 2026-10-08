@@ -1,7 +1,6 @@
 'use strict';
 
 const express = require('express');
-
 const {
   db, createPost, notifyMentions, getPostById, getDisplayPost, getUserById,
   toggleLike, addComment, commentsForPost, hasLiked, hasShared,
@@ -13,6 +12,7 @@ const {
 } = require('../db');
 const { canView } = require('../network');
 const { renderMarkdown } = require('../markdown');
+const { buildPostScopeCss } = require('../post-scope');
 const drive = require('../drive');
 
 const router = express.Router();
@@ -191,7 +191,7 @@ router.get('/:id', (req, res) => {
     followingAuthor: isFollowing(user.id, author.id), isOwn: author.id === user.id,
     comments: commentsForPost(interactId),
   };
-  res.render('post', { item });
+  res.render('post', { item, scopeCss: buildPostScopeCss([item]) });
 });
 
 // Share (engagement boost, a little more than like).

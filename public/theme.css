@@ -1895,6 +1895,11 @@ body.ev-editing .ev-fields {
 .ev-reset { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border-soft); }
 .ev-reset .muted { display: block; margin-top: 6px; line-height: 1.4; }
 
+/* A post carrying its author's profile style off-profile (feed, single post).
+   position:relative bounds the author's absolute positioning to the post;
+   isolation keeps their stacking local. */
+.ev-scope { position: relative; isolation: isolate; }
+
 .ev-status { font-size: var(--fs-sm); color: var(--text-muted); min-width: 66px; }
 .ev-status.saving { color: var(--text-secondary); }
 .ev-status.saved { color: var(--success); }

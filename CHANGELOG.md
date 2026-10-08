@@ -20,6 +20,11 @@ release: the codebase carries its version in `package.json`, and the sections
   pronouns, avatar and font.
 
 ### Features
+- **Your style follows your posts**: a post shown off-profile (home feed, `/posts/<id>`) now carries
+  its author's profile styling — card shape, colours, fonts and background — scoped to that post so
+  it can't affect the app or other people's posts. Page-level rules (`body`) are remapped onto the
+  post; viewport-covering effects are dropped; reposts use the original author's style; the custom
+  font is injected per author.
 - **Page-wide customizations**: the styling panel gains a **Page** group and opens on it — set the
   whole page's font, text colour and background, plus **Content links** (`.wrap a`) and **Content
   width** (`.wrap`), as plain `body` / `.wrap` rules that leave the app nav alone.

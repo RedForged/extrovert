@@ -3,6 +3,7 @@
   const time = locals.relTime || ((t) => new Date(t).toLocaleString());
   const mdRender = locals.renderMarkdown || ((s) => s);
 %>
+<% if (locals.scoped) { %><div class="ev-scope" data-ev-author="<%= item.authorUsername %>"><% } %>
 <article class="post">
   <% if (item.isRepost) { %>
     <div class="post-repost"><%- include('icon', { name: 'repost', size: 14 }) %> <%= item.reposterName %> reposted</div>
@@ -130,3 +131,4 @@
   </div>
   <% } %>
 </article>
+<% if (locals.scoped) { %></div><% } %>

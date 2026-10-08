@@ -245,6 +245,32 @@ function run() {
   const mentionXss = renderMarkdown('@alice<script>alert(1)</script>');
   assert(!/<script/i.test(mentionXss), 'mention rendering stays XSS-safe');
 
+  console.log('\nTEST 12: off-profile CSS scoping');
+  const { scopeProfileCss } = require('../src/profile-css');
+  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const scope = '.ev-scope[data-ev-author="alice"]';
+  const scopedSrc = [
+    'body { font-family: Inter }',
+    '.post-body { color: red }',
+    '.post-body, .post-name { margin: 0 }',
+    '@media (min-width: 600px) { .post { padding: 20px } }',
+    '@font-face { font-family: "X"; src: url(/x) }',
+    '.x { position: fixed; inset: 0 }',
+    '@keyframes spin { to { transform: rotate(1turn) } }',
+    '.y { animation: spin 2s linear infinite }',
+  ].join('\n');
+  const scoped = scopeProfileCss(scopedSrc, scope, {});
+  assert(new RegExp(esc(scope) + '\\{\\s*font-family: Inter').test(scoped), 'body/:root maps onto the scope');
+  assert(new RegExp(esc(scope) + ' \\.post-body\\{\\s*color: red').test(scoped), 'plain selector is prefixed with the scope');
+  assert((scoped.match(new RegExp(esc(scope) + ' \\.post-name', 'g')) || []).length === 1, 'each selector in a comma list is prefixed');
+  assert(/@media \(min-width: 600px\)\{/.test(scoped) && new RegExp(esc(scope) + ' \\.post\\{').test(scoped), '@media contents are scoped');
+  assert(!/@font-face/.test(scoped), '@font-face is dropped when scoped');
+  assert(!/position\s*:\s*(fixed|sticky)/.test(scoped), 'position:fixed/sticky is neutralised');
+  assert(/@keyframes ev-spin/.test(scoped) && /animation: ev-spin/.test(scoped), '@keyframes renamed + animation rewritten');
+  const fontScoped = scopeProfileCss(".post-body { font-family: 'My Font' }", scope, { fontFamily: 'My Font', fontPrefix: 'ev-alice' });
+  assert(/font-family: 'ev-alice'/.test(fontScoped), 'custom font family rewritten to the prefixed name');
+  assert(scopeProfileCss('', scope, {}) === '', 'empty CSS stays empty');
+
   console.log(process.exitCode ? '\nSOME TESTS FAILED' : '\nALL TESTS PASSED');
 }
 

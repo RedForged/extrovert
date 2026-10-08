@@ -164,6 +164,17 @@ async function main() {
   });
   ok(fieldsDenied.status === 403, 'non-owner profile-field save is 403');
 
+  console.log('\nOff-profile: posts carry their author\'s style');
+  db.setCustomization(aliceId, '<div data-ev-slot="posts"></div>', '.post-body { color: red; } body { font-family: serif; }', '', 1);
+  const feed = await bob.get('/');
+  ok(feed.text.includes('<style id="ev-post-scope">'), 'feed injects scoped post CSS');
+  ok(feed.text.includes('data-ev-author="alice"'), "feed wraps alice's post in a scope");
+  ok(/\.ev-scope\[data-ev-author="alice"\] \.post-body/.test(feed.text), "author's rule is scoped to their posts");
+  ok(/\.ev-scope\[data-ev-author="alice"\]\{/.test(feed.text), 'body rule remapped onto the post wrapper');
+  ok(/@font-face\s*\{[^}]*font-family: 'ev-alice'/.test(feed.text), 'custom font injected with a per-author family');
+  const prof = await alice.get('/u/alice');
+  ok(!prof.text.includes('ev-post-scope'), 'the profile page itself is not scoped-injected');
+
   console.log('\nReset customizations:');
   db.setCustomization(aliceId, '<div data-ev-slot="posts"></div>', '.post { color: red; }', 'glitch', 1);
   const reset = await alice.post('/u/alice/edit/reset', {

@@ -120,6 +120,18 @@ Modern CSS is safe by itself (it can't run JavaScript); these rules keep profile
 .hero h1 { font-family: var(--font-display); }
 ```
 
+### Your style off your profile
+
+Your styling follows your posts: a post of yours shown in the **home feed** or on its own page
+(`/posts/<id>`) looks the way it does on your profile — its card shape, colours, fonts and background
+(incl. your custom font). Page-level rules (`body { … }`) are remapped onto each post, so your page
+font/background travel with it.
+
+- It is **scoped to each post** — it can't affect the app chrome or anyone else's posts, and
+  viewport-covering effects (`position: fixed`/`sticky`) are dropped in that context.
+- **Reposts** take the style of the post's **original author**, not whoever reposted it.
+- Nothing is applied if you haven't customised anything; the profile page itself is unaffected.
+
 ## Pronouns
 
 Pronouns are free text — there's no fixed list, so `she/her`, `he/they`, `they/them` or a custom

@@ -11,6 +11,6 @@
   </div>
 <% } else { %>
   <% items.forEach(function(item){ %>
-    <%- include('post', { item: item }) %>
+    <%- include('post', { item: item, scoped: locals.scoped }) %>
   <% }) %>
 <% } %>
