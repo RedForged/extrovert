@@ -7,7 +7,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const {
-  getUserByUsername, getCustomization, setCustomization, updateUserProfile,
+  getUserByUsername, getCustomization, setCustomization, setCustomizationEffect, updateUserProfile,
   getDisplayPost, getUserById, postsByUser, hasLiked, hasShared,
   commentsForPost, isFollowing, countFollowers, countFollowing,
   getFollowers, getFollowing, areMutualFollowers,
@@ -250,12 +250,23 @@ router.get('/:username', async (req, res, next) => {
       css: sanitizeCSS(rawCss),
       effect: custom.effect || '',
       isOwn,
+      editor: isOwn ? {
+        displayName: profileUser.display_name,
+        bio: profileUser.bio || '',
+        pronouns: parsePronouns(profileUser.pronouns),
+        pronounFieldsMax: PRONOUN_FIELDS_MAX,
+        pronounLengthMax: PRONOUN_LENGTH_MAX,
+        customFont: fontInfoFor(profileUser),
+        templateHtml: template,
+      } : null,
     });
   } catch (err) {
     next(err);
   }
 });
 
+// The old standalone editor page is gone: everything is edited on the profile
+// itself, in place. Redirect old links/bookmarks into the in-page editor.
 router.get('/:username/edit', (req, res) => {
   const viewer = res.locals.currentUser;
   if (!viewer) return res.redirect('/login');
@@ -263,43 +274,35 @@ router.get('/:username/edit', (req, res) => {
   if (!profileUser || profileUser.id !== viewer.id) {
     return res.status(403).send('You can only edit your own profile.');
   }
-  const custom = getCustomization(viewer.id);
-  res.render('profile-edit', {
-    profileUser,
-    html: buildTemplate(custom),
-    css: custom.css || DEFAULT_PROFILE_CSS,
-    displayName: viewer.display_name,
-    bio: viewer.bio,
-    effect: custom.effect || '',
-    pronouns: parsePronouns(viewer.pronouns),
-    pronounFieldsMax: PRONOUN_FIELDS_MAX,
-    pronounLengthMax: PRONOUN_LENGTH_MAX,
-    customFont: fontInfoFor(viewer),
-  });
+  res.redirect('/u/' + profileUser.username + '?edit=1');
 });
 
-router.post('/:username/edit', (req, res) => {
+// Profile fields (name/bio/pronouns/effect) — auto-saved from the left panel.
+// Only these fields, so it can never clobber the HTML/CSS.
+router.post('/:username/edit/profile', (req, res) => {
   const viewer = res.locals.currentUser;
   if (!viewer) return res.redirect('/login');
   const profileUser = getUserByUsername(req.params.username);
+  const wantsJson = req.xhr || (req.get('accept') || '').includes('application/json') || req.is('application/json');
   if (!profileUser || profileUser.id !== viewer.id) {
-    return res.status(403).send('You can only edit your own profile.');
+    return wantsJson
+      ? res.status(403).json({ ok: false, error: 'You can only edit your own profile.' })
+      : res.status(403).send('You can only edit your own profile.');
   }
-  // Sanitize on write too (the GET path also sanitizes) so the stored text is
-  // exactly what renders, which keeps Easy and Advanced mode converged.
-  const html = normalizeSlots(sanitizeProfileHTML(String(req.body.html || '')));
-  const css = sanitizeCSS(String(req.body.css || ''));
+
   const displayName = String(req.body.displayName || '').trim().slice(0, 60) || viewer.username;
   const bio = String(req.body.bio || '').trim().slice(0, 280);
-
-  const rawEffect = String(req.body.effect || '').trim();
-  const effect = PROFILE_EFFECTS.includes(rawEffect) ? rawEffect : '';
   const pronouns = sanitizePronouns(req.body.pronoun);
+  let effect;
+  if (req.body.effect !== undefined) {
+    const rawEffect = String(req.body.effect || '').trim();
+    effect = PROFILE_EFFECTS.includes(rawEffect) ? rawEffect : '';
+  }
 
-  // Saving from Advanced mode adopts the full-page template (v1).
-  setCustomization(viewer.id, html, css, effect, 1);
   updateUserProfile(viewer.id, { displayName, bio, pronouns });
-  res.redirect('/u/' + profileUser.username);
+  if (effect !== undefined) setCustomizationEffect(viewer.id, effect);
+  if (wantsJson) return res.json({ ok: true, displayName, bio });
+  res.redirect('/u/' + profileUser.username + '?edit=1');
 });
 
 // Easy Editing save: only touches HTML/CSS/effect (never displayName/bio/
@@ -325,7 +328,7 @@ router.post('/:username/edit/visual', (req, res) => {
 
   setCustomization(viewer.id, html, css, effect, 1);
   if (wantsJson) return res.json({ ok: true });
-  res.redirect('/u/' + profileUser.username);
+  res.redirect('/u/' + profileUser.username + '?edit=1');
 });
 
 // Upload/change avatar.

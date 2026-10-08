@@ -20,8 +20,11 @@ release: the codebase carries its version in `package.json`, and the sections
   **styling-first**: you hover/click a named part of the page (Post text, Bio, Follower stats, …) or
   pick one from the Part menu, then restyle it with controls for colour, edges, spacing, text, effects
   and layout. Live parts write a CSS rule (so one change restyles every post/comment); your own
-  elements get an inline style. *Add property* and *Raw CSS for this part* keep the full power, and
-  structural edits stay in the raw HTML/CSS editor.
+  elements get an inline style. *Add property* and *Raw CSS for this part* keep the full power. The
+  separate `/u/<you>/edit` page is gone: the editor is the profile itself, with the profile fields
+  (avatar, name, bio, pronouns, effect, font) in a left panel and a collapsible HTML box, and **every
+  edit auto-saves** (`POST /u/:username/edit/profile` for the fields, `/edit/visual` for the styling);
+  `/u/:username/edit` now redirects to `?edit=1`.
 - **Report anything**: a single report flow reachable from a **⋯ menu** on posts, comments and
   profiles, plus the existing Report chip on room messages. Reports land in one admin queue
   (`/admin/reports`) that shows the type, context, the content (or the reporter's copy for encrypted

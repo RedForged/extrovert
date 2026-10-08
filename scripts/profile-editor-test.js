@@ -70,13 +70,16 @@ async function main() {
   ok(own.text.includes('data-ev-slot="stats"'), 'stats slot present');
   ok(own.text.includes('id="ev-user-css"'), 'user CSS style element has an id for the editor');
   ok(own.text.includes('/static/profile-editor.js'), 'editor script loaded for the owner');
-  ok(own.text.includes('id="ev-edit-toggle"'), 'Easy edit toggle rendered for the owner');
+  ok(own.text.includes('id="ev-edit-toggle"'), 'Edit styles toggle rendered for the owner');
+  ok(own.text.includes('id="ev-fields"'), 'left-panel profile fields rendered for the owner');
+  ok(own.text.includes('id="ev-html-box"'), 'collapsible HTML box rendered for the owner');
 
   console.log('\nNon-owner render (bob views alice):');
   const other = await bob.get('/u/alice');
   ok(other.status === 200, 'profile 200 for non-owner');
   ok(!other.text.includes('/static/profile-editor.js'), 'editor script NOT loaded for non-owner');
-  ok(!other.text.includes('id="ev-edit-toggle"'), 'no Easy edit toggle for non-owner');
+  ok(!other.text.includes('id="ev-edit-toggle"'), 'no Edit styles toggle for non-owner');
+  ok(!other.text.includes('id="ev-fields"'), 'no profile fields block for non-owner');
   ok(other.text.includes('data-ev-slot="follow"') && /action="\/unfollow\/alice"/.test(other.text),
     'viewer-relative follow slot filled (Following form)');
 
@@ -125,6 +128,27 @@ async function main() {
   const afterSave = await alice.get('/u/alice');
   ok(afterSave.text.includes('hello from alice'), 'posts still injected after save');
   ok(!/<script>alert\(1\)<\/script>/.test(afterSave.text), 'injected script never reaches the page');
+
+  console.log('\n/edit redirects into the in-page editor:');
+  const editRedirect = await alice.get('/u/alice/edit');
+  ok(editRedirect.status === 302, '/u/alice/edit redirects (302)');
+
+  console.log('\nProfile fields save (auto-save endpoint):');
+  const fieldsSave = await alice.post('/u/alice/edit/profile', {
+    headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-Token': alice.csrf },
+    body: JSON.stringify({ displayName: 'Alice Prime', bio: 'new bio', effect: 'glitch', pronoun: ['they/them'] }),
+  });
+  ok(fieldsSave.status === 200, 'owner profile-field save returns 200');
+  const aliceRow = db.getUserByUsername('alice');
+  ok(aliceRow.bio === 'new bio' && aliceRow.display_name === 'Alice Prime', 'name + bio updated');
+  ok(db.getCustomization(aliceId).effect === 'glitch', 'effect updated');
+  ok(/data-ev-slot="posts"/.test(db.getCustomization(aliceId).html), 'profile-field save did not clobber the HTML');
+
+  const fieldsDenied = await bob.post('/u/alice/edit/profile', {
+    headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-Token': bob.csrf },
+    body: JSON.stringify({ displayName: 'Nope' }),
+  });
+  ok(fieldsDenied.status === 403, 'non-owner profile-field save is 403');
 
   console.log(failures ? '\nPROFILE EDITOR TEST FAILED' : '\nPROFILE EDITOR TEST PASSED');
   process.exit(failures ? 1 : 0);

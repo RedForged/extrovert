@@ -1173,6 +1173,14 @@ function setCustomization(userId, html, css, effect, templateVersion) {
   ).run(...vals);
 }
 
+// Update only the profile effect, leaving html/css untouched.
+function setCustomizationEffect(userId, effect) {
+  db.prepare(
+    `INSERT INTO profile_customization (user_id, effect) VALUES (?,?)
+     ON CONFLICT(user_id) DO UPDATE SET effect = excluded.effect`
+  ).run(userId, effect || '');
+}
+
 // ---------- notifications ----------
 const { notify } = require('./notif-broadcaster');
 
@@ -3603,7 +3611,7 @@ module.exports = {
   // shares
   sharePost, hasShared, hasReposted,
   // customization
-  getCustomization, setCustomization,
+  getCustomization, setCustomization, setCustomizationEffect,
   // notifications
   createNotification, notifyMentions, getNotifications, countUnreadNotifications, markNotificationsRead,
   // bots (planned.md F5)

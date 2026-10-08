@@ -76,7 +76,6 @@
   };
 
   var currentState = null;
-  var toastEl = null;
 
   // ---------- init ----------
 
@@ -91,6 +90,7 @@
       root: root, editing: false, username: username, csrf: meta('csrf-token'),
       styleEl: document.getElementById('ev-user-css'),
       target: null, lastElement: null, hoverTarget: null, raf: null,
+      dirty: false, saveTimer: null, statusEl: null,
       ui: null, panel: null, outline: null, hover: null, nodes: {},
     };
     currentState = state;
@@ -119,6 +119,7 @@
     } else {
       if (state.raf) { cancelAnimationFrame(state.raf); state.raf = null; }
       state.hoverTarget = null;
+      flush(state);
       if (state.ui) state.ui.hidden = true;
       hideOverlay(state);
       select(state, null);
@@ -134,12 +135,11 @@
 
     var bar = document.createElement('div');
     bar.className = 'ev-bar';
-    bar.appendChild(elBtn('Save', function () { save(state); }, 'ev-primary'));
-    var adv = document.createElement('a');
-    adv.className = 'ev-bar-link';
-    adv.href = '/u/' + encodeURIComponent(state.username) + '/edit';
-    adv.textContent = 'HTML / CSS';
-    bar.appendChild(adv);
+    var status = document.createElement('span');
+    status.className = 'ev-status';
+    status.textContent = 'All changes saved';
+    state.statusEl = status;
+    bar.appendChild(status);
     bar.appendChild(elBtn('Exit', function () { setEditing(state, false); }));
 
     var panel = document.createElement('div');
@@ -173,6 +173,101 @@
     window.addEventListener('scroll', function () { paintOutline(state); }, true);
     window.addEventListener('resize', function () { paintOutline(state); });
     document.addEventListener('keydown', function (e) { if (e.key === 'Escape') select(state, null); });
+    bindFields(state);
+  }
+
+  // ---------- auto-save ----------
+
+  function setStatus(state, cls, text) {
+    if (!state.statusEl) return;
+    state.statusEl.className = 'ev-status' + (cls ? ' ' + cls : '');
+    state.statusEl.textContent = text;
+  }
+
+  function queueSave(state) {
+    state.dirty = true;
+    setStatus(state, 'saving', 'Saving…');
+    clearTimeout(state.saveTimer);
+    state.saveTimer = setTimeout(function () { saveAll(state); }, 600);
+  }
+
+  function post(state, url, body) {
+    return fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': state.csrf,
+        'X-Requested-With': 'XMLHttpRequest',
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }).then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r; });
+  }
+
+  function collectProfile() {
+    var q = function (sel) { var el = document.querySelector(sel); return el ? el.value : ''; };
+    var pronouns = Array.prototype.slice.call(document.querySelectorAll('#pronounRows input')).map(function (i) { return i.value; });
+    return {
+      displayName: q('#ev-displayName'),
+      bio: q('#ev-bio'),
+      effect: q('#ev-effect'),
+      pronoun: pronouns,
+    };
+  }
+
+  function saveAll(state) {
+    if (!state.dirty) return;
+    state.dirty = false;
+    clearTimeout(state.saveTimer);
+    var base = '/u/' + encodeURIComponent(state.username);
+    var jobs = [post(state, base + '/edit/visual', { html: serialize(state), css: getUserCss(state) })];
+    if (document.getElementById('ev-fields')) jobs.push(post(state, base + '/edit/profile', collectProfile()));
+    Promise.all(jobs).then(function () {
+      setStatus(state, 'saved', 'All changes saved');
+    }).catch(function () {
+      state.dirty = true;
+      setStatus(state, 'error', "Couldn't save");
+    });
+  }
+
+  function flush(state) {
+    if (state.dirty) saveAll(state);
+  }
+
+  // The left panel's profile fields: auto-save on change (debounced), reload
+  // for uploads. The raw HTML box is another view of the same template.
+  function bindFields(state) {
+    var fields = document.getElementById('ev-fields');
+    if (!fields || fields.dataset.bound) return;
+    fields.dataset.bound = '1';
+
+    // Delegated, so dynamically added pronoun rows are covered too.
+    function onFieldChange(e) {
+      if (e.target && e.target.id === 'ev-html-box') return; // handled below
+      queueSave(state);
+    }
+    fields.addEventListener('input', onFieldChange);
+    fields.addEventListener('change', onFieldChange);
+
+    var htmlBox = document.getElementById('ev-html-box');
+    if (htmlBox) {
+      htmlBox.addEventListener('change', function () {
+        // Apply to the live DOM so styling and the HTML box stay one document.
+        state.root.innerHTML = htmlBox.value;
+        select(state, null);
+        queueSave(state);
+      });
+    }
+
+    window.addEventListener('beforeunload', function (e) {
+      if (!state.dirty) return;
+      flush(state);
+      e.preventDefault();
+      e.returnValue = '';
+    });
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'hidden') flush(state);
+    });
   }
 
   function ovl(id) {
@@ -369,6 +464,7 @@
       t.el.style.setProperty(prop, value);
     }
     paintOutline(state);
+    queueSave(state);
   }
 
   function clearVal(state, prop) {
@@ -382,6 +478,7 @@
       t.el.style.removeProperty(prop);
     }
     paintOutline(state);
+    queueSave(state);
   }
 
   // ---------- panel ----------
@@ -700,6 +797,7 @@
       if (isText) {
         state.target.el.textContent = input.value;
         paintOutline(state);
+        queueSave(state);
       } else if (input.value.trim()) setVal(state, prop, input.value.trim());
       else clearVal(state, prop);
     });
@@ -739,6 +837,7 @@
       else if (ta.value.trim()) state.target.el.setAttribute('style', ta.value);
       else state.target.el.removeAttribute('style');
       paintOutline(state);
+      queueSave(state);
     });
     d.appendChild(ta);
     return d;
@@ -841,26 +940,6 @@
     return null;
   }
 
-  // ---------- save ----------
-
-  function save(state) {
-    if (!state.csrf) { toast('Missing CSRF token — reload the page.'); return; }
-    fetch('/u/' + encodeURIComponent(state.username) + '/edit/visual', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        'X-CSRF-Token': state.csrf,
-        'X-Requested-With': 'XMLHttpRequest',
-      },
-      body: JSON.stringify({ html: serialize(state), css: getUserCss(state) }),
-    }).then(function (r) {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      return r.json();
-    }).then(function () { toast('Profile saved'); })
-      .catch(function (err) { toast('Save failed: ' + err.message); });
-  }
-
   // ---------- misc ----------
 
   function toHex(value) {
@@ -875,18 +954,6 @@
       }).join('');
     }
     return '';
-  }
-
-  function toast(msg) {
-    if (!toastEl) {
-      toastEl = document.createElement('div');
-      toastEl.className = 'ev-toast';
-      document.body.appendChild(toastEl);
-    }
-    toastEl.textContent = msg;
-    toastEl.classList.add('show');
-    clearTimeout(toast._t);
-    toast._t = setTimeout(function () { toastEl.classList.remove('show'); }, 2600);
   }
 
   document.addEventListener('DOMContentLoaded', init);
