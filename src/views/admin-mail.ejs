@@ -7,6 +7,19 @@
 
     <% if (locals.saved) { %><div class="flash ok">Saved — the new settings apply immediately (no restart).</div><% } %>
     <% if (locals.error) { %><div class="flash err"><span class="flash-ico"><%- include('partials/icon', { name: 'alert', size: 18 }) %></span><span><%= error %></span></div><% } %>
+    <% if (locals.lastMail) { %>
+      <div class="flash<%= lastMail.delivered ? ' ok' : '' %>">
+        <span class="flash-ico"><%- include('partials/icon', { name: lastMail.delivered ? 'check' : 'alert', size: 18 }) %></span>
+        <span>
+          Last verification email<%= lastMail.to ? ' to ' + lastMail.to : '' %>:
+          <% if (lastMail.delivered) { %><strong>delivered</strong>
+          <% } else if (lastMail.captured) { %><strong>not delivered</strong> — saved on the server as <code>data/outbox/<%= lastMail.messageId %>.eml</code> (outbound mail isn't reaching anyone yet)
+          <% } else { %><strong>delivery failed</strong>: <%= lastMail.error || 'unknown error' %>
+          <% } %>
+          · <%= new Date(lastMail.at).toLocaleString() %>
+        </span>
+      </div>
+    <% } %>
 
     <form method="post" action="/admin/mail">
       <input type="hidden" name="_csrf" value="<%= csrfToken %>">

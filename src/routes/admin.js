@@ -179,6 +179,11 @@ function dkimDomainOf(eff) {
 
 function renderMailPanel(req, res, { error = null, saved = false } = {}) {
   const effective = mailer.reloadConfig();
+  let lastMail = null;
+  try {
+    const raw = getSetting('mail_last_result');
+    if (raw) lastMail = JSON.parse(raw);
+  } catch (e) { /* ignore a malformed record */ }
   res.render('admin-mail', {
     stored: getMailSettings(),
     // The raw DB value (null = inherit from env/default) — used so the panel
@@ -190,6 +195,7 @@ function renderMailPanel(req, res, { error = null, saved = false } = {}) {
     policy: getEmailPolicy(),
     effective,
     dkimDomain: dkimDomainOf(effective),
+    lastMail,
     error,
     saved,
   });

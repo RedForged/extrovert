@@ -40,20 +40,40 @@ function renderSettings(res, user, { mailError = null, mailSent = false, mailNot
 }
 
 // A mailer result of { captured: true } means the message was written to
-// data/outbox on this server instead of being delivered — telling the user
-// "sent" in that case is how a broken mail setup looks like nothing happening.
-function mailOutcomeFlash(result) {
-  if (result && result.captured) {
-    const file = result.messageId ? ` (data/outbox/${result.messageId}.eml)` : '';
-    return {
-      mailNotice: 'This server could not deliver the email, so it was saved on the server instead' + file +
-        '. An admin can open that file and pass the link on, or fix the mail configuration at /admin/mail.',
-    };
+// data/outbox on this server instead of being delivered.
+//
+// Delivery can involve retries with backoff (minutes), so it must never hold
+// the HTTP response: the send runs in the background and its outcome is
+// recorded for the admin panel instead.
+function recordMailResult(result, to) {
+  try {
+    db.setSetting('mail_last_result', JSON.stringify({
+      at: Date.now(),
+      to: to || null,
+      delivered: !!(result && result.ok && !result.captured),
+      captured: !!(result && result.captured),
+      messageId: (result && result.messageId) || null,
+      error: (result && result.error) || null,
+    }));
+  } catch (e) {
+    console.error('could not record mail result', e);
   }
-  if (result && result.ok === false) {
-    return { mailError: 'The email could not be delivered: ' + (result.error || 'unknown error') + '. Check /admin/mail on the server.' };
-  }
-  return { mailSent: true };
+}
+
+function sendVerificationInBackground(userId, to, req) {
+  emailVerify.sendVerificationEmail({ userId, to, req })
+    .then((result) => {
+      recordMailResult(result, to);
+      if (result && result.captured) {
+        console.warn(`[mail] verification for ${to} was NOT delivered — saved to data/outbox/${result.messageId}.eml`);
+      } else if (result && result.ok === false) {
+        console.warn(`[mail] verification for ${to} failed: ${result.error || 'unknown error'}`);
+      }
+    })
+    .catch((err) => {
+      console.error('verification email failed:', err);
+      recordMailResult({ ok: false, error: String((err && err.message) || err) }, to);
+    });
 }
 
 router.get('/', (req, res) => {
@@ -124,14 +144,12 @@ router.post('/email', (req, res) => {
   db.clearUserEmail(user.id);
   db.setUserEmail(user.id, email);
   db.deleteEmailVerification(user.id);
-  emailVerify.sendVerificationEmail({ userId: user.id, to: email, req })
-    .then((result) => renderSettings(res, db.getUserById(user.id), mailOutcomeFlash(result)))
-    .catch((err) => {
-      console.error('settings/email: send failed', err);
-      renderSettings(res, db.getUserById(user.id), {
-        mailError: 'Verification email could not be sent: ' + (err.message || 'unknown error') + '. Check the server\'s mail configuration.',
-      });
-    });
+  // Answer straight away; delivery happens in the background (it can retry for
+  // minutes, and the browser must not sit on a spinner for that long).
+  renderSettings(res, db.getUserById(user.id), {
+    mailNotice: 'We are sending the verification email now — if it does not arrive in a few minutes, check your spam folder. An admin can see the delivery result at /admin/mail.',
+  });
+  sendVerificationInBackground(user.id, email, req);
 });
 
 // Resend the verification email (with a 1-minute cooldown).
@@ -146,14 +164,11 @@ router.post('/email/resend', (req, res) => {
     const waitSec = Math.ceil(cooldown.waitMs / 1000);
     return renderSettings(res, user, { mailError: `Please wait ${waitSec}s before requesting another email.` });
   }
-  emailVerify.sendVerificationEmail({ userId: user.id, to: user.email, req })
-    .then((result) => renderSettings(res, db.getUserById(user.id), mailOutcomeFlash(result)))
-    .catch((err) => {
-      console.error('settings/email/resend: send failed', err);
-      renderSettings(res, db.getUserById(user.id), {
-        mailError: 'Verification email could not be sent: ' + (err.message || 'unknown error') + '. Check the server\'s mail configuration.',
-      });
-    });
+  // Same as above: reply immediately, deliver in the background.
+  renderSettings(res, db.getUserById(user.id), {
+    mailNotice: 'We are sending the verification email now — if it does not arrive in a few minutes, check your spam folder. An admin can see the delivery result at /admin/mail.',
+  });
+  sendVerificationInBackground(user.id, user.email, req);
 });
 
 // Account deletion.
