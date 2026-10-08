@@ -27,9 +27,12 @@ function invalidateFeedCache(userId) {
 // Extrovert feed algorithm
 // ---------------------------------------------------------------------------
 // Content is only ever sourced from friends and friends-of-friends. Among that
-// candidate pool, posts are ranked by score = recency base + engagement boosts.
+// candidate pool, posts are ranked by
+//   score = recency base + freshness boost + engagement boosts.
 // Boost rules (see spec):
 //
+//   * Fresh posts                          -> a short-lived freshness bump that
+//                                            decays over hours (easier to find).
 //   * Follow someone *because of a post*  -> that post gets a BIG boost.
 //   * Like a post                          -> small boost to the post.
 //   * Comment on a post                    -> small boost to the post
@@ -56,6 +59,17 @@ const BOOST = {
 function recencyBase(createdAtMs, now = Date.now()) {
   const ageHours = (now - createdAtMs) / 36e5;
   return 400 * Math.exp(-ageHours / 48);
+}
+
+// A short-lived bump on top of the slow recency decay, so brand-new posts
+// surface readily and then settle back under engagement. It halves every
+// FRESHNESS_HALF_LIFE_HOURS and is negligible within a day or so.
+const FRESHNESS_BOOST = 200;         // extra score at age 0
+const FRESHNESS_HALF_LIFE_HOURS = 3; // decays to half every 3 hours
+
+function freshnessBoost(createdAtMs, now = Date.now()) {
+  const ageHours = Math.max(0, (now - createdAtMs) / 36e5); // clamp clock skew
+  return FRESHNESS_BOOST * Math.pow(0.5, ageHours / FRESHNESS_HALF_LIFE_HOURS);
 }
 
 // Candidate post rows visible to the viewer, with engagement counts computed
@@ -138,7 +152,7 @@ function commentWithoutLikePostIds(viewerId) {
 }
 
 function scorePost(row, cwolAuthors, cwolPostIds, now) {
-  let score = recencyBase(row.created_at, now);
+  let score = recencyBase(row.created_at, now) + freshnessBoost(row.created_at, now);
 
   // General boosts on this content (visible to everyone in the network).
   score += BOOST.LIKE * row.like_count;
@@ -241,6 +255,7 @@ function buildFeed(viewerId, { page = 1, perPage = 20 } = {}) {
 
 module.exports = {
   buildFeed, scorePost, BOOST,
+  recencyBase, freshnessBoost, FRESHNESS_BOOST, FRESHNESS_HALF_LIFE_HOURS,
   candidatePosts, commentWithoutLikeAuthors, commentWithoutLikePostIds,
   invalidateFeedCache,
 };

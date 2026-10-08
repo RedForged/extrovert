@@ -52,11 +52,21 @@ Everything else is invisible — there is no public timeline anywhere in the pro
 Each candidate post is scored:
 
 ```
-score = recencyBase + engagementBoosts
-recencyBase = 400 × exp(−ageHours / 48)
+score = recencyBase + freshnessBoost + engagementBoosts
+recencyBase    = 400 × exp(−ageHours / 48)     (slow decay, ~33 h half-life)
+freshnessBoost = 200 × 0.5^(ageHours / 3)      (fresh posts, halves every 3 h)
 ```
 
-Fresh content starts at 400 and decays exponentially with a 48-hour half-life.
+Two time-based terms, in opposite roles:
+
+- **`recencyBase`** is the general "newer is better" pull — a slow exponential decay.
+- **`freshnessBoost`** is a **short-lived bump so new posts are easier to find**: a brand-new post
+  starts with **+200** on top of its recency base, halving every **3 hours** (≈+100 at 3 h, ≈+12 at
+  12 h, negligible after a day). It gives a new post a temporary lift over older, already-seen
+  content, then fades so engagement decides the ordering.
+
+The freshness numbers are constants in `src/feed.js` (`FRESHNESS_BOOST`,
+`FRESHNESS_HALF_LIFE_HOURS`) — raise them to push new content harder.
 
 ### Boost rules (constants in `src/feed.js`)
 

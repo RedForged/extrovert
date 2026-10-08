@@ -271,6 +271,20 @@ function run() {
   assert(/font-family: 'ev-alice'/.test(fontScoped), 'custom font family rewritten to the prefixed name');
   assert(scopeProfileCss('', scope, {}) === '', 'empty CSS stays empty');
 
+  console.log('\nTEST 13: freshness boost decays so new posts surface');
+  const { freshnessBoost, FRESHNESS_BOOST, FRESHNESS_HALF_LIFE_HOURS, scorePost } = feed;
+  const now13 = Date.now();
+  assert(Math.abs(freshnessBoost(now13, now13) - FRESHNESS_BOOST) < 0.01, 'a brand-new post gets the full freshness boost');
+  assert(Math.abs(freshnessBoost(now13 - FRESHNESS_HALF_LIFE_HOURS * 36e5, now13) - FRESHNESS_BOOST / 2) < 0.5,
+    'freshness halves after one half-life');
+  assert(freshnessBoost(now13 - 24 * 36e5, now13) < 1, 'freshness is negligible after a day');
+  assert(freshnessBoost(now13 + 60e3, now13) === FRESHNESS_BOOST, 'clock skew is clamped (never above the full boost)');
+  const baseRow = { created_at: now13, like_count: 0, share_count: 0, viewer_follow_boost: 0, comment_with_like_count: 0, eff_author_id: -1, eff_id: -1 };
+  const freshScore = scorePost(baseRow, new Set(), new Set(), now13);
+  const olderScore = scorePost({ ...baseRow, created_at: now13 - 6 * 36e5 }, new Set(), new Set(), now13);
+  assert(freshScore > olderScore, 'a new post outranks an identical older one');
+  assert(freshScore - olderScore > 100, 'the freshness lift is significant (>100 at 6h apart)');
+
   console.log(process.exitCode ? '\nSOME TESTS FAILED' : '\nALL TESTS PASSED');
 }
 

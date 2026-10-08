@@ -20,6 +20,10 @@ release: the codebase carries its version in `package.json`, and the sections
   pronouns, avatar and font.
 
 ### Features
+- **Fresher feed**: new posts get a short-lived algorithm boost so they're easier to find — **+200**
+  on top of the recency base, halving every **3 hours** (negligible after a day). It layers over the
+  existing slow recency decay and fades out, so engagement decides older content. Tune via
+  `FRESHNESS_BOOST` / `FRESHNESS_HALF_LIFE_HOURS` in `src/feed.js`.
 - **Your style follows your posts**: a post shown off-profile (home feed, `/posts/<id>`) now carries
   its author's profile styling — card shape, colours, fonts and background — scoped to that post so
   it can't affect the app or other people's posts. Page-level rules (`body`) are remapped onto the
