@@ -99,9 +99,10 @@
 
     // Heal a stylesheet broken by an earlier pasted-rule edit, so the page and
     // future edits work again.
-    if (state.styleEl && needsRepair(state.styleEl.textContent)) {
-      setUserCss(state, repairCss(state.styleEl.textContent));
-      queueSave(state);
+    if (state.styleEl) {
+      var rawCss = state.styleEl.textContent;
+      var normCss = normalizeStylesheet(rawCss);
+      if (normCss !== rawCss) { setUserCss(state, normCss); queueSave(state); }
     }
 
     toggle.addEventListener('click', function (e) {
@@ -265,6 +266,15 @@
         state.root.innerHTML = htmlBox.value;
         select(state, null);
         queueSave(state);
+      });
+    }
+
+    var resetForm = document.getElementById('ev-reset');
+    if (resetForm) {
+      resetForm.addEventListener('submit', function (e) {
+        if (!window.confirm('Reset all profile HTML, CSS and effect back to the defaults? This cannot be undone.')) {
+          e.preventDefault();
+        }
       });
     }
 
@@ -951,36 +961,25 @@
     return -1;
   }
 
-  // A non-at rule whose block contains "{" is a bogus wrapper left by a pasted
-  // full rule. Drop the wrapper and hoist the real rules out of it.
-  function repairCss(css) {
+  // Canonicalise a stylesheet: hoist the contents of any non-at rule whose block
+  // contains another block (a bogus wrapper left by a pasted rule), strip stray
+  // braces from declaration blocks, and close an unbalanced rule. Returns the
+  // rules text; equal to the input when it is already fine.
+  function normalizeStylesheet(css) {
     var out = '', i = 0;
     while (i < css.length) {
       var open = css.indexOf('{', i);
-      if (open === -1) { out += css.slice(i); break; }
+      if (open === -1) break; // trailing text with no rule — dropped
       var selector = css.slice(i, open);
       var close = matchBrace(css, open);
-      if (close === -1) { out += css.slice(i) + '}'; break; }
+      if (close === -1) close = css.length; // missing close: salvage, treat end as the close
       var block = css.slice(open + 1, close);
-      if (selector.trim().charAt(0) !== '@' && block.indexOf('{') !== -1) out += repairCss(block);
-      else out += selector + '{' + block + '}';
+      var at = selector.trim().charAt(0) === '@';
+      if (!at && block.indexOf('{') !== -1) out += normalizeStylesheet(block);
+      else out += selector + '{' + (at ? block : normalizeDecls(block)) + '}';
       i = close + 1;
     }
     return out;
-  }
-
-  function needsRepair(css) {
-    var i = 0;
-    while (i < css.length) {
-      var open = css.indexOf('{', i);
-      if (open === -1) return false;
-      var selector = css.slice(i, open);
-      var close = matchBrace(css, open);
-      if (close === -1) return true;
-      if (selector.trim().charAt(0) !== '@' && css.slice(open + 1, close).indexOf('{') !== -1) return true;
-      i = close + 1;
-    }
-    return false;
   }
 
   function setRuleDecls(state, selector, decls) {
@@ -989,7 +988,8 @@
     var loc = findRule(css, selector);
     if (loc) css = css.slice(0, loc.open + 1) + '\n' + decls + '\n' + css.slice(loc.close);
     else css = css.replace(/\s*$/, '') + '\n' + selector + ' {\n' + decls + '\n}\n';
-    setUserCss(state, css);
+    var norm = normalizeStylesheet(css);
+    setUserCss(state, norm !== css ? norm : css);
   }
   function depthAt(css, idx) {
     var d = 0;

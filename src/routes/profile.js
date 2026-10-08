@@ -315,6 +315,24 @@ router.post('/:username/edit/profile', (req, res) => {
   res.redirect('/u/' + profileUser.username + '?edit=1');
 });
 
+// Reset the profile *customization* (HTML, CSS, effect) back to the defaults.
+// The normal profile fields — name, bio, pronouns, avatar, custom font — are
+// left untouched.
+router.post('/:username/edit/reset', (req, res) => {
+  const viewer = res.locals.currentUser;
+  if (!viewer) return res.redirect('/login');
+  const profileUser = getUserByUsername(req.params.username);
+  const wantsJson = req.xhr || (req.get('accept') || '').includes('application/json') || req.is('application/json');
+  if (!profileUser || profileUser.id !== viewer.id) {
+    return wantsJson
+      ? res.status(403).json({ ok: false, error: 'You can only edit your own profile.' })
+      : res.status(403).send('You can only edit your own profile.');
+  }
+  setCustomization(viewer.id, '', '', '', 0);
+  if (wantsJson) return res.json({ ok: true });
+  res.redirect('/u/' + profileUser.username + '?edit=1');
+});
+
 // Easy Editing save: only touches HTML/CSS/effect (never displayName/bio/
 // pronouns), so the visual editor can save without clobbering profile fields.
 router.post('/:username/edit/visual', (req, res) => {

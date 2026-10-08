@@ -1892,6 +1892,8 @@ body.ev-editing .ev-fields {
 .ev-html { margin-top: 16px; }
 .ev-html summary { cursor: pointer; color: var(--text-secondary); }
 .ev-html textarea { margin-top: 6px; font-family: ui-monospace, monospace; font-size: 12px; }
+.ev-reset { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border-soft); }
+.ev-reset .muted { display: block; margin-top: 6px; line-height: 1.4; }
 
 .ev-status { font-size: var(--fs-sm); color: var(--text-muted); min-width: 66px; }
 .ev-status.saving { color: var(--text-secondary); }

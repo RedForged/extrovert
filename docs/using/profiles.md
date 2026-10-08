@@ -71,6 +71,8 @@ pick a colour: it's kept.
 - **Keep the power.** *Add property* takes any CSS declaration by hand, and *Raw CSS for this part*
   exposes the rule underneath (paste declarations — or a whole `.selector { … }` block, it's
   normalised). Everything is plain CSS in your profile stylesheet.
+- **Reset.** *Reset customizations* (bottom of the left panel) clears your profile **HTML, CSS and
+  effect** back to the defaults. Your name, bio, pronouns, avatar and custom font are kept.
 
 There is no separate raw page any more: `?edit=1` is the only editor, and `/u/<you>/edit` redirects
 here.

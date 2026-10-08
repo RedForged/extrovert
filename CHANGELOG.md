@@ -15,6 +15,9 @@ release: the codebase carries its version in `package.json`, and the sections
   normalised on write, and a stylesheet already in that broken shape is repaired when the editor
   opens. The injected custom-font `@font-face` also moved to its own `<style>` so it is never written
   back into the editable stylesheet (it used to duplicate on every save).
+- **Reset customizations**: a *Reset customizations* button clears a profile's HTML, CSS and effect
+  back to the defaults (`POST /u/:username/edit/reset`) while keeping the normal fields — name, bio,
+  pronouns, avatar and font.
 
 ### Features
 - **Easy Editing (visual profile editor)**: edit your profile by clicking the live page instead of

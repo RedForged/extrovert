@@ -73,6 +73,7 @@ async function main() {
   ok(own.text.includes('id="ev-edit-toggle"'), 'Edit styles toggle rendered for the owner');
   ok(own.text.includes('id="ev-fields"'), 'left-panel profile fields rendered for the owner');
   ok(own.text.includes('id="ev-html-box"'), 'collapsible HTML box rendered for the owner');
+  ok(own.text.includes('id="ev-reset"'), 'reset button rendered for the owner');
 
   console.log('\nNon-owner render (bob views alice):');
   const other = await bob.get('/u/alice');
@@ -162,6 +163,25 @@ async function main() {
     body: JSON.stringify({ displayName: 'Nope' }),
   });
   ok(fieldsDenied.status === 403, 'non-owner profile-field save is 403');
+
+  console.log('\nReset customizations:');
+  db.setCustomization(aliceId, '<div data-ev-slot="posts"></div>', '.post { color: red; }', 'glitch', 1);
+  const reset = await alice.post('/u/alice/edit/reset', {
+    headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-Token': alice.csrf },
+    body: '{}',
+  });
+  ok(reset.status === 200, 'owner reset returns 200');
+  const afterReset = db.getCustomization(aliceId);
+  ok(afterReset.html === '' && afterReset.css === '' && afterReset.effect === '' && afterReset.template_version === 0,
+    'customization (html/css/effect/version) cleared');
+  const aliceAfterReset = db.getUserByUsername('alice');
+  ok(aliceAfterReset.display_name === 'Alice Prime' && aliceAfterReset.bio === 'new bio',
+    'reset keeps the normal profile fields');
+  const resetDenied = await bob.post('/u/alice/edit/reset', {
+    headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-Token': bob.csrf },
+    body: '{}',
+  });
+  ok(resetDenied.status === 403, 'non-owner reset is 403');
 
   console.log(failures ? '\nPROFILE EDITOR TEST FAILED' : '\nPROFILE EDITOR TEST PASSED');
   process.exit(failures ? 1 : 0);
