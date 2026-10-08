@@ -7,6 +7,15 @@ release: the codebase carries its version in `package.json`, and the sections
 
 ## [Unreleased]
 
+### Fixes
+- **Profile CSS no longer gets corrupted by a pasted rule**: the per-part *Raw CSS* box expects
+  declarations, but pasting a whole `.selector { … }` block left a nested block that the browser
+  parsed as CSS nesting — after which further rules for that selector landed inside it and silently
+  stopped applying (e.g. you could no longer change a post's text colour). Declarations are now
+  normalised on write, and a stylesheet already in that broken shape is repaired when the editor
+  opens. The injected custom-font `@font-face` also moved to its own `<style>` so it is never written
+  back into the editable stylesheet (it used to duplicate on every save).
+
 ### Features
 - **Easy Editing (visual profile editor)**: edit your profile by clicking the live page instead of
   typing HTML/CSS. Click elements to select them, change attributes and styles in a side panel, drag

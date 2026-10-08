@@ -246,17 +246,18 @@ router.get('/:username', async (req, res, next) => {
     const pageHtml = substituteSlots(sanitizeProfileHTML(template), fragments);
     const rawCss = custom.css && custom.css.trim() ? custom.css : DEFAULT_PROFILE_CSS;
 
-    // The uploaded custom font is declared for every viewer, so it is usable by
-    // name everywhere (in the editor's Font menu too) without a pasted snippet.
-    let css = sanitizeCSS(rawCss);
-    if (font) {
-      css = "@font-face { font-family: '" + font.family + "'; src: url('/u/"
-        + encodeURIComponent(profileUser.username) + "/font?v=" + font.id + "'); font-display: swap; }\n" + css;
-    }
+    // The uploaded custom font is declared for every viewer in its own <style>,
+    // so it is usable by name everywhere (the editor's Font menu included) and
+    // never ends up inside the user's editable stylesheet.
+    const fontCss = font
+      ? "@font-face { font-family: '" + font.family + "'; src: url('/u/"
+        + encodeURIComponent(profileUser.username) + "/font?v=" + font.id + "'); font-display: swap; }"
+      : '';
 
     res.render('profile', {
       pageHtml,
-      css,
+      css: sanitizeCSS(rawCss),
+      fontCss,
       effect: custom.effect || '',
       isOwn,
       editor: isOwn ? {

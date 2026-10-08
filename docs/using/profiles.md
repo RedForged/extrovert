@@ -69,7 +69,8 @@ pick a colour: it's kept.
   (size, weight, font, alignment, line height, letter spacing); *Effects* (opacity, shadow); *Layout*
   (display, width, height, gap).
 - **Keep the power.** *Add property* takes any CSS declaration by hand, and *Raw CSS for this part*
-  exposes the rule underneath — everything is plain CSS in your profile stylesheet.
+  exposes the rule underneath (paste declarations — or a whole `.selector { … }` block, it's
+  normalised). Everything is plain CSS in your profile stylesheet.
 
 There is no separate raw page any more: `?edit=1` is the only editor, and `/u/<you>/edit` redirects
 here.

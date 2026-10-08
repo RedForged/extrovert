@@ -138,6 +138,9 @@ async function main() {
   db.setUserFont(aliceId, '/uploads/drive/test-font.ttf');
   const withFont = await alice.get('/u/alice');
   ok(/@font-face[^}]*font-family: 'My Test Font'/.test(withFont.text), 'owner page injects the @font-face');
+  ok(withFont.text.includes('id="ev-font-face"'), 'custom font lives in its own style element');
+  const editableCss = (withFont.text.match(/<style id="ev-user-css">([\s\S]*?)<\/style>/) || [])[1] || '';
+  ok(!/@font-face/.test(editableCss), 'the editable stylesheet stays free of the injected @font-face');
   ok(withFont.text.includes('/u/alice/font?v='), '@font-face points at the stable font URL');
   ok(withFont.text.includes('data-font-family="My Test Font"'), 'font family exposed to the editor');
   const visitorView = await bob.get('/u/alice');

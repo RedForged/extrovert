@@ -97,6 +97,13 @@
     var fieldsEl = document.getElementById('ev-fields');
     if (fieldsEl && fieldsEl.dataset && fieldsEl.dataset.fontFamily) state.fontFamily = fieldsEl.dataset.fontFamily;
 
+    // Heal a stylesheet broken by an earlier pasted-rule edit, so the page and
+    // future edits work again.
+    if (state.styleEl && needsRepair(state.styleEl.textContent)) {
+      setUserCss(state, repairCss(state.styleEl.textContent));
+      queueSave(state);
+    }
+
     toggle.addEventListener('click', function (e) {
       if (e && e.preventDefault) e.preventDefault();
       setEditing(state, !state.editing);
@@ -839,18 +846,27 @@
     s.textContent = state.target.kind === 'rule' ? 'Raw CSS for this part' : 'Raw style';
     d.appendChild(s);
     var ta = document.createElement('textarea');
-    ta.rows = 4; ta.spellcheck = false;
+    ta.rows = 5; ta.spellcheck = false;
+    ta.placeholder = 'color: red;';
     ta.value = state.target.kind === 'rule'
       ? findRuleDecls(getUserCss(state), state.target.selector)
       : (state.target.el.getAttribute('style') || '');
     ta.addEventListener('change', function () {
-      if (state.target.kind === 'rule') setRuleDecls(state, state.target.selector, ta.value);
-      else if (ta.value.trim()) state.target.el.setAttribute('style', ta.value);
+      var v = normalizeDecls(ta.value);
+      ta.value = v;
+      if (state.target.kind === 'rule') setRuleDecls(state, state.target.selector, v);
+      else if (v.trim()) state.target.el.setAttribute('style', v);
       else state.target.el.removeAttribute('style');
       paintOutline(state);
       queueSave(state);
     });
     d.appendChild(ta);
+    var hint = document.createElement('small');
+    hint.className = 'muted';
+    hint.textContent = state.target.kind === 'rule'
+      ? 'Declarations only (color: red;). Pasting a whole .selector { … } block works too.'
+      : 'Inline declarations only.';
+    d.appendChild(hint);
     return d;
   }
 
@@ -915,7 +931,60 @@
     var loc = findRule(css, selector);
     return loc ? css.slice(loc.open + 1, loc.close).trim() : '';
   }
+
+  // The rule textareas hold declarations, but people paste a whole rule
+  // (".post { color: red }"). Take just the inside and drop stray braces, so we
+  // can never author nested/invalid CSS that breaks the stylesheet.
+  function normalizeDecls(text) {
+    var s = String(text || '');
+    var m = s.match(/\{([\s\S]*)\}/);
+    if (m) s = m[1];
+    return s.replace(/[{}]/g, '');
+  }
+
+  function matchBrace(css, open) {
+    var depth = 0;
+    for (var i = open; i < css.length; i++) {
+      if (css[i] === '{') depth++;
+      else if (css[i] === '}') { depth--; if (depth === 0) return i; }
+    }
+    return -1;
+  }
+
+  // A non-at rule whose block contains "{" is a bogus wrapper left by a pasted
+  // full rule. Drop the wrapper and hoist the real rules out of it.
+  function repairCss(css) {
+    var out = '', i = 0;
+    while (i < css.length) {
+      var open = css.indexOf('{', i);
+      if (open === -1) { out += css.slice(i); break; }
+      var selector = css.slice(i, open);
+      var close = matchBrace(css, open);
+      if (close === -1) { out += css.slice(i) + '}'; break; }
+      var block = css.slice(open + 1, close);
+      if (selector.trim().charAt(0) !== '@' && block.indexOf('{') !== -1) out += repairCss(block);
+      else out += selector + '{' + block + '}';
+      i = close + 1;
+    }
+    return out;
+  }
+
+  function needsRepair(css) {
+    var i = 0;
+    while (i < css.length) {
+      var open = css.indexOf('{', i);
+      if (open === -1) return false;
+      var selector = css.slice(i, open);
+      var close = matchBrace(css, open);
+      if (close === -1) return true;
+      if (selector.trim().charAt(0) !== '@' && css.slice(open + 1, close).indexOf('{') !== -1) return true;
+      i = close + 1;
+    }
+    return false;
+  }
+
   function setRuleDecls(state, selector, decls) {
+    decls = normalizeDecls(decls);
     var css = getUserCss(state);
     var loc = findRule(css, selector);
     if (loc) css = css.slice(0, loc.open + 1) + '\n' + decls + '\n' + css.slice(loc.close);
