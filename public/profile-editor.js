@@ -411,8 +411,8 @@
     }
 
     section(state, body, 'Colour', [
-      colorControl(state, 'Text colour', 'color', {}),
-      colorControl(state, 'Background', 'background-color', { allowNone: true, gradients: true }),
+      colorControl(state, 'Text colour', 'color'),
+      backgroundControl(state),
     ]);
     section(state, body, 'Edges', [
       pxControl(state, 'Border width', 'border-width', 0, 8),
@@ -515,7 +515,20 @@
     return p;
   }
 
-  function colorControl(state, label, prop, opts) {
+  // Value set on our own rule/inline style only (no computed fallback) — used
+  // where mixing in the theme's value would be misleading, e.g. background.
+  function ruleDecl(state, prop) {
+    var t = state.target;
+    if (!t) return '';
+    if (t.kind === 'rule') {
+      var decls = parseDecls(findRuleDecls(getUserCss(state), t.selector));
+      for (var i = 0; i < decls.length; i++) if (decls[i].prop === prop) return decls[i].value;
+      return '';
+    }
+    return t.el ? (t.el.style.getPropertyValue(prop) || '').trim() : '';
+  }
+
+  function colorControl(state, label, prop) {
     var box = document.createElement('div');
     var wrap = row(label);
     var val = getVal(state, prop);
@@ -541,20 +554,67 @@
       b.addEventListener('click', function () { text.value = 'var(' + s[0] + ')'; write(text.value); });
       pal.appendChild(b);
     });
-    if (opts.allowNone) pal.appendChild(chip('none', function () { text.value = 'none'; write('none'); }));
     box.appendChild(pal);
-    if (opts.gradients) {
-      var g = document.createElement('div');
-      g.className = 'ev-palette';
-      GRADIENTS.forEach(function (gr) {
-        var b = document.createElement('button');
-        b.type = 'button'; b.className = 'ev-chip wide'; b.title = gr[0];
-        b.style.background = gr[1];
-        b.addEventListener('click', function () { text.value = gr[1]; write(gr[1]); });
-        g.appendChild(b);
-      });
-      box.appendChild(g);
+    return box;
+  }
+
+  // Background needs to tell colour from image: gradients are invalid on
+  // background-color, so they must go to background-image (or the element ends
+  // up with no background at all).
+  function backgroundControl(state) {
+    var box = document.createElement('div');
+    var wrap = row('Background');
+    var current = ruleDecl(state, 'background-image') || ruleDecl(state, 'background-color') || '';
+    var text = document.createElement('input');
+    text.type = 'text'; text.value = current; text.placeholder = 'none';
+    var pick = document.createElement('input');
+    pick.type = 'color'; pick.className = 'ev-swatch';
+    pick.value = toHex(current) || '#000000';
+
+    function write(raw) {
+      var v = String(raw || '').trim();
+      if (!v || v === 'none') {
+        clearVal(state, 'background-image');
+        clearVal(state, 'background-color');
+        return;
+      }
+      if (/gradient\(|url\(/i.test(v)) {
+        setVal(state, 'background-image', v);
+        // clean up a gradient that an earlier version wrote to background-color
+        if (/gradient\(|url\(/i.test(ruleDecl(state, 'background-color'))) clearVal(state, 'background-color');
+      } else {
+        setVal(state, 'background-color', v);
+        clearVal(state, 'background-image');
+      }
     }
+    text.addEventListener('change', function () { write(text.value); });
+    pick.addEventListener('input', function () { text.value = pick.value; write(pick.value); });
+    wrap.appendChild(text);
+    wrap.appendChild(pick);
+    box.appendChild(wrap);
+
+    var pal = document.createElement('div');
+    pal.className = 'ev-palette';
+    THEME_SWATCHES.forEach(function (s) {
+      var b = document.createElement('button');
+      b.type = 'button'; b.className = 'ev-chip'; b.title = s[1];
+      b.style.background = 'var(' + s[0] + ')';
+      b.addEventListener('click', function () { text.value = 'var(' + s[0] + ')'; write(text.value); });
+      pal.appendChild(b);
+    });
+    pal.appendChild(chip('none', function () { text.value = ''; write(''); }));
+    box.appendChild(pal);
+
+    var g = document.createElement('div');
+    g.className = 'ev-palette';
+    GRADIENTS.forEach(function (gr) {
+      var b = document.createElement('button');
+      b.type = 'button'; b.className = 'ev-chip wide'; b.title = gr[0];
+      b.style.background = gr[1];
+      b.addEventListener('click', function () { text.value = gr[1]; write(gr[1]); });
+      g.appendChild(b);
+    });
+    box.appendChild(g);
     return box;
   }
 
