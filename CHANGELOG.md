@@ -16,10 +16,12 @@ release: the codebase carries its version in `package.json`, and the sections
   Advanced mode edit the **same document**, so the two are 100% interchangeable. The old
   `<!--POSTS-->` comment marker never worked (`sanitize-html` strips comments) and is replaced by the
   `posts` slot; saving from the editor migrates older profiles automatically. New save endpoint
-  `POST /u/:username/edit/visual` (owner-only, CSRF-checked, sanitized on write). Live slot content
-  (posts, comments, header fragments) is edited as **one element** — a click anywhere inside selects
-  the slot, never an individual post — and posts are restyled generally with page CSS rules
-  (the Page CSS panel gains an **Add** field with selector suggestions such as `.post-body`).
+  `POST /u/:username/edit/visual` (owner-only, CSRF-checked, sanitized on write). The visual editor is
+  **styling-first**: you hover/click a named part of the page (Post text, Bio, Follower stats, …) or
+  pick one from the Part menu, then restyle it with controls for colour, edges, spacing, text, effects
+  and layout. Live parts write a CSS rule (so one change restyles every post/comment); your own
+  elements get an inline style. *Add property* and *Raw CSS for this part* keep the full power, and
+  structural edits stay in the raw HTML/CSS editor.
 - **Report anything**: a single report flow reachable from a **⋯ menu** on posts, comments and
   profiles, plus the existing Report chip on room messages. Reports land in one admin queue
   (`/admin/reports`) that shows the type, context, the content (or the reporter's copy for encrypted

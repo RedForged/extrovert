@@ -1,101 +1,101 @@
-// Easy Editing — a WYSIWYG editor for the profile page.
+// Easy Editing — a styling tool for the profile page.
 //
-// The profile page is the live rendering of the user's stored HTML/CSS: the
-// whole page (header + content) is authored by the user, with live data placed
-// through slot elements (<div data-ev-slot="posts"></div>). This script lets the
-// owner click elements, edit attributes/styles, drag to reorder or nest, and
-// create/duplicate/delete elements — all against the real page. On save it
-// serializes the DOM back to the same HTML that Advanced mode edits, so the two
-// modes are 100% translatable.
+// You don't edit HTML boxes here. You click a named PART of the page (post,
+// post text, avatar, bio, …) and change it with real controls — colour, edges,
+// spacing, type, effects. Live content is styled with a CSS RULE keyed by the
+// part's selector, so one edit restyles every post/comment; your own authored
+// elements are styled inline. Everything still compiles to plain CSS/HTML, so
+// Advanced mode shows exactly the same document.
 //
-// External script only (CSP: script-src 'self', no inline handlers). Editor
-// chrome lives outside the editable root so it never leaks into the saved HTML.
+// External script only (CSP: script-src 'self', no inline handlers).
 (function () {
   'use strict';
 
-  var ALLOWED_TAGS = [
-    'div', 'span', 'p', 'br', 'hr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-    'a', 'img', 'b', 'i', 'em', 'strong', 'u', 's', 'strike', 'small', 'mark',
-    'ul', 'ol', 'li', 'dl', 'dt', 'dd', 'blockquote', 'pre', 'code',
-    'table', 'thead', 'tbody', 'tr', 'th', 'td', 'caption', 'colgroup', 'col',
-    'section', 'article', 'header', 'footer', 'nav', 'aside', 'main', 'figure', 'figcaption',
-    'details', 'summary', 'abbr', 'address', 'cite', 'q', 'sub', 'sup', 'time', 'kbd', 'var',
+  var VOID_TAGS = { br: 1, hr: 1, img: 1, col: 1 };
+
+  var THEME_SWATCHES = [
+    ['--primary', 'Primary'], ['--primary-strong', 'Primary +'], ['--secondary', 'Cyan'],
+    ['--accent', 'Gold'], ['--success', 'Green'], ['--danger', 'Red'],
+    ['--text', 'Text'], ['--text-secondary', 'Text 2'], ['--text-muted', 'Text muted'],
+    ['--surface', 'Surface'], ['--surface-2', 'Surface 2'], ['--border', 'Border'],
   ];
 
-  var ALLOWED_ATTRS = {
-    '*': ['class', 'id', 'style', 'title', 'dir', 'lang', 'data-ev-slot'],
-    a: ['href', 'name', 'target', 'rel'],
-    img: ['src', 'alt', 'width', 'height', 'loading'],
-    td: ['colspan', 'rowspan'],
-    th: ['colspan', 'rowspan'],
-    col: ['span'],
-    colgroup: ['span'],
-    time: ['datetime'],
+  var GRADIENTS = [
+    ['Soft primary', 'linear-gradient(135deg, var(--primary-soft), var(--secondary-soft))'],
+    ['Surfaces', 'linear-gradient(135deg, var(--surface), var(--surface-2))'],
+    ['Primary', 'linear-gradient(135deg, var(--primary), var(--secondary))'],
+  ];
+
+  var WEIGHTS = [
+    ['Default', ''], ['Light 300', '300'], ['Regular 400', '400'], ['Medium 500', '500'],
+    ['Semi 600', '600'], ['Bold 700', '700'],
+  ];
+
+  var FONTS = [
+    ['App body', ''], ['Display serif', 'var(--font-display)'],
+    ['Monospace', 'ui-monospace, SFMono-Regular, Menlo, monospace'],
+  ];
+
+  var SHADOWS = [
+    ['None', 'none'], ['Soft', '0 1px 2px rgba(0,0,0,0.3)'],
+    ['Lifted', '0 8px 24px rgba(0,0,0,0.35)'], ['Glow', '0 0 0 3px var(--primary-soft)'],
+  ];
+
+  // Friendly, selector-backed parts. Deepest match wins when you click.
+  var PARTS = [
+    { label: 'Profile header', group: 'Header', selector: '.profile-header' },
+    { label: 'Avatar', group: 'Header', selector: '[data-ev-slot="avatar"] img, [data-ev-slot="avatar"] .avatar' },
+    { label: 'Display name', group: 'Header', selector: '.profile-header h1' },
+    { label: 'Handle', group: 'Header', selector: '[data-ev-slot="handle"]' },
+    { label: 'Pronouns', group: 'Header', selector: '.pronouns' },
+    { label: 'Bio', group: 'Header', selector: '.bio' },
+    { label: 'Follower stats', group: 'Header', selector: '.profile-stats' },
+    { label: 'Follow button', group: 'Header', selector: '[data-ev-slot="follow"] .btn' },
+
+    { label: 'Posts list', group: 'Posts', selector: '.ev-posts-wrap' },
+    { label: 'Post card', group: 'Posts', selector: '.post' },
+    { label: 'Post author', group: 'Posts', selector: '.post-name' },
+    { label: 'Post handle / time', group: 'Posts', selector: '.post-handle, .post-time' },
+    { label: 'Post text', group: 'Posts', selector: '.post-body' },
+    { label: 'Post image / video', group: 'Posts', selector: '.post-media' },
+    { label: 'Post stats', group: 'Posts', selector: '.post-stats' },
+    { label: 'Post buttons', group: 'Posts', selector: '.post-actions button' },
+
+    { label: 'Comments', group: 'Comments', selector: '.comment' },
+    { label: 'Comment text', group: 'Comments', selector: '.comment-body' },
+    { label: 'Comment box', group: 'Comments', selector: '.comment-form input' },
+    { label: 'Comment button', group: 'Comments', selector: '.comment-form button' },
+
+    { label: 'Page background', group: 'Page', selector: 'body' },
+  ];
+
+  var SLOT_LABELS = {
+    avatar: 'Avatar', displayName: 'Display name', handle: 'Handle', pronouns: 'Pronouns',
+    bio: 'Bio', stats: 'Follower stats', follow: 'Follow button', chat: 'Chat link',
+    report: 'Report menu', botBadge: 'Bot badge', posts: 'Posts list',
   };
 
-  var VOID_TAGS = { br: 1, hr: 1, img: 1, col: 1 };
-  var SLOT_NAMES = [
-    'avatar', 'displayName', 'botBadge', 'handle', 'pronouns', 'bio',
-    'stats', 'follow', 'chat', 'report', 'posts',
-  ];
-
-  var STYLE_PROPS = [
-    { p: 'display', label: 'Display' },
-    { p: 'position', label: 'Position' },
-    { p: 'width', label: 'Width' },
-    { p: 'height', label: 'Height' },
-    { p: 'color', label: 'Text color', color: true },
-    { p: 'background-color', label: 'Background', color: true },
-    { p: 'font-size', label: 'Font size' },
-    { p: 'font-weight', label: 'Font weight' },
-    { p: 'font-family', label: 'Font family' },
-    { p: 'text-align', label: 'Text align' },
-    { p: 'padding', label: 'Padding' },
-    { p: 'margin', label: 'Margin' },
-    { p: 'border', label: 'Border' },
-    { p: 'border-radius', label: 'Radius' },
-    { p: 'gap', label: 'Gap' },
-    { p: 'opacity', label: 'Opacity' },
-  ];
-
   var currentState = null;
+  var toastEl = null;
 
-  // Common shared selectors, offered when adding a page rule (e.g. to style
-  // every post at once instead of one element at a time).
-  var SUGGESTED_SELECTORS = [
-    '.ev-posts-wrap .post', '.post', '.post-head', '.post-name', '.post-handle',
-    '.post-time', '.post-body', '.post-media', '.post-stats', '.post-actions',
-    '.post-comments', '.comment', '.comment-head', '.comment-body', '.comment-form',
-  ];
+  // ---------- init ----------
 
   function init() {
     var root = document.querySelector('.pfx-page');
     var toggle = document.getElementById('ev-edit-toggle');
     if (!root || !toggle) return;
-
     var username = meta('current-username');
     if (!username) return;
+
     var state = {
-      root: root,
-      editing: false,
-      selected: null,
-      dragged: null,
-      dropTarget: null,
-      dropRel: null,
-      username: username,
-      csrf: meta('csrf-token'),
+      root: root, editing: false, username: username, csrf: meta('csrf-token'),
       styleEl: document.getElementById('ev-user-css'),
-      ui: null,
-      outline: null,
-      indicator: null,
-      nodes: {},
+      target: null, lastElement: null,
+      ui: null, panel: null, outline: null, hover: null, nodes: {},
     };
     currentState = state;
 
-    toggle.hidden = false;
     toggle.addEventListener('click', function (e) {
-      // The toggle is a real link (?edit=1) so it works without JS; enhance it
-      // to switch in place instead of reloading.
       if (e && e.preventDefault) e.preventDefault();
       setEditing(state, !state.editing);
     });
@@ -107,8 +107,6 @@
     return el ? el.getAttribute('content') : '';
   }
 
-  // ---------- edit mode ----------
-
   function setEditing(state, on) {
     if (state.editing === on) return;
     state.editing = on;
@@ -116,112 +114,69 @@
     if (on) {
       buildUI(state);
       state.ui.hidden = false;
-      state.outline.hidden = false;
-      setDraggable(state, true);
       select(state, null);
     } else {
       if (state.ui) state.ui.hidden = true;
-      state.outline.hidden = true;
-      clearIndicator(state);
-      setDraggable(state, false);
+      hideOverlay(state);
       select(state, null);
     }
+    var t = document.getElementById('ev-edit-toggle');
+    if (t) t.textContent = on ? 'Exit editing' : 'Edit styles';
   }
 
-  function setDraggable(state, on) {
-    var els = state.root.querySelectorAll('*');
-    for (var i = 0; i < els.length; i++) {
-      var el = els[i];
-      // Live slot content is one element: never make its insides individually
-      // draggable (the slot itself still is).
-      var slot = closestSlot(state.root, el);
-      if (on && !(slot && slot !== el)) el.setAttribute('draggable', 'true');
-      else el.removeAttribute('draggable');
-    }
-    if (on) {
-      state.root.setAttribute('draggable', 'false');
-    } else {
-      state.root.removeAttribute('draggable');
-    }
-  }
-
-  // ---------- editor chrome ----------
+  // ---------- chrome ----------
 
   function buildUI(state) {
     if (state.ui) return;
 
-    var ui = document.createElement('div');
-    ui.id = 'ev-ui';
-    ui.hidden = true;
-
     var bar = document.createElement('div');
     bar.className = 'ev-bar';
-    bar.appendChild(button('+ Add', function () {
-      var tag = state.nodes.addSelect.value;
-      addElement(state, tag);
-    }));
-    var addSelect = document.createElement('select');
-    addSelect.className = 'ev-add-select';
-    addSelect.setAttribute('aria-label', 'Element to add');
-    for (var i = 0; i < ALLOWED_TAGS.length; i++) {
-      var opt = document.createElement('option');
-      opt.value = ALLOWED_TAGS[i];
-      opt.textContent = ALLOWED_TAGS[i];
-      addSelect.appendChild(opt);
-    }
-    bar.appendChild(addSelect);
-    bar.appendChild(button('Duplicate', function () { duplicate(state); }));
-    bar.appendChild(button('Delete', function () { removeSelected(state); }));
-    bar.appendChild(button('Wrap', function () { wrapSelected(state); }));
-    var spacer = document.createElement('span');
-    spacer.className = 'ev-bar-spacer';
-    bar.appendChild(spacer);
-    bar.appendChild(button('Save', function () { save(state); }, 'ev-primary'));
+    bar.appendChild(elBtn('Save', function () { save(state); }, 'ev-primary'));
     var adv = document.createElement('a');
     adv.className = 'ev-bar-link';
     adv.href = '/u/' + encodeURIComponent(state.username) + '/edit';
-    adv.textContent = 'Advanced';
+    adv.textContent = 'HTML / CSS';
     bar.appendChild(adv);
-    bar.appendChild(button('Exit', function () { setEditing(state, false); }));
-    ui.appendChild(bar);
+    bar.appendChild(elBtn('Exit', function () { setEditing(state, false); }));
 
     var panel = document.createElement('div');
     panel.className = 'ev-panel';
-    panel.innerHTML =
-      '<p class="ev-crumb" id="ev-crumb"></p>' +
-      '<div id="ev-body"></div>';
+    panel.innerHTML = '<div id="ev-body"></div>';
+
+    var outline = ovl('ev-outline');
+    var hover = ovl('ev-hover');
+
+    var ui = document.createElement('div');
+    ui.id = 'ev-ui';
+    ui.hidden = true;
+    ui.appendChild(bar);
     ui.appendChild(panel);
-
-    var outline = document.createElement('div');
-    outline.id = 'ev-outline';
-    outline.hidden = true;
-
-    var indicator = document.createElement('div');
-    indicator.id = 'ev-drop';
-    indicator.hidden = true;
-
     document.body.appendChild(ui);
     document.body.appendChild(outline);
-    document.body.appendChild(indicator);
+    document.body.appendChild(hover);
 
     state.ui = ui;
+    state.panel = panel;
     state.outline = outline;
-    state.indicator = indicator;
-    state.nodes.addSelect = addSelect;
-    state.nodes.crumb = panel.querySelector('#ev-crumb');
+    state.hover = hover;
     state.nodes.body = panel.querySelector('#ev-body');
 
     state.root.addEventListener('click', onClick, true);
-    state.root.addEventListener('dragstart', onDragStart);
-    state.root.addEventListener('dragover', onDragOver);
-    state.root.addEventListener('drop', onDrop);
-    state.root.addEventListener('dragend', onDragEnd);
+    state.root.addEventListener('mousemove', onHover);
+    state.root.addEventListener('mouseleave', function () { if (state.hover) state.hover.hidden = true; });
     window.addEventListener('scroll', function () { paintOutline(state); }, true);
     window.addEventListener('resize', function () { paintOutline(state); });
-    document.addEventListener('keydown', onKey);
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape') select(state, null); });
   }
 
-  function button(label, fn, cls) {
+  function ovl(id) {
+    var d = document.createElement('div');
+    d.id = id;
+    d.hidden = true;
+    return d;
+  }
+
+  function elBtn(label, fn, cls) {
     var b = document.createElement('button');
     b.type = 'button';
     b.className = 'ev-btn' + (cls ? ' ' + cls : '');
@@ -230,7 +185,45 @@
     return b;
   }
 
-  // ---------- selection ----------
+  // ---------- parts ----------
+
+  function partForNode(node) {
+    for (var i = 0; i < PARTS.length; i++) {
+      try { if (node.matches(PARTS[i].selector)) return PARTS[i]; } catch (e) {}
+    }
+    return null;
+  }
+
+  function resolveTarget(state, el) {
+    var node = el;
+    while (node && node !== state.root) {
+      var part = partForNode(node);
+      if (part) return { kind: 'rule', selector: part.selector, part: part, el: node };
+      node = node.parentNode;
+    }
+    var slot = closestSlot(state.root, el);
+    if (slot) {
+      var name = slot.getAttribute('data-ev-slot');
+      return {
+        kind: 'rule', selector: '[data-ev-slot="' + name + '"]', el: slot,
+        part: { label: SLOT_LABELS[name] || name, group: 'Live', selector: '[data-ev-slot="' + name + '"]' },
+      };
+    }
+    var cls = (el.className && typeof el.className === 'string') ? ('.' + el.className.trim().split(/\s+/)[0]) : '';
+    return {
+      kind: 'inline', selector: null, el: el,
+      part: { label: 'Your element (' + el.tagName.toLowerCase() + cls + ')', group: 'Yours', selector: null },
+    };
+  }
+
+  function onHover(e) {
+    var state = currentState;
+    if (!state || !state.editing) return;
+    var el = e.target;
+    if (el === state.root || !state.root.contains(el)) { state.hover.hidden = true; return; }
+    var t = resolveTarget(state, el);
+    drawBox(state.hover, t.el, 'hover', t.part.label || '');
+  }
 
   function onClick(e) {
     var state = currentState;
@@ -240,227 +233,211 @@
     var el = e.target;
     if (el === state.root) return select(state, null);
     if (!state.root.contains(el)) return;
-    // Live slot content is a single element: a click anywhere inside a slot
-    // (e.g. any of your posts) selects the slot, not the individual node.
-    select(state, closestSlot(state.root, el) || el);
+    var t = resolveTarget(state, el);
+    t.el = t.kind === 'inline' ? el : t.el;
+    state.lastElement = el;
+    select(state, t);
   }
 
-  function select(state, el) {
-    state.selected = el;
+  function select(state, target) {
+    state.target = target;
     paintOutline(state);
     renderPanel(state);
   }
 
   function paintOutline(state) {
-    var o = state.outline;
-    if (!o) return;
-    var el = state.selected;
-    if (!el || !state.editing) { o.hidden = true; return; }
-    var r = el.getBoundingClientRect();
-    o.hidden = false;
-    o.style.top = r.top + 'px';
-    o.style.left = r.left + 'px';
-    o.style.width = r.width + 'px';
-    o.style.height = r.height + 'px';
-    o.textContent = el.tagName.toLowerCase() + (isSlot(el) ? ' · ' + el.getAttribute('data-ev-slot') : '');
+    if (!state.target) { state.outline.hidden = true; return; }
+    drawBox(state.outline, state.target.el, 'sel', state.target.part.label || '');
   }
 
-  // ---------- inspector panel ----------
+  function drawBox(box, el, kind, label) {
+    if (!box) return;
+    if (!el || !el.getBoundingClientRect) { box.hidden = true; return; }
+    var r = el.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) { box.hidden = true; return; }
+    box.hidden = false;
+    box.className = kind === 'hover' ? 'ev-hoverbox' : 'ev-selbox';
+    box.style.top = r.top + 'px';
+    box.style.left = r.left + 'px';
+    box.style.width = r.width + 'px';
+    box.style.height = r.height + 'px';
+    box.textContent = label;
+  }
+
+  function hideOverlay(state) {
+    if (state.outline) state.outline.hidden = true;
+    if (state.hover) state.hover.hidden = true;
+  }
+
+  // ---------- value read/write (rule vs inline) ----------
+
+  function parseDecls(text) {
+    return String(text || '').split(';').map(function (s) { return s.trim(); }).filter(Boolean).map(function (d) {
+      var i = d.indexOf(':');
+      return i === -1 ? { prop: d, value: '' } : { prop: d.slice(0, i).trim(), value: d.slice(i + 1).trim() };
+    });
+  }
+  function serializeDecls(list) {
+    return list.filter(function (d) { return d.prop; })
+      .map(function (d) { return '  ' + d.prop + ': ' + d.value + ';'; }).join('\n');
+  }
+
+  function getVal(state, prop) {
+    var t = state.target;
+    if (!t) return '';
+    if (t.kind === 'rule') {
+      var decls = parseDecls(findRuleDecls(getUserCss(state), t.selector));
+      for (var i = 0; i < decls.length; i++) if (decls[i].prop === prop) return decls[i].value;
+    } else if (t.el) {
+      var inline = t.el.style.getPropertyValue(prop);
+      if (inline) return inline.trim();
+    }
+    return t.el ? window.getComputedStyle(t.el).getPropertyValue(prop).trim() : '';
+  }
+
+  function setVal(state, prop, value) {
+    var t = state.target;
+    if (!t) return;
+    if (t.kind === 'rule') {
+      var decls = parseDecls(findRuleDecls(getUserCss(state), t.selector));
+      var found = false;
+      decls.forEach(function (d) { if (d.prop === prop) { d.value = value; found = true; } });
+      if (!found) decls.push({ prop: prop, value: value });
+      setRuleDecls(state, t.selector, serializeDecls(decls));
+    } else if (t.el) {
+      t.el.style.setProperty(prop, value);
+    }
+    paintOutline(state);
+  }
+
+  function clearVal(state, prop) {
+    var t = state.target;
+    if (!t) return;
+    if (t.kind === 'rule') {
+      var decls = parseDecls(findRuleDecls(getUserCss(state), t.selector))
+        .filter(function (d) { return d.prop !== prop; });
+      setRuleDecls(state, t.selector, serializeDecls(decls));
+    } else if (t.el) {
+      t.el.style.removeProperty(prop);
+    }
+    paintOutline(state);
+  }
+
+  // ---------- panel ----------
 
   function renderPanel(state) {
     var body = state.nodes.body;
-    var crumb = state.nodes.crumb;
     body.textContent = '';
-    crumb.textContent = '';
-    var el = state.selected;
-    if (!el) {
-      body.appendChild(note('Click an element on the page to edit it. Drag elements to move them.'));
-      renderPageCss(state, body);
+    body.appendChild(partPicker(state));
+    if (!state.target) {
+      body.appendChild(note('Click a part of your profile to style it — or pick one above.'));
       return;
     }
+    var t = state.target;
+    var head = document.createElement('div');
+    head.className = 'ev-part-title';
+    head.textContent = t.part.label;
+    body.appendChild(head);
+    body.appendChild(note(t.kind === 'rule'
+      ? 'Applies to every “' + t.part.label.toLowerCase() + '” on your page.'
+      : 'Applies to this element only.'));
 
-    // Breadcrumb: root > ... > selected
-    var chain = [el];
-    while (chain[0].parentNode && chain[0].parentNode !== state.root) chain.unshift(chain[0].parentNode);
-    chain.forEach(function (node, i) {
-      if (i) crumb.appendChild(document.createTextNode(' > '));
-      var a = document.createElement('a');
-      a.href = '#';
-      a.textContent = node.tagName.toLowerCase();
-      a.addEventListener('click', function (e) { e.preventDefault(); select(state, node); });
-      crumb.appendChild(a);
-    });
-
-    if (isSlot(el)) {
-      body.appendChild(note('Live content — this is one element ("' + el.getAttribute('data-ev-slot')
-        + '"). Move and style it here. The content inside (every post, comment, etc.) is shared, so style it with a CSS rule below.'));
-    } else if (isTextOnly(el)) {
-      body.appendChild(field('Text', 'text', el.textContent, function (v) {
-        el.textContent = v;
-        paintOutline(state);
-      }));
+    if (t.kind === 'inline' && isTextOnly(t.el)) {
+      body.appendChild(textControl(state, 'Text', '@text'));
     }
 
-    body.appendChild(sectionTitle('Attributes'));
-    renderAttrs(state, body, el);
+    section(state, body, 'Colour', [
+      colorControl(state, 'Text colour', 'color', {}),
+      colorControl(state, 'Background', 'background-color', { allowNone: true, gradients: true }),
+    ]);
+    section(state, body, 'Edges', [
+      pxControl(state, 'Border width', 'border-width', 0, 8),
+      segmentedControl(state, 'Border style', 'border-style', [['none', 'none'], ['solid', 'solid'], ['dashed', 'dashed'], ['dotted', 'dotted']]),
+      colorControl(state, 'Border colour', 'border-color', {}),
+      pxControl(state, 'Corner radius', 'border-radius', 0, 40),
+    ]);
+    section(state, body, 'Spacing', [
+      pxControl(state, 'Padding', 'padding', 0, 64, true),
+      pxControl(state, 'Margin', 'margin', 0, 64, true),
+    ]);
+    section(state, body, 'Text', [
+      pxControl(state, 'Font size', 'font-size', 8, 48),
+      selectControl(state, 'Weight', 'font-weight', WEIGHTS),
+      selectControl(state, 'Font', 'font-family', FONTS),
+      segmentedControl(state, 'Align', 'text-align', [['left', 'Left'], ['center', 'Center'], ['right', 'Right']]),
+      textControl(state, 'Line height', 'line-height'),
+      textControl(state, 'Letter spacing', 'letter-spacing'),
+    ]);
+    section(state, body, 'Effects', [
+      pxControl(state, 'Opacity', 'opacity', 0, 100, false, '%'),
+      selectControl(state, 'Shadow', 'box-shadow', SHADOWS),
+    ]);
+    section(state, body, 'Layout', [
+      selectControl(state, 'Display', 'display', [['', 'Default'], ['block', 'block'], ['inline-block', 'inline-block'], ['flex', 'flex'], ['inline-flex', 'inline-flex'], ['none', 'hidden']]),
+      textControl(state, 'Width', 'width'),
+      textControl(state, 'Max width', 'max-width'),
+      textControl(state, 'Height', 'height'),
+      textControl(state, 'Gap', 'gap'),
+    ]);
 
-    body.appendChild(sectionTitle('Style (this element)'));
-    var styleBox = document.createElement('div');
-    body.appendChild(styleBox);
-    STYLE_PROPS.forEach(function (spec) { styleBox.appendChild(styleRow(state, el, spec)); });
-
-    body.appendChild(sectionTitle('Page CSS'));
-    renderPageCss(state, body);
+    body.appendChild(sectionTitle('More'));
+    body.appendChild(customPropControl(state));
+    body.appendChild(rawCss(state));
   }
 
-  function renderAttrs(state, body, el) {
-    var tag = el.tagName.toLowerCase();
-    var attrs = (ALLOWED_ATTRS['*'] || []).concat(ALLOWED_ATTRS[tag] || []);
-    attrs.forEach(function (name) {
-      if (name === 'data-ev-slot') return;
-      var val = el.getAttribute(name);
-      if (val === null) val = '';
-      var input;
-      if (name === 'style') input = field('style', 'textarea', val, function (v) {
-        if (v.trim()) el.setAttribute('style', v); else el.removeAttribute('style');
-        paintOutline(state);
-      });
-      else input = field(name, 'text', val, function (v) {
-        if (v === '') el.removeAttribute(name); else el.setAttribute(name, v);
-        paintOutline(state);
-      });
-      body.appendChild(input);
-    });
+  function section(state, body, title, rows) {
+    body.appendChild(sectionTitle(title));
+    rows.forEach(function (r) { body.appendChild(r); });
   }
 
-  // A row of label + input. Returns the wrapper element.
-  function field(labelText, type, value, onChange) {
+  function partPicker(state) {
     var wrap = document.createElement('label');
+    wrap.className = 'ev-field';
+    var span = document.createElement('span');
+    span.textContent = 'Part';
+    wrap.appendChild(span);
+    var sel = document.createElement('select');
+    sel.className = 'ev-part-picker';
+    var opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = '— choose a part —';
+    sel.appendChild(opt);
+    var groups = {};
+    PARTS.forEach(function (p) { (groups[p.group] = groups[p.group] || []).push(p); });
+    Object.keys(groups).forEach(function (g) {
+      var og = document.createElement('optgroup');
+      og.label = g;
+      groups[g].forEach(function (p) {
+        var o = document.createElement('option');
+        o.value = p.selector;
+        o.textContent = p.label;
+        og.appendChild(o);
+      });
+      sel.appendChild(og);
+    });
+    if (state.target && state.target.kind === 'rule') sel.value = state.target.selector;
+    sel.addEventListener('change', function () {
+      var part = null;
+      for (var i = 0; i < PARTS.length; i++) if (PARTS[i].selector === sel.value) part = PARTS[i];
+      if (!part) return select(state, null);
+      var elq = null;
+      try { elq = state.root.querySelector(part.selector); } catch (e) {}
+      select(state, { kind: 'rule', selector: part.selector, part: part, el: elq });
+    });
+    wrap.appendChild(sel);
+    return wrap;
+  }
+
+  // ---------- controls ----------
+
+  function row(labelText) {
+    var wrap = document.createElement('div');
     wrap.className = 'ev-field';
     var span = document.createElement('span');
     span.textContent = labelText;
     wrap.appendChild(span);
-    var input = document.createElement(type === 'textarea' ? 'textarea' : 'input');
-    if (type !== 'textarea') input.type = type;
-    input.value = value;
-    if (type === 'textarea') input.rows = 3;
-    input.spellcheck = false;
-    input.addEventListener('input', function () { onChange(input.value); });
-    input.addEventListener('change', function () { onChange(input.value); });
-    wrap.appendChild(input);
     return wrap;
   }
-
-  function styleRow(state, el, spec) {
-    var row = document.createElement('div');
-    row.className = 'ev-field';
-    var span = document.createElement('span');
-    span.textContent = spec.label;
-    row.appendChild(span);
-    var input = document.createElement('input');
-    input.type = 'text';
-    input.value = el.style.getPropertyValue(spec.p);
-    input.placeholder = spec.p;
-    input.addEventListener('input', function () {
-      if (input.value.trim()) el.style.setProperty(spec.p, input.value);
-      else el.style.removeProperty(spec.p);
-      paintOutline(state);
-    });
-    row.appendChild(input);
-    if (spec.color) {
-      var swatch = document.createElement('input');
-      swatch.type = 'color';
-      swatch.className = 'ev-swatch';
-      swatch.value = toHex(el.style.getPropertyValue(spec.p)) || '#000000';
-      swatch.addEventListener('input', function () {
-        input.value = swatch.value;
-        el.style.setProperty(spec.p, swatch.value);
-      });
-      row.appendChild(swatch);
-    }
-    return row;
-  }
-
-  function renderPageCss(state, body) {
-    if (!state.styleEl) { body.appendChild(note('No stylesheet yet.')); return; }
-    body.appendChild(note('Rules apply to every matching element on your page — e.g. .post-body styles all your posts.'));
-
-    var rules = listStyleRules(state);
-    var row = document.createElement('div');
-    row.className = 'ev-field';
-    var label = document.createElement('span');
-    label.textContent = 'Rule';
-    row.appendChild(label);
-    var sel = document.createElement('select');
-    var optNone = document.createElement('option');
-    optNone.value = '';
-    optNone.textContent = '— pick a selector —';
-    sel.appendChild(optNone);
-    rules.forEach(function (r) {
-      var o = document.createElement('option');
-      o.value = r.selector;
-      o.textContent = r.selector;
-      sel.appendChild(o);
-    });
-    row.appendChild(sel);
-    body.appendChild(row);
-
-    var editor = document.createElement('div');
-    editor.hidden = true;
-    body.appendChild(editor);
-
-    function showRule(selector) {
-      editor.textContent = '';
-      if (!selector) { editor.hidden = true; return; }
-      editor.hidden = false;
-      var cssText = findRuleDecls(getUserCss(state), selector) || '';
-      editor.appendChild(field('CSS declarations', 'textarea', cssText, function (v) {
-        setRuleDecls(state, selector, v);
-      }));
-    }
-    sel.addEventListener('change', function () { showRule(sel.value); });
-
-    // Add a rule for a selector that isn't in the stylesheet yet.
-    var newRow = document.createElement('div');
-    newRow.className = 'ev-field';
-    var nl = document.createElement('span');
-    nl.textContent = 'New rule';
-    newRow.appendChild(nl);
-    var nameInput = document.createElement('input');
-    nameInput.type = 'text';
-    nameInput.placeholder = '.post-body';
-    nameInput.spellcheck = false;
-    nameInput.setAttribute('list', 'ev-sel-suggest');
-    newRow.appendChild(nameInput);
-    var addBtn = document.createElement('button');
-    addBtn.type = 'button';
-    addBtn.className = 'ev-btn';
-    addBtn.textContent = 'Add';
-    newRow.appendChild(addBtn);
-    var dl = document.createElement('datalist');
-    dl.id = 'ev-sel-suggest';
-    SUGGESTED_SELECTORS.forEach(function (s) {
-      var o = document.createElement('option');
-      o.value = s;
-      dl.appendChild(o);
-    });
-    body.appendChild(newRow);
-    body.appendChild(dl);
-    addBtn.addEventListener('click', function () {
-      var selector = nameInput.value.trim();
-      if (!selector) return;
-      if (!findRule(getUserCss(state), selector)) {
-        var option = document.createElement('option');
-        option.value = selector;
-        option.textContent = selector;
-        sel.appendChild(option);
-        setRuleDecls(state, selector, '');
-      }
-      sel.value = selector;
-      showRule(selector);
-    });
-  }
-
   function sectionTitle(t) {
     var h = document.createElement('h4');
     h.className = 'ev-section';
@@ -474,145 +451,173 @@
     return p;
   }
 
-  // ---------- element operations ----------
+  function colorControl(state, label, prop, opts) {
+    var box = document.createElement('div');
+    var wrap = row(label);
+    var val = getVal(state, prop);
+    var text = document.createElement('input');
+    text.type = 'text'; text.value = val; text.placeholder = 'none';
+    var pick = document.createElement('input');
+    pick.type = 'color'; pick.className = 'ev-swatch';
+    pick.value = toHex(val) || '#000000';
 
-  function targetContainer(state) {
-    var el = state.selected;
-    // A slot's insides are live content (regenerated on render): never add into
-    // them — place the new element as a sibling of the slot instead.
-    if (el && isSlot(el)) return el.parentNode || state.root;
-    if (el && !VOID_TAGS[el.tagName.toLowerCase()]) return el;
-    return state.root;
-  }
+    function write(v) { if (v) setVal(state, prop, v); else clearVal(state, prop); }
+    text.addEventListener('change', function () { write(text.value.trim()); });
+    pick.addEventListener('input', function () { text.value = pick.value; write(pick.value); });
+    wrap.appendChild(text);
+    wrap.appendChild(pick);
+    box.appendChild(wrap);
 
-  function addElement(state, tag) {
-    var el = document.createElement(tag);
-    if (tag === 'img') { el.setAttribute('src', '/static/placeholder.png'); el.setAttribute('alt', ''); }
-    else if (tag === 'a') { el.setAttribute('href', '#'); el.textContent = 'Link'; }
-    else if (VOID_TAGS[tag]) { /* empty */ }
-    else if (['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'span', 'li', 'td', 'th', 'blockquote', 'code', 'em', 'strong', 'b', 'i', 'u', 'small', 'mark', 'cite', 'q', 'kbd', 'var', 'summary', 'figcaption', 'caption', 'dt', 'dd', 'address', 'abbr'].indexOf(tag) !== -1) {
-      el.textContent = 'Text';
+    var pal = document.createElement('div');
+    pal.className = 'ev-palette';
+    THEME_SWATCHES.forEach(function (s) {
+      var b = document.createElement('button');
+      b.type = 'button'; b.className = 'ev-chip'; b.title = s[1];
+      b.style.background = 'var(' + s[0] + ')';
+      b.addEventListener('click', function () { text.value = 'var(' + s[0] + ')'; write(text.value); });
+      pal.appendChild(b);
+    });
+    if (opts.allowNone) pal.appendChild(chip('none', function () { text.value = 'none'; write('none'); }));
+    box.appendChild(pal);
+    if (opts.gradients) {
+      var g = document.createElement('div');
+      g.className = 'ev-palette';
+      GRADIENTS.forEach(function (gr) {
+        var b = document.createElement('button');
+        b.type = 'button'; b.className = 'ev-chip wide'; b.title = gr[0];
+        b.style.background = gr[1];
+        b.addEventListener('click', function () { text.value = gr[1]; write(gr[1]); });
+        g.appendChild(b);
+      });
+      box.appendChild(g);
     }
-    var container = targetContainer(state);
-    container.appendChild(el);
-    el.setAttribute('draggable', 'true');
-    select(state, el);
+    return box;
   }
 
-  function duplicate(state) {
-    if (!state.selected) return;
-    var copy = state.selected.cloneNode(true);
-    copy.removeAttribute('draggable');
-    state.selected.parentNode.insertBefore(copy, state.selected.nextSibling);
-    select(state, copy);
+  function chip(label, fn) {
+    var b = document.createElement('button');
+    b.type = 'button'; b.className = 'ev-chip text';
+    b.textContent = label;
+    b.addEventListener('click', fn);
+    return b;
   }
 
-  function removeSelected(state) {
-    if (!state.selected) return;
-    var el = state.selected;
-    if (isSlot(el) && !window.confirm('Remove the "' + el.getAttribute('data-ev-slot') + '" slot? That live content will stop appearing.')) return;
-    var parent = el.parentNode;
-    el.parentNode.removeChild(el);
-    select(state, parent === state.root ? null : parent);
-  }
+  // A px slider + number. `shorthand` writes a single value for padding/margin.
+  function pxControl(state, label, prop, min, max, shorthand, unit) {
+    unit = unit || 'px';
+    var wrap = row(label);
+    var val = getVal(state, prop);
+    var num = document.createElement('input');
+    num.type = 'number'; num.min = String(min); num.max = String(max);
+    var parsed = parseFloat(val);
+    num.value = isNaN(parsed) ? '' : String(parsed);
+    var range = document.createElement('input');
+    range.type = 'range'; range.min = String(min); range.max = String(max);
+    range.value = isNaN(parsed) ? String(min) : String(parsed);
+    range.className = 'ev-range';
 
-  function wrapSelected(state) {
-    if (!state.selected) return;
-    var el = state.selected;
-    var div = document.createElement('div');
-    el.parentNode.insertBefore(div, el);
-    div.appendChild(el);
-    div.setAttribute('draggable', 'true');
-    select(state, div);
-  }
-
-  // ---------- drag & drop ----------
-
-  function onDragStart(e) {
-    var state = currentState;
-    if (!state || !state.editing) return;
-    var el = e.target;
-    if (el === state.root || !state.root.contains(el)) { e.preventDefault(); return; }
-    var slot = closestSlot(state.root, el);
-    if (slot && slot !== el) { e.preventDefault(); return; }
-    state.dragged = el;
-    e.dataTransfer.effectAllowed = 'move';
-    try { e.dataTransfer.setData('text/plain', el.tagName); } catch (_) {}
-  }
-
-  function onDragOver(e) {
-    var state = currentState;
-    if (!state || !state.editing || !state.dragged) return;
-    var t = e.target;
-    if (!t || t === state.dragged || state.dragged.contains(t)) { clearIndicator(state); return; }
-    if (t !== state.root && !state.root.contains(t)) { clearIndicator(state); return; }
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    if (t === state.root) {
-      state.dropTarget = t; state.dropRel = 'inside';
-      showIndicator(state, t, 'inside');
-      return;
+    function write(v) {
+      if (v === '' || v === null) clearVal(state, prop);
+      else setVal(state, prop, v + unit);
     }
-    var r = t.getBoundingClientRect();
-    var y = e.clientY - r.top;
-    var rel = y < r.height * 0.28 ? 'before' : (y > r.height * 0.72 ? 'after' : 'inside');
-    state.dropTarget = t; state.dropRel = rel;
-    showIndicator(state, t, rel);
+    range.addEventListener('input', function () { num.value = range.value; write(range.value); });
+    num.addEventListener('change', function () { range.value = num.value || String(min); write(num.value); });
+    wrap.appendChild(range);
+    wrap.appendChild(num);
+    return wrap;
   }
 
-  function onDrop(e) {
-    var state = currentState;
-    if (!state || !state.editing || !state.dragged || !state.dropTarget) return;
-    e.preventDefault();
-    var dragged = state.dragged;
-    var target = state.dropTarget;
-    var rel = state.dropRel;
-    if (rel === 'inside') {
-      target.appendChild(dragged);
-    } else {
-      var parent = target.parentNode;
-      parent.insertBefore(dragged, rel === 'before' ? target : target.nextSibling);
+  function segmentedControl(state, label, prop, options) {
+    var wrap = row(label);
+    var val = getVal(state, prop);
+    var group = document.createElement('div');
+    group.className = 'ev-seg';
+    options.forEach(function (o) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = o[1];
+      if (val === o[0]) b.className = 'on';
+      b.addEventListener('click', function () { setVal(state, prop, o[0]); refreshSeg(group, b); });
+      group.appendChild(b);
+    });
+    function refreshSeg(g, active) {
+      Array.prototype.forEach.call(g.children, function (c) { c.className = ''; });
+      active.className = 'on';
     }
-    clearIndicator(state);
-    select(state, dragged);
+    wrap.appendChild(group);
+    return wrap;
   }
 
-  function onDragEnd() {
-    var state = currentState;
-    if (!state) return;
-    state.dragged = null;
-    state.dropTarget = null;
-    clearIndicator(state);
+  function selectControl(state, label, prop, options) {
+    var wrap = row(label);
+    var val = getVal(state, prop);
+    var sel = document.createElement('select');
+    options.forEach(function (o) {
+      var op = document.createElement('option');
+      op.value = o[1]; op.textContent = o[0];
+      sel.appendChild(op);
+    });
+    sel.value = val;
+    sel.addEventListener('change', function () {
+      if (sel.value === '') clearVal(state, prop); else setVal(state, prop, sel.value);
+    });
+    wrap.appendChild(sel);
+    return wrap;
   }
 
-  function showIndicator(state, target, rel) {
-    var ind = state.indicator;
-    if (!ind) return;
-    var r = target.getBoundingClientRect();
-    ind.hidden = false;
-    if (rel === 'inside') {
-      ind.className = 'ev-drop-inside';
-      ind.style.top = r.top + 'px';
-      ind.style.left = r.left + 'px';
-      ind.style.width = r.width + 'px';
-      ind.style.height = r.height + 'px';
-    } else {
-      ind.className = 'ev-drop-line';
-      ind.style.left = r.left + 'px';
-      ind.style.width = r.width + 'px';
-      ind.style.top = (rel === 'before' ? r.top : r.bottom) + 'px';
-      ind.style.height = '2px';
-    }
+  function textControl(state, label, prop) {
+    var wrap = row(label);
+    var isText = prop === '@text';
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.value = isText ? (state.target.el.textContent || '') : getVal(state, prop);
+    input.spellcheck = false;
+    input.addEventListener('change', function () {
+      if (isText) {
+        state.target.el.textContent = input.value;
+        paintOutline(state);
+      } else if (input.value.trim()) setVal(state, prop, input.value.trim());
+      else clearVal(state, prop);
+    });
+    wrap.appendChild(input);
+    return wrap;
   }
 
-  function clearIndicator(state) {
-    if (state && state.indicator) state.indicator.hidden = true;
+  function customPropControl(state) {
+    var box = document.createElement('div');
+    var wrap = row('Add property');
+    var p = document.createElement('input');
+    p.type = 'text'; p.placeholder = 'e.g. text-shadow'; p.className = 'ev-prop-name';
+    var v = document.createElement('input');
+    v.type = 'text'; v.placeholder = 'value';
+    var b = elBtn('＋', function () {
+      var name = p.value.trim();
+      if (name && v.value.trim()) { setVal(state, name, v.value.trim()); p.value = ''; v.value = ''; }
+    }, 'ev-tiny');
+    wrap.appendChild(p); wrap.appendChild(v); wrap.appendChild(b);
+    box.appendChild(wrap);
+    return box;
   }
 
-  function onKey(e) {
-    var state = currentState;
-    if (!state || !state.editing) return;
-    if (e.key === 'Escape') select(state, null);
+  function rawCss(state) {
+    var d = document.createElement('details');
+    d.className = 'ev-raw';
+    var s = document.createElement('summary');
+    s.textContent = state.target.kind === 'rule' ? 'Raw CSS for this part' : 'Raw style';
+    d.appendChild(s);
+    var ta = document.createElement('textarea');
+    ta.rows = 4; ta.spellcheck = false;
+    ta.value = state.target.kind === 'rule'
+      ? findRuleDecls(getUserCss(state), state.target.selector)
+      : (state.target.el.getAttribute('style') || '');
+    ta.addEventListener('change', function () {
+      if (state.target.kind === 'rule') setRuleDecls(state, state.target.selector, ta.value);
+      else if (ta.value.trim()) state.target.el.setAttribute('style', ta.value);
+      else state.target.el.removeAttribute('style');
+      paintOutline(state);
+    });
+    d.appendChild(ta);
+    return d;
   }
 
   // ---------- serialization ----------
@@ -622,7 +627,6 @@
     for (var i = 0; i < state.root.childNodes.length; i++) out += serializeNode(state.root.childNodes[i]);
     return out;
   }
-
   function serializeNode(node) {
     if (node.nodeType === 3) return escapeText(node.nodeValue);
     if (node.nodeType !== 1) return '';
@@ -635,26 +639,18 @@
     for (var i = 0; i < node.childNodes.length; i++) inner += serializeNode(node.childNodes[i]);
     return open + '>' + inner + '</' + tag + '>';
   }
-
   function serializeAttrs(node) {
-    var tag = node.tagName.toLowerCase();
-    var order = ['id', 'class', 'style', 'title', 'dir', 'lang']
-      .concat((ALLOWED_ATTRS[tag] || []))
-      .concat(['data-ev-slot']);
-    var seen = {};
+    var order = ['id', 'class', 'style', 'title', 'dir', 'lang', 'href', 'name', 'target', 'rel',
+      'src', 'alt', 'width', 'height', 'loading', 'colspan', 'rowspan', 'span', 'datetime', 'data-ev-slot'];
     var out = '';
     for (var i = 0; i < order.length; i++) {
-      var name = order[i];
-      if (seen[name]) continue;
-      seen[name] = 1;
-      var v = node.getAttribute(name);
+      var v = node.getAttribute(order[i]);
       if (v === null) continue;
-      if (name === 'style') { v = v.trim(); if (!v) continue; }
-      out += ' ' + name + '="' + escapeAttr(v) + '"';
+      if (order[i] === 'style') { v = v.trim(); if (!v) continue; }
+      out += ' ' + order[i] + '="' + escapeAttr(v) + '"';
     }
     return out;
   }
-
   function escapeText(s) {
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
@@ -663,8 +659,6 @@
   }
 
   function isSlot(el) { return el.hasAttribute && el.hasAttribute('data-ev-slot'); }
-  // Nearest enclosing slot element (or null). Live content lives inside slots,
-  // so this is how a click deep inside a post resolves to the slot itself.
   function closestSlot(root, el) {
     var n = el;
     while (n && n !== root) {
@@ -674,34 +668,19 @@
     return null;
   }
   function isTextOnly(el) {
-    for (var i = 0; i < el.childNodes.length; i++) {
-      if (el.childNodes[i].nodeType === 1) return false;
-    }
-    return !isSlot(el);
+    for (var i = 0; i < el.childNodes.length; i++) if (el.childNodes[i].nodeType === 1) return false;
+    return !isSlot(el) && el.textContent.trim() !== '';
   }
 
-  // ---------- page CSS ----------
+  // ---------- page CSS helpers ----------
 
   function getUserCss(state) { return state.styleEl ? state.styleEl.textContent : ''; }
   function setUserCss(state, text) { if (state.styleEl) state.styleEl.textContent = text; }
-
-  function listStyleRules(state) {
-    var out = [];
-    var sheet = state.styleEl && state.styleEl.sheet;
-    if (!sheet) return out;
-    var rules;
-    try { rules = sheet.cssRules; } catch (e) { return out; }
-    for (var i = 0; i < rules.length; i++) {
-      if (rules[i].selectorText) out.push({ selector: rules[i].selectorText });
-    }
-    return out;
-  }
 
   function findRuleDecls(css, selector) {
     var loc = findRule(css, selector);
     return loc ? css.slice(loc.open + 1, loc.close).trim() : '';
   }
-
   function setRuleDecls(state, selector, decls) {
     var css = getUserCss(state);
     var loc = findRule(css, selector);
@@ -709,7 +688,6 @@
     else css = css.replace(/\s*$/, '') + '\n' + selector + ' {\n' + decls + '\n}\n';
     setUserCss(state, css);
   }
-
   function depthAt(css, idx) {
     var d = 0;
     for (var i = 0; i < idx; i++) {
@@ -718,7 +696,6 @@
     }
     return d;
   }
-
   function findRule(css, selector) {
     var from = 0, pos;
     while ((pos = css.indexOf(selector, from)) !== -1) {
@@ -726,8 +703,7 @@
       if (open === -1) return null;
       var between = css.slice(pos + selector.length, open);
       if (/^[\s,]*$/.test(between) && depthAt(css, pos) === 0) {
-        var d = 0, close = -1;
-        var i = open;
+        var d = 0, close = -1, i = open;
         while (i < css.length) {
           if (css[i] === '{') d++;
           else if (css[i] === '}') { d--; if (d === 0) { close = i; break; } }
@@ -745,7 +721,6 @@
 
   function save(state) {
     if (!state.csrf) { toast('Missing CSRF token — reload the page.'); return; }
-    var payload = { html: serialize(state), css: getUserCss(state) };
     fetch('/u/' + encodeURIComponent(state.username) + '/edit/visual', {
       method: 'POST',
       headers: {
@@ -754,27 +729,21 @@
         'X-CSRF-Token': state.csrf,
         'X-Requested-With': 'XMLHttpRequest',
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ html: serialize(state), css: getUserCss(state) }),
     }).then(function (r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
-    }).then(function () {
-      toast('Profile saved');
-      setDraggable(state, true);
-    }).catch(function (err) {
-      toast('Save failed: ' + err.message);
-    });
+    }).then(function () { toast('Profile saved'); })
+      .catch(function (err) { toast('Save failed: ' + err.message); });
   }
 
-  // ---------- small helpers ----------
+  // ---------- misc ----------
 
   function toHex(value) {
     if (!value) return '';
-    value = value.trim();
+    value = String(value).trim();
     if (/^#[0-9a-f]{6}$/i.test(value)) return value;
-    if (/^#[0-9a-f]{3}$/i.test(value)) {
-      return '#' + value[1] + value[1] + value[2] + value[2] + value[3] + value[3];
-    }
+    if (/^#[0-9a-f]{3}$/i.test(value)) return '#' + value[1] + value[1] + value[2] + value[2] + value[3] + value[3];
     var m = value.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
     if (m) {
       return '#' + [m[1], m[2], m[3]].map(function (n) {
@@ -784,7 +753,6 @@
     return '';
   }
 
-  var toastEl = null;
   function toast(msg) {
     if (!toastEl) {
       toastEl = document.createElement('div');

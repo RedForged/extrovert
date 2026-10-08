@@ -1719,21 +1719,17 @@ body.ev-editing [data-ev-slot]:empty::before {
   opacity: 0.55;
 }
 
-#ev-outline {
+#ev-outline, #ev-hover {
   position: fixed;
   z-index: 70;
   pointer-events: none;
-  border: 1px solid var(--primary);
-  background: rgba(120, 160, 255, 0.08);
-  border-radius: 2px;
-  padding: 1px 3px;
+  border-radius: 3px;
+  padding: 1px 4px;
   font-size: 10px;
-  color: var(--primary-strong);
+  line-height: 1.3;
 }
-
-#ev-drop { position: fixed; z-index: 69; pointer-events: none; }
-#ev-drop.ev-drop-line { background: var(--primary); }
-#ev-drop.ev-drop-inside { border: 2px dashed var(--primary); border-radius: 4px; }
+#ev-outline { border: 1px solid var(--primary); background: var(--primary-soft-2); color: var(--primary-strong); }
+#ev-hover { border: 1px dashed var(--secondary); color: var(--secondary-strong); }
 
 #ev-ui { position: fixed; inset: 0; z-index: 65; pointer-events: none; }
 
@@ -1770,14 +1766,28 @@ body.ev-editing [data-ev-slot]:empty::before {
 .ev-btn.ev-primary { color: #fff; background: var(--primary); border-color: var(--primary); }
 .ev-bar-link { padding: 0 6px; font-size: var(--fs-sm); color: var(--accent); text-decoration: none; }
 
-.ev-add-select {
-  font-size: var(--fs-sm);
-  color: var(--text);
-  background: var(--surface);
-  border: 1px solid var(--border-soft);
-  border-radius: 8px;
-  padding: 5px 6px;
+.ev-btn.ev-tiny { padding: 5px 9px; min-width: 30px; }
+
+.ev-palette { display: flex; flex-wrap: wrap; gap: 5px; margin: 0 0 8px; }
+.ev-chip {
+  width: 20px; height: 20px; padding: 0; cursor: pointer;
+  border: 1px solid var(--border-soft); border-radius: 5px;
 }
+.ev-chip.wide { width: 44px; }
+.ev-chip.text {
+  width: auto; height: 20px; padding: 0 7px;
+  font-size: 11px; color: var(--text-secondary); background: var(--surface);
+}
+
+.ev-seg { display: inline-flex; border: 1px solid var(--border-soft); border-radius: 8px; overflow: hidden; }
+.ev-seg button {
+  border: none; background: var(--surface); color: var(--text-secondary);
+  font: inherit; font-size: var(--fs-sm); padding: 5px 9px; cursor: pointer;
+}
+.ev-seg button + button { border-left: 1px solid var(--border-soft); }
+.ev-seg button.on { background: var(--primary); color: #fff; }
+
+.ev-range { accent-color: var(--primary); }
 
 #ev-ui .ev-panel {
   position: fixed;
@@ -1796,10 +1806,18 @@ body.ev-editing [data-ev-slot]:empty::before {
   pointer-events: auto;
 }
 
-.ev-crumb { margin: 0 0 10px; color: var(--text-secondary); word-break: break-word; }
-.ev-crumb a { color: var(--accent); text-decoration: none; }
 .ev-section { margin: 16px 0 8px; font-size: var(--fs-sm); text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
 .ev-note { margin: 0 0 8px; color: var(--text-muted); line-height: 1.5; }
+.ev-part-title { margin: 12px 0 2px; font-size: var(--fs-md); font-weight: 700; color: var(--text); }
+
+.ev-raw { margin-top: 12px; }
+.ev-raw summary { cursor: pointer; color: var(--text-secondary); font-size: var(--fs-sm); }
+.ev-raw textarea {
+  width: 100%; margin-top: 6px; padding: 6px;
+  font-family: ui-monospace, monospace; font-size: 12px;
+  color: var(--text); background: var(--surface);
+  border: 1px solid var(--border-soft); border-radius: 7px;
+}
 
 .ev-field { display: grid; grid-template-columns: 84px 1fr auto; align-items: center; gap: 6px; margin-bottom: 7px; }
 .ev-field > span { color: var(--text-secondary); }

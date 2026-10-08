@@ -49,27 +49,26 @@ The slots are: `avatar`, `displayName`, `botBadge`, `handle`, `pronouns`, `bio`,
 > worked — posts always fell through to the end of the page. Use
 > `<div data-ev-slot="posts"></div>`. Saving from the editor migrates older profiles automatically.
 
-### Easy Editing (visual editor)
+### Editing your profile's styles
 
-You don't have to write HTML/CSS by hand. Open your own profile and click **Easy edit** (or add
-`?edit=1` to the URL). The page keeps its exact appearance while you work:
+Click **Edit styles** on your own profile (or add `?edit=1`). The page looks exactly as it does to
+visitors while a side panel lets you restyle it — no tags, no class names.
 
-- **Click** any element you authored to select it; the side panel shows its attributes and styles.
-- **Drag** your elements to reorder them or nest them into other containers, **+ Add** a new element,
-  **Duplicate**, **Wrap**, **Delete**.
-- **Live content is one element.** Everything a slot renders — all your posts, the comments, the
-  header fragments — is treated as a single block. Clicking inside it selects the slot (never one
-  individual post), and you can move and style that block. To style *what's inside* it (every post,
-  the post body, comments, …), add a **page CSS rule**: the Page CSS section has an **Add** field
-  with suggestions such as `.post-body`, and one rule applies to every match. That's the general way
-  to restyle posts — you never edit them one by one.
-- **Page CSS** lets you pick a selector and edit its declarations without touching the rest of your
-  stylesheet.
+- **Pick a part.** Hover the page: the editor outlines what you're about to change and names it
+  ("Post text", "Bio", "Follower stats", …). Click to select it, or choose any part from the **Part**
+  menu (Header, Posts, Comments, Page).
+- **Use the controls.** *Colour* (text, background, borders) with a palette of the theme's own colours
+  and gradient presets; *Edges* (border width, style, colour, corner radius); *Spacing* (padding,
+  margin); *Text* (size, weight, font, alignment, line height, letter spacing); *Effects* (opacity,
+  shadow); *Layout* (display, width, height, gap).
+- **One change restyles every instance.** Styling a post writes a CSS rule for that part, so **all**
+  your posts update together — you never edit an individual post. Styling one of your own elements
+  affects only that element.
+- **Keep the power.** *Add property* takes any CSS declaration by hand, and *Raw CSS for this part*
+  exposes the rule underneath. Everything is plain CSS in your profile stylesheet.
 
-**Save** stores the page and keeps you in the editor. **Advanced** opens the raw HTML/CSS fields
-(`/u/<you>/edit`). Easy and Advanced mode are the **same document**, so everything you do visually
-has an exact text equivalent — and editing the text is reflected the next time you open the visual
-editor. Nothing is persisted until you save.
+**Save** stores your changes; **HTML / CSS** opens the raw editor, which is where structural changes
+(add / move / delete elements) live — the visual mode deliberately doesn't do those.
 
 ### Allowed HTML
 
