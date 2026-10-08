@@ -1096,12 +1096,26 @@ install_atomic() { # src dst — rename, so a running copy keeps its inode
   mv -f "$tmp" "$2"
 }
 
+# Helper commands are installed in /usr/local/bin, but minimal containers (and
+# `pct exec`) don't always have that on PATH. Mirror them into /usr/bin, which
+# is always present, so the commands resolve in any shell. Idempotent, and it
+# never clobbers a real file.
+ensure_on_path() { # name
+  local name=$1
+  [ -d /usr/bin ] || return 0
+  if [ -e "/usr/bin/$name" ] && [ ! -L "/usr/bin/$name" ]; then
+    return 0
+  fi
+  ln -sf "/usr/local/bin/$name" "/usr/bin/$name"
+}
+
 step_helpers() {
   step "Installing helper commands"
   local tmp
   if [ -f "${CFG[EXTV_INSTALL_DIR]}/proxmox/extrovert-update.sh" ]; then
     install_atomic "${CFG[EXTV_INSTALL_DIR]}/proxmox/extrovert-update.sh" /usr/local/bin/extrovert-update
-    info "/usr/local/bin/extrovert-update"
+    ensure_on_path extrovert-update
+    info "/usr/local/bin/extrovert-update (also /usr/bin/extrovert-update)"
   else
     warn "this ref has no proxmox/extrovert-update.sh — keeping the installed updater"
   fi
@@ -1113,7 +1127,8 @@ step_helpers() {
   } > "$tmp"
   install -m 0755 "$tmp" /usr/local/bin/extrovert-config
   rm -f "$tmp"
-  info "/usr/local/bin/extrovert-config"
+  ensure_on_path extrovert-config
+  info "/usr/local/bin/extrovert-config (also /usr/bin/extrovert-config)"
 }
 
 step_permissions() {

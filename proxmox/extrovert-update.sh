@@ -34,6 +34,19 @@ info() { printf '    %s\n' "$*"; }
 warn() { printf '    ! %s\n' "$*" >&2; }
 die()  { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
 
+# The commands live in /usr/local/bin, but minimal containers (and `pct exec`)
+# don't always have that on PATH. Mirror them into /usr/bin, which is always
+# present, so `extrovert-update` resolves in any shell. Idempotent, and it never
+# clobbers a real file.
+ensure_on_path() { # name
+  local name=$1
+  [ -d /usr/bin ] || return 0
+  if [ -e "/usr/bin/$name" ] && [ ! -L "/usr/bin/$name" ]; then
+    return 0
+  fi
+  ln -sf "/usr/local/bin/$name" "/usr/bin/$name"
+}
+
 # --------------------------------------------------------------------------
 # configuration
 # --------------------------------------------------------------------------
@@ -166,11 +179,17 @@ install_deps() { # dir (installs only when package-lock.json changed)
 
 install_helpers() {
   local tmp
-  [ -f "$INSTALL_DIR/proxmox/extrovert-update.sh" ] || { warn "this ref has no proxmox/extrovert-update.sh — updater left alone"; return 0; }
-  tmp=/usr/local/bin/extrovert-update.new.$$
-  install -m 0755 -o root -g root "$INSTALL_DIR/proxmox/extrovert-update.sh" "$tmp"
-  mv -f "$tmp" /usr/local/bin/extrovert-update
-  info "updater command refreshed"
+  if [ -f "$INSTALL_DIR/proxmox/extrovert-update.sh" ]; then
+    tmp=/usr/local/bin/extrovert-update.new.$$
+    install -m 0755 -o root -g root "$INSTALL_DIR/proxmox/extrovert-update.sh" "$tmp"
+    mv -f "$tmp" /usr/local/bin/extrovert-update
+    info "updater command refreshed"
+  else
+    warn "this ref has no proxmox/extrovert-update.sh — keeping the installed updater"
+  fi
+  # Keep the command resolvable even where /usr/local/bin isn't on PATH.
+  ensure_on_path extrovert-update
+  ensure_on_path extrovert-config
 }
 
 checkout_ref() { # ref
