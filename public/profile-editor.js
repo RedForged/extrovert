@@ -119,6 +119,18 @@
     return el ? el.getAttribute('content') : '';
   }
 
+  // Keep the ?edit=1 flag in the URL in step with the actual mode: add it while
+  // editing, drop it when you stop, without reloading or adding history.
+  function setEditParam(on) {
+    try {
+      var url = new URL(location.href);
+      if (on) url.searchParams.set('edit', '1');
+      else url.searchParams.delete('edit');
+      var qs = url.searchParams.toString();
+      history.replaceState(null, '', url.pathname + (qs ? '?' + qs : '') + url.hash);
+    } catch (e) { /* no history API — harmless */ }
+  }
+
   function setEditing(state, on) {
     if (state.editing === on) return;
     state.editing = on;
@@ -142,6 +154,7 @@
     }
     var t = document.getElementById('ev-edit-toggle');
     if (t) t.textContent = on ? 'Exit editing' : 'Edit styles';
+    setEditParam(on);
   }
 
   // ---------- chrome ----------

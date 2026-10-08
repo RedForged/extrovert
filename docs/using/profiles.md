@@ -53,7 +53,8 @@ The slots are: `avatar`, `displayName`, `botBadge`, `handle`, `pronouns`, `bio`,
 
 Click **Edit styles** on your own profile (or add `?edit=1`). There's one editor now, and **changes
 save automatically** — a small status shows *Saving… / All changes saved*. Type a name, drag a slider,
-pick a colour: it's kept.
+pick a colour: it's kept. The `?edit=1` flag is added to the URL while you edit and **removed again
+when you exit**, so a later refresh just shows the page.
 
 - **Left panel — Profile.** Avatar (upload / remove), display name, bio, pronouns, profile effect,
   custom font, and a collapsible **HTML** box for structure (add or move blocks, links, images). These
