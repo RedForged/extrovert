@@ -90,7 +90,7 @@
     var state = {
       root: root, editing: false, username: username, csrf: meta('csrf-token'),
       styleEl: document.getElementById('ev-user-css'),
-      target: null, lastElement: null,
+      target: null, lastElement: null, hoverTarget: null, raf: null,
       ui: null, panel: null, outline: null, hover: null, nodes: {},
     };
     currentState = state;
@@ -115,7 +115,10 @@
       buildUI(state);
       state.ui.hidden = false;
       select(state, null);
+      startLoop(state);
     } else {
+      if (state.raf) { cancelAnimationFrame(state.raf); state.raf = null; }
+      state.hoverTarget = null;
       if (state.ui) state.ui.hidden = true;
       hideOverlay(state);
       select(state, null);
@@ -163,7 +166,10 @@
 
     state.root.addEventListener('click', onClick, true);
     state.root.addEventListener('mousemove', onHover);
-    state.root.addEventListener('mouseleave', function () { if (state.hover) state.hover.hidden = true; });
+    state.root.addEventListener('mouseleave', function () {
+      state.hoverTarget = null;
+      if (state.hover) state.hover.hidden = true;
+    });
     window.addEventListener('scroll', function () { paintOutline(state); }, true);
     window.addEventListener('resize', function () { paintOutline(state); });
     document.addEventListener('keydown', function (e) { if (e.key === 'Escape') select(state, null); });
@@ -220,9 +226,13 @@
     var state = currentState;
     if (!state || !state.editing) return;
     var el = e.target;
-    if (el === state.root || !state.root.contains(el)) { if (state.hover) state.hover.hidden = true; return; }
-    var t = resolveTarget(state, el);
-    setLayer(state.hover, targetElements(state, t), 'hover', t.part.label || '');
+    if (el === state.root || !state.root.contains(el)) {
+      state.hoverTarget = null;
+      if (state.hover) state.hover.hidden = true;
+      return;
+    }
+    state.hoverTarget = resolveTarget(state, el);
+    setLayer(state.hover, targetElements(state, state.hoverTarget), 'hover', state.hoverTarget.part.label || '');
   }
 
   function onClick(e) {
@@ -264,23 +274,55 @@
 
   function setLayer(layer, els, kind, label) {
     if (!layer) return;
-    layer.textContent = '';
-    if (!els || !els.length) { layer.hidden = true; return; }
-    var labeled = false;
-    els.forEach(function (el) {
+    var rects = [];
+    (els || []).forEach(function (el) {
       if (!el || !el.getBoundingClientRect) return;
       var r = el.getBoundingClientRect();
       if (r.width === 0 && r.height === 0) return;
-      var b = document.createElement('div');
-      b.className = 'ev-box ' + kind + (!labeled && label ? ' labeled' : '');
-      b.style.top = r.top + 'px';
-      b.style.left = r.left + 'px';
-      b.style.width = r.width + 'px';
-      b.style.height = r.height + 'px';
-      if (!labeled && label) { b.textContent = label; labeled = true; }
-      layer.appendChild(b);
+      rects.push(r);
     });
-    layer.hidden = layer.children.length === 0;
+    var n = rects.length;
+    while (layer.children.length < n) {
+      var b = document.createElement('div');
+      b.className = 'ev-box';
+      layer.appendChild(b);
+    }
+    while (layer.children.length > n) layer.removeChild(layer.lastChild);
+    for (var i = 0; i < n; i++) {
+      var box = layer.children[i];
+      var r = rects[i];
+      var cls = 'ev-box ' + kind + (i === 0 && label ? ' labeled' : '');
+      if (box.className !== cls) box.className = cls;
+      var top = r.top + 'px', left = r.left + 'px', w = r.width + 'px', h = r.height + 'px';
+      if (box.style.top !== top) box.style.top = top;
+      if (box.style.left !== left) box.style.left = left;
+      if (box.style.width !== w) box.style.width = w;
+      if (box.style.height !== h) box.style.height = h;
+      var txt = (i === 0 && label) ? label : '';
+      if (box.textContent !== txt) box.textContent = txt;
+    }
+    layer.hidden = n === 0;
+  }
+
+  // Keep the frames glued to their elements: any style edit, reflow, font swap
+  // or scroll moves content, so re-sync every animation frame while editing.
+  function startLoop(state) {
+    if (state.raf) return;
+    function tick() {
+      if (!state.editing) { state.raf = null; return; }
+      if (state.target) {
+        setLayer(state.outline, targetElements(state, state.target), 'sel', state.target.part.label || '');
+      } else if (state.outline) {
+        state.outline.hidden = true;
+      }
+      if (state.hoverTarget) {
+        setLayer(state.hover, targetElements(state, state.hoverTarget), 'hover', state.hoverTarget.part.label || '');
+      } else if (state.hover) {
+        state.hover.hidden = true;
+      }
+      state.raf = requestAnimationFrame(tick);
+    }
+    state.raf = requestAnimationFrame(tick);
   }
 
   function hideOverlay(state) {
