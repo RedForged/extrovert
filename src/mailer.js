@@ -1027,13 +1027,18 @@ async function diagnose({ to } = {}) {
 
   add('Configuration', true, `mode ${CFG.mode} · relay ${CFG.relay || 'none (direct to MX)'} · From ${CFG.from}` +
     (CFG.smtpUsername ? ` · authenticating as ${CFG.smtpUsername}` : ' · no SMTP credentials'));
-  add('DKIM signing', !!CFG.dkimEnabled, CFG.dkimEnabled
-    ? `signing as ${CFG.dkimDomain || fromDomain} (selector ${CFG.dkimSelector || 'default'})`
+  // CFG.dkim is nested — reading CFG.dkimEnabled here reported a false
+  // "disabled" and checked the wrong selector.
+  const dkim = CFG.dkim || {};
+  const dkimDomain = dkim.domain || fromDomain;
+  const dkimSelector = dkim.selector || 'extrovert';
+  add('DKIM signing', !!dkim.enabled, dkim.enabled
+    ? `signing as ${dkimDomain} (selector ${dkimSelector})` + (dkim.privateKeyPem ? ' · private key present' : ' · NO PRIVATE KEY — signing will be skipped')
     : 'disabled — mail will be unauthenticated');
 
   const spf = await txtRecord(fromDomain);
   add('SPF record', /v=spf1/i.test(spf), spf ? `${fromDomain}: ${spf.slice(0, 140)}` : `no TXT found at ${fromDomain}`);
-  const dkimName = (CFG.dkimSelector || 'default') + '._domainkey.' + (CFG.dkimDomain || fromDomain);
+  const dkimName = `${dkimSelector}._domainkey.${dkimDomain}`;
   const dkimTxt = await txtRecord(dkimName);
   add('DKIM record', /v=DKIM1|k=rsa|p=/i.test(dkimTxt), dkimTxt ? `found at ${dkimName}` : `no TXT found at ${dkimName}`);
   const dmarcTxt = await txtRecord('_dmarc.' + fromDomain);
