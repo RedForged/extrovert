@@ -214,6 +214,7 @@ router.post('/mail', requireAdmin, (req, res) => {
     setMailSettings({
       mode: String(b.mode || '').trim(),
       relay: String(b.relay || '').trim(),
+      smtp_username: String(b.smtp_username || '').trim(),
       from: String(b.from || '').trim(),
       from_name: String(b.from_name || '').trim(),
       bounce_from: String(b.bounce_from || '').trim(),
@@ -230,6 +231,10 @@ router.post('/mail', requireAdmin, (req, res) => {
     // empty field leaves the existing key (DB or env) untouched.
     const newKey = String(b.dkim_private_key || '').trim();
     if (newKey) setMailSettings({ dkim_private_key: newKey });
+    // SMTP password: same rule as the DKIM key — an empty field keeps the
+    // stored value, so the admin never has to retype it.
+    const newSmtpPass = String(b.smtp_password || '').trim();
+    if (newSmtpPass) setMailSettings({ smtp_password: newSmtpPass });
 
     renderMailPanel(req, res, { saved: true });
   } catch (err) {

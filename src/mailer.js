@@ -51,6 +51,10 @@ const KEYS_DIR = path.join(DATA_DIR, 'mail-keys');
 const ENV_DEFAULTS = {
   mode: 'auto',
   relay: null,
+  // SMTP AUTH (RFC 4954) for relays that require it — a submission port on
+  // your own mail server, or any authenticated relay.
+  smtpUsername: '',
+  smtpPassword: '',
   timeoutMs: 15000,
   maxAttempts: 3,
   retryBaseMs: 30000,
@@ -140,6 +144,9 @@ function resolveConfig(stored) {
     // SMTP relay override — when set, all messages go to this host instead of
     // the recipient's MX. E.g. EXTV_MAIL_RELAY=127.0.0.1:2525 → the catcher.
     relay: pick(s, 'relay', 'EXTV_MAIL_RELAY', '') || null,
+    // Credentials for a relay that requires authentication.
+    smtpUsername: pick(s, 'smtp_username', 'EXTV_MAIL_USERNAME', ''),
+    smtpPassword: pick(s, 'smtp_password', 'EXTV_MAIL_PASSWORD', ''),
     timeoutMs: num(pick(s, 'timeout_ms', 'EXTV_MAIL_TIMEOUT_MS', ENV_DEFAULTS.timeoutMs), ENV_DEFAULTS.timeoutMs),
     maxAttempts: num(pick(s, 'max_attempts', 'EXTV_MAIL_MAX_ATTEMPTS', ENV_DEFAULTS.maxAttempts), ENV_DEFAULTS.maxAttempts),
     retryBaseMs: num(pick(s, null, 'EXTV_MAIL_RETRY_BASE_MS', ENV_DEFAULTS.retryBaseMs), ENV_DEFAULTS.retryBaseMs),
@@ -523,6 +530,30 @@ async function smtpCommand(socket, cmd, expectCodes, timeoutMs) {
   return replies;
 }
 
+// SMTP AUTH (RFC 4954), AUTH LOGIN — the mechanism every relay supports.
+// Returns nothing; throws SmtpError with the server's reply on failure.
+async function smtpAuth(socket, username, password, timeoutMs) {
+  const b64 = (s) => Buffer.from(String(s), 'utf8').toString('base64');
+  const lastCode = (replies) => parseInt(replies[replies.length - 1].slice(0, 3), 10);
+
+  await writeLine(socket, 'AUTH LOGIN');
+  let replies = await smtpExchange(socket, timeoutMs);
+  if (lastCode(replies) !== 334) {
+    throw new SmtpError('SMTP AUTH LOGIN rejected: ' + replies[replies.length - 1], lastCode(replies));
+  }
+  await writeLine(socket, b64(username));
+  replies = await smtpExchange(socket, timeoutMs);
+  if (lastCode(replies) !== 334) {
+    throw new SmtpError('SMTP AUTH username rejected: ' + replies[replies.length - 1], lastCode(replies));
+  }
+  await writeLine(socket, b64(password || ''));
+  replies = await smtpExchange(socket, timeoutMs);
+  if (lastCode(replies) !== 235) {
+    throw new SmtpError('SMTP AUTH failed: ' + replies[replies.length - 1], lastCode(replies));
+  }
+  log('debug', 'SMTP authentication succeeded');
+}
+
 // Upgrade an existing connection to TLS (STARTTLS, RFC 3207). After this the
 // caller must switch to the returned TLSSocket — it is a drop-in Duplex.
 function upgradeToTls(rawSocket, host, timeoutMs, { required }) {
@@ -588,6 +619,12 @@ async function deliverToHost({ host, port, to, message, messageId, heloName }) {
         // that don't play nice after a half-baked TLS negotiation)
         log('debug', `STARTTLS unavailable (${err.message}); continuing plaintext`);
       }
+    }
+
+    // Authenticate when credentials are configured (needed for submission
+    // ports and most relays; direct-to-MX delivery doesn't use it).
+    if (CFG.smtpUsername) {
+      await smtpAuth(sock, CFG.smtpUsername, CFG.smtpPassword, timeoutMs);
     }
 
     const fromAddr = CFG.bounceFrom || CFG.from;

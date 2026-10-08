@@ -61,6 +61,15 @@
           </select>
           <label for="mail-relay">SMTP relay override <span class="muted">(host:port)</span></label>
           <input type="text" id="mail-relay" name="relay" value="<%= stored.relay || '' %>" placeholder="smtp.example.com:587">
+          <p class="muted" style="font-size:0.75rem;margin:-2px 0 8px">
+            Needed when this host can't deliver on port 25 (most VPS/ISPs block it). With credentials below it can
+            relay through an authenticated server — including your own on a submission port.
+          </p>
+          <label for="mail-smtp-user">SMTP username <span class="muted">(if the relay requires authentication)</span></label>
+          <input type="text" id="mail-smtp-user" name="smtp_username" value="<%= stored.smtp_username || '' %>" placeholder="you@yourdomain.com" autocomplete="off">
+          <label for="mail-smtp-pass">SMTP password</label>
+          <input type="password" id="mail-smtp-pass" name="smtp_password" value="" placeholder="<%= stored.smtp_password ? 'unchanged — type to replace' : 'leave blank if not required' %>" autocomplete="new-password">
+          <p class="muted" style="font-size:0.75rem;margin:-2px 0 8px">Authenticates with AUTH LOGIN after STARTTLS. The stored password is never shown.</p>
           <label for="mail-starttls">STARTTLS</label>
           <select name="starttls" id="mail-starttls">
             <option value="" <%= !stored.starttls ? 'selected' : '' %>>Inherit from EXTV_MAIL_STARTTLS / default (opportunistic)</option>

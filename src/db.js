@@ -3528,6 +3528,8 @@ function requireVerifiedEmail(user) {
 const MAIL_SETTING_KEYS = [
   'mode',            // 'auto' | 'capture'
   'relay',           // host:port SMTP relay override ('' = use MX)
+  'smtp_username',   // SMTP AUTH username for authenticated relays
+  'smtp_password',   // SMTP AUTH password (secret — never read back for display)
   'from',            // From-header address
   'from_name',       // display name
   'bounce_from',     // RFC 5321 MAIL FROM
