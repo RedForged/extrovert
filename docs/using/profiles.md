@@ -68,6 +68,10 @@ pick a colour: it's kept.
   presets; *Edges* (border width, style, colour, corner radius); *Spacing* (padding, margin); *Text*
   (size, weight, font, alignment, line height, letter spacing); *Effects* (opacity, shadow); *Layout*
   (display, width, height, gap).
+- **Page-wide options.** The editor opens on **Page (whole page)**: set the **Page font**, text
+  colour and background there and they apply everywhere (header and posts included). Two more parts
+  sit under **Page** — **Content links** (`.wrap a`) and **Content width** (`.wrap`). These write
+  plain `body` / `.wrap` rules, so they never touch the app's nav.
 - **Keep the power.** *Add property* takes any CSS declaration by hand, and *Raw CSS for this part*
   exposes the rule underneath (paste declarations — or a whole `.selector { … }` block, it's
   normalised). Everything is plain CSS in your profile stylesheet.

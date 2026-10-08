@@ -66,7 +66,9 @@
     { label: 'Comment box', group: 'Comments', selector: '.comment-form input' },
     { label: 'Comment button', group: 'Comments', selector: '.comment-form button' },
 
-    { label: 'Page background', group: 'Page', selector: 'body' },
+    { label: 'Page (whole page)', group: 'Page', selector: 'body' },
+    { label: 'Content links', group: 'Page', selector: '.wrap a' },
+    { label: 'Content width', group: 'Page', selector: '.wrap' },
   ];
 
   var SLOT_LABELS = {
@@ -124,8 +126,12 @@
     if (on) {
       buildUI(state);
       state.ui.hidden = false;
-      select(state, null);
       startLoop(state);
+      // Open on the whole-page part, so page-wide options (font, colours,
+      // background) are the first thing offered.
+      var pagePart = null;
+      for (var pi = 0; pi < PARTS.length; pi++) if (PARTS[pi].selector === 'body') pagePart = PARTS[pi];
+      select(state, pagePart ? { kind: 'rule', selector: 'body', part: pagePart, el: document.body } : null);
     } else {
       if (state.raf) { cancelAnimationFrame(state.raf); state.raf = null; }
       state.hoverTarget = null;
@@ -376,7 +382,8 @@
     if (target.kind === 'inline') return [target.el];
     var els = [];
     try { els = Array.prototype.slice.call(state.root.querySelectorAll(target.selector)); } catch (e) {}
-    if (!els.length && target.selector === 'body') els = [document.body];
+    // Some parts live outside the editable body (body, .wrap), so widen the net.
+    if (!els.length) { try { els = Array.prototype.slice.call(document.querySelectorAll(target.selector)); } catch (e) {} }
     if (!els.length && target.el) els = [target.el];
     return els;
   }
@@ -525,11 +532,14 @@
     head.textContent = t.part.label;
     body.appendChild(head);
     var n = targetElements(state, t).length;
-    body.appendChild(note(t.kind === 'inline'
-      ? 'Applies to this element only.'
-      : (n > 1
-        ? 'One shared template — this restyles all ' + n + ' matching elements on your page.'
-        : 'Shared style — applies wherever this part appears.')));
+    var isPage = t.kind === 'rule' && t.selector === 'body';
+    body.appendChild(note(isPage
+      ? 'Whole page — the font, text colour and background here apply everywhere (header and posts included).'
+      : (t.kind === 'inline'
+        ? 'Applies to this element only.'
+        : (n > 1
+          ? 'One shared template — this restyles all ' + n + ' matching elements on your page.'
+          : 'Shared style — applies wherever this part appears.'))));
 
     if (t.kind === 'inline' && isTextOnly(t.el)) {
       body.appendChild(textControl(state, 'Text', '@text'));
@@ -552,7 +562,7 @@
     section(state, body, 'Text', [
       pxControl(state, 'Font size', 'font-size', 8, 48),
       selectControl(state, 'Weight', 'font-weight', WEIGHTS),
-      selectControl(state, 'Font', 'font-family', fontOptions(state)),
+      selectControl(state, isPage ? 'Page font' : 'Font', 'font-family', fontOptions(state)),
       segmentedControl(state, 'Align', 'text-align', [['left', 'Left'], ['center', 'Center'], ['right', 'Right']]),
       textControl(state, 'Line height', 'line-height'),
       textControl(state, 'Letter spacing', 'letter-spacing'),
@@ -610,7 +620,7 @@
       for (var i = 0; i < PARTS.length; i++) if (PARTS[i].selector === sel.value) part = PARTS[i];
       if (!part) return select(state, null);
       var elq = null;
-      try { elq = state.root.querySelector(part.selector); } catch (e) {}
+      try { elq = document.querySelector(part.selector); } catch (e) {}
       select(state, { kind: 'rule', selector: part.selector, part: part, el: elq });
     });
     wrap.appendChild(sel);

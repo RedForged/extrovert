@@ -20,6 +20,9 @@ release: the codebase carries its version in `package.json`, and the sections
   pronouns, avatar and font.
 
 ### Features
+- **Page-wide customizations**: the styling panel gains a **Page** group and opens on it — set the
+  whole page's font, text colour and background, plus **Content links** (`.wrap a`) and **Content
+  width** (`.wrap`), as plain `body` / `.wrap` rules that leave the app nav alone.
 - **Easy Editing (visual profile editor)**: edit your profile by clicking the live page instead of
   typing HTML/CSS. Click elements to select them, change attributes and styles in a side panel, drag
   them to reorder or nest, add/duplicate/wrap/delete, and edit page CSS rules. The whole profile page
