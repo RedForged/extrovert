@@ -1055,6 +1055,16 @@ async function diagnose({ to } = {}) {
       add(CFG.relay ? 'Relay address' : `Mail exchanger for ${domain}`, false, err.message);
     }
     for (const t of targets.slice(0, 2)) {
+      // A blocked port and a broken resolver on this box look identical in a
+      // raw error code, but need completely different fixes — so separate them.
+      try {
+        await dns.lookup(t.host);
+      } catch (lookupErr) {
+        add(`Resolve ${t.host}`, false,
+          `this server cannot resolve that name (${lookupErr.code || 'lookup failed'}) — check /etc/resolv.conf on this machine`);
+        add(`Connect ${t.host}:${t.port}`, false, 'skipped — the name did not resolve');
+        continue;
+      }
       const reach = await canConnect(t.host, t.port, Math.min(CFG.timeoutMs, 8000));
       add(`Connect ${t.host}:${t.port}`, reach.ok, reach.detail);
     }
