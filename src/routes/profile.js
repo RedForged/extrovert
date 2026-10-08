@@ -16,7 +16,7 @@ const {
 } = require('../db');
 const { canView } = require('../network');
 const drive = require('../drive');
-const { sanitizeProfileHTML, sanitizeCSS, parsePronouns, sanitizePronouns, PRONOUN_FIELDS_MAX, PRONOUN_LENGTH_MAX } = require('../sanitize');
+const { sanitizeProfileHTML, sanitizeCSS, parsePronouns, sanitizePronouns, PRONOUN_FIELDS_MAX, PRONOUN_LENGTH_MAX, substituteSlots, normalizeSlots } = require('../sanitize');
 
 const router = express.Router();
 
@@ -63,6 +63,117 @@ const DEFAULT_PROFILE_CSS = `.ev-banner {
   font-family: ui-monospace, monospace;
 }
 .ev-posts-wrap { display: flex; flex-direction: column; gap: 14px; }`;
+
+// The profile page is a user-authored template. Live data is rendered through
+// slot elements (data-ev-slot) the server fills after sanitizing the template —
+// see src/sanitize.js. The header below mirrors the previous hardcoded markup.
+const POSTS_SLOT = '<div data-ev-slot="posts"></div>';
+
+const PROFILE_EFFECTS = ['matrix', 'glitch'];
+
+const PROFILE_HEADER_SLOTS = `<div class="profile-header">
+  <div data-ev-slot="avatar" style="flex:none"></div>
+  <div>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <h1 style="margin:0" data-ev-slot="displayName"></h1>
+      <span data-ev-slot="botBadge"></span>
+      <span data-ev-slot="chat"></span>
+    </div>
+    <div class="handle"><span data-ev-slot="handle"></span><span class="pronouns" data-ev-slot="pronouns"></span></div>
+    <p class="bio" data-ev-slot="bio"></p>
+    <div class="profile-stats" data-ev-slot="stats"></div>
+  </div>
+  <span class="spacer"></span>
+  <div data-ev-slot="follow"></div>
+  <div data-ev-slot="report"></div>
+</div>`;
+
+// Effective template for a user. v1 is stored verbatim; legacy (v0) content is
+// wrapped in the default header + .ev-custom so every profile gets one path.
+function buildTemplate(custom) {
+  const stored = (custom.html || '').trim();
+  if (Number(custom.template_version || 0) >= 1 && stored) return custom.html;
+  const content = stored || DEFAULT_PROFILE_HTML;
+  const body = content.includes('<!--POSTS-->')
+    ? content.replace('<!--POSTS-->', POSTS_SLOT)
+    : content + '\n<div class="ev-posts-wrap">\n' + POSTS_SLOT + '\n</div>';
+  return PROFILE_HEADER_SLOTS + '\n<div class="ev-custom">\n' + body + '\n</div>';
+}
+
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function renderView(res, view, locals) {
+  return new Promise((resolve, reject) => {
+    res.app.render(view, locals, (err, html) => (err ? reject(err) : resolve(html || '')));
+  });
+}
+
+// Build the trusted, server-rendered fragment for each slot. Injected into the
+// (already sanitized) template, so user markup never reaches a slot body.
+async function buildProfileFragments(res, ctx) {
+  const { viewer, profileUser, isOwn, canSeePosts, mutual, following, pronouns } = ctx;
+  const username = profileUser.username;
+  const csrf = esc(res.locals.csrfToken || '');
+  const f = {};
+
+  f.avatar = profileUser.avatar
+    ? `<img src="${esc(profileUser.avatar)}" alt="" style="width:72px;height:72px;border-radius:var(--radius-full);flex:none;object-fit:cover;border:1px solid var(--border-soft)">`
+    : `<div class="avatar" style="width:72px;height:72px;font-size:32px">${esc((profileUser.display_name || username).slice(0, 1).toUpperCase())}</div>`;
+  f.displayName = esc(profileUser.display_name);
+  f.botBadge = profileUser.is_bot ? '<span class="badge" title="Automated account">bot</span>' : '';
+  f.handle = '@' + esc(username);
+  f.pronouns = pronouns && pronouns.length ? esc(pronouns.join(' · ')) : '';
+  f.bio = esc(profileUser.bio || '');
+
+  if (viewer && !isOwn) {
+    if (mutual) {
+      f.chat = `<a href="/chats/${esc(username)}" class="chat-icon" title="Send a message">${await renderView(res, 'partials/icon', { name: 'chat', size: 18 })}</a>`;
+    } else {
+      f.chat = `<span class="chat-icon locked" title="Follow each other to start chatting">${await renderView(res, 'partials/icon', { name: 'lock', size: 15 })}</span>`;
+    }
+  } else {
+    f.chat = '';
+  }
+
+  const followerCount = countFollowers(profileUser.id);
+  const followingCount = countFollowing(profileUser.id);
+  const referralCount = getReferralCount(profileUser.id);
+  let stats = `<a href="/u/${esc(username)}/followers" title="Followers"><span class="stat-dot dot-friends"></span>${followerCount} follower${followerCount === 1 ? '' : 's'}</a>`;
+  stats += `<a href="/u/${esc(username)}/following" title="Following"><span class="stat-dot dot-fof"></span>${followingCount} following</a>`;
+  if (referralCount > 0) {
+    stats += `<span class="stat-pip" title="${referralCount} person${referralCount === 1 ? '' : 's'} referred">${await renderView(res, 'partials/icon', { name: 'starFilled', size: 13 })} ${referralCount}</span>`;
+  }
+  f.stats = stats;
+
+  if (viewer && !isOwn) {
+    if (following) {
+      f.follow = `<form method="post" action="/unfollow/${esc(username)}"><input type="hidden" name="_csrf" value="${csrf}"><button class="btn ghost">${await renderView(res, 'partials/icon', { name: 'check', size: 15 })} Following</button></form>`;
+    } else {
+      f.follow = `<form method="post" action="/follow/${esc(username)}"><input type="hidden" name="_csrf" value="${csrf}"><button class="btn">${await renderView(res, 'partials/icon', { name: 'plus', size: 15 })} Follow</button></form>`;
+    }
+    f.report = `<div class="comment-menu-container">`
+      + `<button class="comment-menu-btn" title="More actions" aria-label="More actions">${await renderView(res, 'partials/icon', { name: 'more', size: 18 })}</button>`
+      + `<div class="comment-menu" style="display:none">`
+      + `<button type="button" class="report-item" data-report="user" data-report-id="${profileUser.id}">${await renderView(res, 'partials/icon', { name: 'flag', size: 14 })} Report profile</button>`
+      + `</div></div>`;
+  } else {
+    f.follow = '';
+    f.report = '';
+  }
+
+  if (canSeePosts) {
+    const items = hydrateProfilePosts(profileUser.id, viewer.id);
+    f.posts = await renderView(res, 'partials/post-list', { items, currentUser: viewer, onProfile: true, csrfToken: res.locals.csrfToken || '' });
+  } else {
+    f.posts = '<div class="ev-private">Follow @' + esc(username) + ' to see their posts.</div>';
+  }
+
+  return f;
+}
 
 // Hydrate a user's posts for display on their profile (resolves reposts).
 function hydrateProfilePosts(userId, viewerId) {
@@ -114,52 +225,34 @@ function countFollowBoost(postId) {
   return require('../db').db.prepare(`SELECT COUNT(*) AS n FROM follows_from_post WHERE post_id = ?`).get(postId).n;
 }
 
-router.get('/:username', (req, res) => {
-  const profileUser = getUserByUsername(req.params.username);
-  if (!profileUser) return res.status(404).render('404', { thing: 'user' });
+router.get('/:username', async (req, res, next) => {
+  try {
+    const profileUser = getUserByUsername(req.params.username);
+    if (!profileUser) return res.status(404).render('404', { thing: 'user' });
 
-  const viewer = res.locals.currentUser;
-  const isOwn = viewer && viewer.id === profileUser.id;
-  const canSeePosts = viewer && canView(viewer.id, profileUser.id);
-  const following = viewer ? isFollowing(viewer.id, profileUser.id) : false;
+    const viewer = res.locals.currentUser;
+    const isOwn = !!(viewer && viewer.id === profileUser.id);
+    const canSeePosts = !!(viewer && canView(viewer.id, profileUser.id));
+    const following = viewer ? isFollowing(viewer.id, profileUser.id) : false;
+    const mutual = !!(viewer && viewer.id !== profileUser.id && areMutualFollowers(viewer.id, profileUser.id));
 
-  const custom = getCustomization(profileUser.id);
-  const rawHtml = custom.html && custom.html.trim() ? custom.html : DEFAULT_PROFILE_HTML;
-  const rawCss = custom.css && custom.css.trim() ? custom.css : DEFAULT_PROFILE_CSS;
-  const html = sanitizeProfileHTML(rawHtml);
-  const css = sanitizeCSS(rawCss);
-
-  let postsHtml = '';
-  if (canSeePosts) {
-    const items = hydrateProfilePosts(profileUser.id, viewer.id);
-    res.app.render('partials/post-list', { items, currentUser: viewer, onProfile: true, csrfToken: res.locals.csrfToken || '' }, (err, html2) => {
-      if (err) { console.error(err); }
-      postsHtml = html2 || '';
-      finish();
-    });
-  } else {
-    postsHtml = '<div class="ev-private">Follow @' + profileUser.username +
-      ' to see their posts.</div>';
-    finish();
-  }
-
-  function finish() {
-    let finalHtml = html;
-    if (finalHtml.includes('<!--POSTS-->')) {
-      finalHtml = finalHtml.replace('<!--POSTS-->', postsHtml);
-    } else {
-      finalHtml += postsHtml;
-    }
-    const referralCount = getReferralCount(profileUser.id);
-    res.render('profile', {
-      profileUser, finalHtml, css, isOwn, following, canSeePosts,
-      followerCount: countFollowers(profileUser.id),
-      followingCount: countFollowing(profileUser.id),
-      mutual: viewer && viewer.id !== profileUser.id && areMutualFollowers(viewer.id, profileUser.id),
-      referralCount,
-      effect: custom.effect || '',
+    const custom = getCustomization(profileUser.id);
+    const template = buildTemplate(custom);
+    const fragments = await buildProfileFragments(res, {
+      viewer, profileUser, isOwn, canSeePosts, mutual, following,
       pronouns: parsePronouns(profileUser.pronouns),
     });
+    const pageHtml = substituteSlots(sanitizeProfileHTML(template), fragments);
+    const rawCss = custom.css && custom.css.trim() ? custom.css : DEFAULT_PROFILE_CSS;
+
+    res.render('profile', {
+      pageHtml,
+      css: sanitizeCSS(rawCss),
+      effect: custom.effect || '',
+      isOwn,
+    });
+  } catch (err) {
+    next(err);
   }
 });
 
@@ -173,7 +266,7 @@ router.get('/:username/edit', (req, res) => {
   const custom = getCustomization(viewer.id);
   res.render('profile-edit', {
     profileUser,
-    html: custom.html || DEFAULT_PROFILE_HTML,
+    html: buildTemplate(custom),
     css: custom.css || DEFAULT_PROFILE_CSS,
     displayName: viewer.display_name,
     bio: viewer.bio,
@@ -192,18 +285,46 @@ router.post('/:username/edit', (req, res) => {
   if (!profileUser || profileUser.id !== viewer.id) {
     return res.status(403).send('You can only edit your own profile.');
   }
-  const html = String(req.body.html || '');
-  const css = String(req.body.css || '');
+  // Sanitize on write too (the GET path also sanitizes) so the stored text is
+  // exactly what renders, which keeps Easy and Advanced mode converged.
+  const html = normalizeSlots(sanitizeProfileHTML(String(req.body.html || '')));
+  const css = sanitizeCSS(String(req.body.css || ''));
   const displayName = String(req.body.displayName || '').trim().slice(0, 60) || viewer.username;
   const bio = String(req.body.bio || '').trim().slice(0, 280);
 
-  const PROFILE_EFFECTS = ['matrix', 'glitch'];
   const rawEffect = String(req.body.effect || '').trim();
   const effect = PROFILE_EFFECTS.includes(rawEffect) ? rawEffect : '';
   const pronouns = sanitizePronouns(req.body.pronoun);
 
-  setCustomization(viewer.id, html, css, effect);
+  // Saving from Advanced mode adopts the full-page template (v1).
+  setCustomization(viewer.id, html, css, effect, 1);
   updateUserProfile(viewer.id, { displayName, bio, pronouns });
+  res.redirect('/u/' + profileUser.username);
+});
+
+// Easy Editing save: only touches HTML/CSS/effect (never displayName/bio/
+// pronouns), so the visual editor can save without clobbering profile fields.
+router.post('/:username/edit/visual', (req, res) => {
+  const viewer = res.locals.currentUser;
+  if (!viewer) return res.redirect('/login');
+  const profileUser = getUserByUsername(req.params.username);
+  const wantsJson = req.xhr || (req.get('accept') || '').includes('application/json') || req.is('application/json');
+  if (!profileUser || profileUser.id !== viewer.id) {
+    return wantsJson
+      ? res.status(403).json({ ok: false, error: 'You can only edit your own profile.' })
+      : res.status(403).send('You can only edit your own profile.');
+  }
+
+  const html = normalizeSlots(sanitizeProfileHTML(String(req.body.html || '')));
+  const css = sanitizeCSS(String(req.body.css || ''));
+  let effect;
+  if (req.body.effect !== undefined) {
+    const rawEffect = String(req.body.effect || '').trim();
+    effect = PROFILE_EFFECTS.includes(rawEffect) ? rawEffect : '';
+  }
+
+  setCustomization(viewer.id, html, css, effect, 1);
+  if (wantsJson) return res.json({ ok: true });
   res.redirect('/u/' + profileUser.username);
 });
 

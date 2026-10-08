@@ -1,6 +1,6 @@
 # Profiles & customization
 
-Every user has a profile page at `/u/<username>` and, more importantly, **full control over how it looks**: the profile body is your own HTML, the styling is your own CSS, and JavaScript is never allowed.
+Every user has a profile page at `/u/<username>` and, more importantly, **full control over how it looks**: the whole page is your own HTML, the styling is your own CSS, and JavaScript is never allowed. You can edit it as text or with the visual **Easy Editing** mode.
 
 ## What you can edit
 
@@ -18,16 +18,61 @@ Every user has a profile page at `/u/<username>` and, more importantly, **full c
 
 ## Profile HTML & CSS
 
-This is Extrovert's signature feature. Put literally anything in your profile body — headers, tables, figure captions, an address block — and style it with CSS.
+This is Extrovert's signature feature. **Your profile page is authored by you** — headers, tables,
+figure captions, an address block — and you style it with CSS. No JavaScript, ever.
 
-**The `<!--POSTS-->` marker**: put `<!--POSTS-->` in your HTML where you want your posts to render. If the marker is absent, your posts render after your HTML.
+**The whole page is yours.** Your HTML is the entire profile body, header row included. Live content
+— your avatar, display name, follower counts, the follow button, your posts — is placed with
+**slots**: empty placeholder elements the server fills on every visit.
+
+```html
+<div class="profile-header">
+  <div data-ev-slot="avatar"></div>
+  <div>
+    <h1 data-ev-slot="displayName"></h1>
+    <div class="handle" data-ev-slot="handle"></div>
+    <div data-ev-slot="stats"></div>
+  </div>
+</div>
+<div class="ev-posts-wrap"><div data-ev-slot="posts"></div></div>
+```
+
+The slots are: `avatar`, `displayName`, `botBadge`, `handle`, `pronouns`, `bio`, `stats`, `follow`,
+`chat`, `report`, `posts`.
+
+- Keep a slot's body **empty** — the server injects the matching content at render time. Move and
+  style slots freely; their contents are live data you don't edit directly.
+- Leave a slot out and that content simply doesn't appear; an empty slot takes no space in the
+  layout. Unknown slot names render empty.
+
+> **The `<!--POSTS-->` marker is gone.** `sanitize-html` strips HTML comments, so it never actually
+> worked — posts always fell through to the end of the page. Use
+> `<div data-ev-slot="posts"></div>`. Saving from the editor migrates older profiles automatically.
+
+### Easy Editing (visual editor)
+
+You don't have to write HTML/CSS by hand. Open your own profile and click **Easy edit** (or add
+`?edit=1` to the URL). The page keeps its exact appearance while you work:
+
+- **Click** any element to select it; the side panel shows its attributes and styles.
+- **Edit** attributes (`class`, `id`, `href`, `src`, …) and a full style panel (color, typography,
+  box model, spacing, border, display/flex). Live slots show as locked placeholders.
+- **Drag** elements to reorder them or nest them into other containers, **+ Add** a new element,
+  **Duplicate**, **Wrap**, **Delete**.
+- **Page CSS** lets you pick a selector and edit its declarations without touching the rest of your
+  stylesheet.
+
+**Save** stores the page and keeps you in the editor. **Advanced** opens the raw HTML/CSS fields
+(`/u/<you>/edit`). Easy and Advanced mode are the **same document**, so everything you do visually
+has an exact text equivalent — and editing the text is reflected the next time you open the visual
+editor. Nothing is persisted until you save.
 
 ### Allowed HTML
 
 Sanitized on save **and again on every render** with `sanitize-html` (`src/sanitize.js`). The whitelist:
 
 - **Tags:** structural (`div`, `span`, `p`, `section`, `article`, `header`, `footer`, `nav`, `aside`, `main`, `figure`, `details`, `summary`), headings (`h1`–`h6`), text (`b`, `i`, `em`, `strong`, `u`, `s`, `strike`, `small`, `mark`, `sub`, `sup`, `abbr`, `cite`, `q`, `kbd`, `var`, `time`), lists (`ul`, `ol`, `li`, `dl`, `dt`, `dd`), tables (`table`, `thead`, `tbody`, `tr`, `th`, `td`, `caption`, `colgroup`, `col`), `blockquote`, `pre`, `code`, `hr`, `br`, `a`, `img`.
-- **Attributes:** `class`, `id`, `style`, `title`, `dir`, `lang` on all tags; `href`, `name`, `target`, `rel` on links; `src`, `alt`, `width`, `height`, `loading` on images; table-span attributes; `datetime` on `time`.
+- **Attributes:** `class`, `id`, `style`, `title`, `dir`, `lang`, `data-ev-slot` on all tags; `href`, `name`, `target`, `rel` on links; `src`, `alt`, `width`, `height`, `loading` on images; table-span attributes; `datetime` on `time`.
 - **URL schemes:** `http`, `https`, `mailto` for links; `http`, `https` only for images. No `data:` URIs, no `javascript:`.
 
 Anything not allowed is **discarded** on save.
@@ -49,10 +94,10 @@ Modern CSS is safe by itself (it can't run JavaScript); these rules keep profile
 
 ```html
 <div class="hero">
-  <h1>Welcome</h1>
+  <h1 data-ev-slot="displayName"></h1>
   <p>This is my corner of the network. No scripts — just HTML and CSS.</p>
 </div>
-<div class="posts"><!--POSTS--></div>
+<div class="posts"><div data-ev-slot="posts"></div></div>
 ```
 
 ```css

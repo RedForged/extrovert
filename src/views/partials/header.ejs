@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title><%= locals.pageTitle ? pageTitle + ' · Extrovert' : 'Extrovert' %></title>
-  <link rel="stylesheet" href="/static/theme.css?v=22">
-  <% if (locals.headCss) { %><style><%- headCss %></style><% } %>
+  <link rel="stylesheet" href="/static/theme.css?v=23">
+  <% if (locals.headCss) { %><style<% if (locals.headCssId) { %> id="<%= locals.headCssId %>"<% } %>><%- headCss %></style><% } %>
   <link rel="manifest" href="/static/manifest.webmanifest">
   <meta name="csrf-token" content="<%= csrfToken %>">
   <% if (typeof currentUser !== 'undefined' && currentUser && currentUser.id) { %><meta name="current-user-id" content="<%= currentUser.id %>"><meta name="current-username" content="<%= currentUser.username %>"><% } %>
@@ -52,6 +52,7 @@
       <div class="sheet-divider"></div>
     <% } %>
     <a class="sheet-row" href="/u/<%= locals.currentUser.username %>/edit"><%- include('icon', { name: 'edit', size: 18 }) %> Edit profile</a>
+    <a class="sheet-row" href="/u/<%= locals.currentUser.username %>?edit=1"><%- include('icon', { name: 'code', size: 18 }) %> Easy edit</a>
     <% if (locals.inviteUrl) { %>
       <button type="button" class="sheet-row copy-ref" data-link="<%= locals.inviteUrl %>"><%- include('icon', { name: 'link', size: 18 }) %> <span class="copy-ref-label">Copy invite link</span></button>
     <% } else { %>

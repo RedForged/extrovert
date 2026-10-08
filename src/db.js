@@ -342,6 +342,8 @@ try { db.exec(`
 try { db.exec(`ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT 'default'`); } catch {}
 try { db.exec(`ALTER TABLE users ADD COLUMN bio TEXT NOT NULL DEFAULT ''`); } catch {}
 try { db.exec(`ALTER TABLE profile_customization ADD COLUMN effect TEXT NOT NULL DEFAULT ''`); } catch {}
+// 0 = legacy content-only HTML, 1 = full-page template with data-ev-slot placeholders.
+try { db.exec(`ALTER TABLE profile_customization ADD COLUMN template_version INTEGER NOT NULL DEFAULT 0`); } catch {}
 try { db.exec(`ALTER TABLE users ADD COLUMN pronouns TEXT NOT NULL DEFAULT ''`); } catch {}
 try { db.exec(`ALTER TABLE users ADD COLUMN custom_font TEXT NOT NULL DEFAULT ''`); } catch {}
 try { db.exec(`ALTER TABLE users ADD COLUMN developer_mode INTEGER NOT NULL DEFAULT 0`); } catch {}
@@ -1154,22 +1156,21 @@ function hasReposted(userId, originalId) {
 function getCustomization(userId) {
   return db.prepare(
     `SELECT * FROM profile_customization WHERE user_id = ?`
-  ).get(userId) || { user_id: userId, html: '', css: '', effect: '' };
+  ).get(userId) || { user_id: userId, html: '', css: '', effect: '', template_version: 0 };
 }
 
-function setCustomization(userId, html, css, effect) {
-  // Callers that don't mention an effect (e.g. the API profile route) leave it untouched.
-  if (effect === undefined) {
-    db.prepare(
-      `INSERT INTO profile_customization (user_id, html, css) VALUES (?,?,?)
-       ON CONFLICT(user_id) DO UPDATE SET html = excluded.html, css = excluded.css`
-    ).run(userId, html, css);
-    return;
-  }
+// `effect` / `templateVersion` left undefined are not touched. Passing them
+// (including an empty effect) writes them.
+function setCustomization(userId, html, css, effect, templateVersion) {
+  const cols = ['user_id', 'html', 'css'];
+  const vals = [userId, html, css];
+  const sets = ['html = excluded.html', 'css = excluded.css'];
+  if (effect !== undefined) { cols.push('effect'); vals.push(effect || ''); sets.push('effect = excluded.effect'); }
+  if (templateVersion !== undefined) { cols.push('template_version'); vals.push(templateVersion); sets.push('template_version = excluded.template_version'); }
   db.prepare(
-    `INSERT INTO profile_customization (user_id, html, css, effect) VALUES (?,?,?,?)
-     ON CONFLICT(user_id) DO UPDATE SET html = excluded.html, css = excluded.css, effect = excluded.effect`
-  ).run(userId, html, css, effect || '');
+    `INSERT INTO profile_customization (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})
+     ON CONFLICT(user_id) DO UPDATE SET ${sets.join(', ')}`
+  ).run(...vals);
 }
 
 // ---------- notifications ----------

@@ -12,6 +12,7 @@
     "test:owasp": "node --test scripts/owasp-test.js",
     "test:asvs": "node --test scripts/asvs-test.js",
     "test:render": "node scripts/render-smoke.js",
+    "test:profile-editor": "node scripts/profile-editor-test.js",
     "test:oauth": "node scripts/oauth-flow-test.js",
     "test:multi-account": "node scripts/multi-account-test.js",
     "test:twofa": "node scripts/twofa-test.js",

@@ -1,6 +1,7 @@
 <%- include('partials/header') %>
   <div class="card">
     <h2 style="margin-top:0">Edit your profile</h2>
+    <p class="muted" style="margin:0 0 18px">Prefer clicking over typing? <a href="/u/<%= profileUser.username %>?edit=1">Open Easy Editing</a> — the visual editor and these fields are the same document.</p>
 
     <div style="display:flex;align-items:center;gap:16px;margin-bottom:22px">
       <% if (profileUser.avatar) { %>
@@ -75,8 +76,8 @@ body { font-family: '<%= customFont.family %>', sans-serif; }</textarea>
       </select>
 
       <label for="edit-html">Profile HTML <span class="muted">(no &lt;script&gt;, no JS — stripped automatically)</span></label>
-      <textarea name="html" id="edit-html" rows="10" spellcheck="false" style="font-family:ui-monospace,monospace;font-size:13px"><%= html %></textarea>
-      <small class="muted">Put <code>&lt;!--POSTS--&gt;</code> where you want your posts to appear. If omitted, posts are shown at the end.</small>
+      <textarea name="html" id="edit-html" rows="14" spellcheck="false" style="font-family:ui-monospace,monospace;font-size:13px"><%= html %></textarea>
+      <small class="muted">This is the whole page. Live content is placed with slot elements, e.g. <code>&lt;div data-ev-slot="posts"&gt;&lt;/div&gt;</code>. Slots: <code>avatar, displayName, botBadge, handle, pronouns, bio, stats, follow, chat, report, posts</code>. Keep them empty; the server fills them.</small>
 
       <label for="edit-css">Profile CSS <span class="muted">(styles the whole page)</span></label>
       <textarea name="css" id="edit-css" rows="10" spellcheck="false" style="font-family:ui-monospace,monospace;font-size:13px"><%= css %></textarea>

@@ -1,48 +1,10 @@
-<%- include('partials/header', { headCss: css }) %>
+<%- include('partials/header', { headCss: css, headCssId: 'ev-user-css' }) %>
 <div class="pfx-page" data-profile-effect="<%= effect || '' %>">
-    <div class="profile-header">
-      <% if (profileUser.avatar) { %><img src="<%= profileUser.avatar %>" alt="" style="width:72px;height:72px;border-radius:var(--radius-full);flex:none;object-fit:cover;border:1px solid var(--border-soft)"><% } else { %><div class="avatar" style="width:72px;height:72px;font-size:32px"><%= (profileUser.display_name || profileUser.username).slice(0,1).toUpperCase() %></div><% } %>
-      <div>
-        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-          <h1 style="margin:0"><%= profileUser.display_name %></h1>
-          <% if (profileUser.is_bot) { %><span class="badge" title="Automated account">bot</span><% } %>
-          <% if (locals.currentUser && !isOwn) { %>
-            <% if (mutual) { %>
-              <a href="/chats/<%= profileUser.username %>" class="chat-icon" title="Send a message"><%- include('partials/icon', { name: 'chat', size: 18 }) %></a>
-            <% } else { %>
-              <span class="chat-icon locked" title="Follow each other to start chatting"><%- include('partials/icon', { name: 'lock', size: 15 }) %></span>
-            <% } %>
-          <% } %>
-        </div>
-        <div class="handle">@<%= profileUser.username %><% if (pronouns && pronouns.length) { %><span class="pronouns"><%= pronouns.join(' · ') %></span><% } %></div>
-        <% if (profileUser.bio) { %><p class="bio"><%= profileUser.bio %></p><% } %>
-        <div class="profile-stats">
-          <a href="/u/<%= profileUser.username %>/followers" title="Followers"><span class="stat-dot dot-friends"></span><%= followerCount %> follower<%= followerCount === 1 ? '' : 's' %></a>
-          <a href="/u/<%= profileUser.username %>/following" title="Following"><span class="stat-dot dot-fof"></span><%= followingCount %> following</a>
-          <% if (referralCount > 0) { %>
-            <span class="stat-pip" title="<%= referralCount %> person<%= referralCount === 1 ? '' : 's' %> referred"><%- include('partials/icon', { name: 'starFilled', size: 13 }) %> <%= referralCount %></span>
-          <% } %>
-        </div>
-      </div>
-      <span class="spacer"></span>
-      <% if (locals.currentUser && !isOwn) { %>
-        <% if (following) { %>
-          <form method="post" action="/unfollow/<%= profileUser.username %>"><input type="hidden" name="_csrf" value="<%= csrfToken %>"><button class="btn ghost"><%- include('partials/icon', { name: 'check', size: 15 }) %> Following</button></form>
-        <% } else { %>
-          <form method="post" action="/follow/<%= profileUser.username %>"><input type="hidden" name="_csrf" value="<%= csrfToken %>"><button class="btn"><%- include('partials/icon', { name: 'plus', size: 15 }) %> Follow</button></form>
-        <% } %>
-        <div class="comment-menu-container">
-          <button class="comment-menu-btn" title="More actions" aria-label="More actions"><%- include('partials/icon', { name: 'more', size: 18 }) %></button>
-          <div class="comment-menu" style="display:none">
-            <button type="button" class="report-item" data-report="user" data-report-id="<%= profileUser.id %>"><%- include('partials/icon', { name: 'flag', size: 14 }) %> Report profile</button>
-          </div>
-        </div>
-      <% } %>
-    </div>
-
-    <div class="ev-custom">
-      <%- finalHtml %>
-    </div>
+  <%- pageHtml %>
 </div>
+<% if (isOwn) { %>
+  <a id="ev-edit-toggle" class="btn ghost ev-edit-toggle" href="/u/<%= currentUser.username %>?edit=1"><%- include('partials/icon', { name: 'code', size: 15 }) %> Easy edit</a>
+  <script src="/static/profile-editor.js?v=2"></script>
+<% } %>
 <script src="/static/profile-effects.js?v=10"></script>
 <%- include('partials/footer') %>

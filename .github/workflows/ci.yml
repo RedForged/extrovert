@@ -24,6 +24,12 @@ jobs:
       - name: Unit tests — feed algorithm + sanitization
         run: npm test
 
+      - name: Easy Editing (profile visual editor) suite
+        run: npm run test:profile-editor
+
+      - name: Render smoke suite
+        run: npm run test:render
+
       - name: REST API integration suite
         run: npm run test:api
 

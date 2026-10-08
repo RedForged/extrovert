@@ -31,7 +31,7 @@ const ALLOWED_TAGS = [
 ];
 
 const ALLOWED_ATTRS = {
-  '*': ['class', 'id', 'style', 'title', 'dir', 'lang'],
+  '*': ['class', 'id', 'style', 'title', 'dir', 'lang', 'data-ev-slot'],
   a: ['href', 'name', 'target', 'rel'],
   img: ['src', 'alt', 'width', 'height', 'loading'],
   td: ['colspan', 'rowspan'],
@@ -59,6 +59,89 @@ function sanitizeProfileHTML(html) {
     `style="${sanitizeCSS(body).replace(/"/g, '&quot;')}"`
   );
   return clean;
+}
+
+// ---------- profile template slots ----------
+// Live profile data is rendered through named placeholder elements, e.g.
+// <div data-ev-slot="posts"></div>. They survive sanitization (the attribute
+// is allowed above); the server injects the matching fragment after sanitizing.
+// Slots are empty by convention, so a user can move/restyle them but not edit
+// their contents. Unknown slot names render empty.
+const SLOT_NAMES = [
+  'avatar', 'displayName', 'botBadge', 'handle', 'pronouns', 'bio',
+  'stats', 'follow', 'chat', 'report', 'posts',
+];
+
+// Find the start index of the closing tag matching an already-opened element,
+// respecting nesting of the same tag. Returns -1 when unbalanced.
+function findMatchingClose(html, from, tag) {
+  const openRe = new RegExp('<' + tag + '(?=[\\s/>])', 'gi');
+  const closeRe = new RegExp('</' + tag + '\\s*>', 'gi');
+  let depth = 1;
+  let i = from;
+  while (i < html.length) {
+    openRe.lastIndex = i;
+    closeRe.lastIndex = i;
+    const o = openRe.exec(html);
+    const c = closeRe.exec(html);
+    if (!c) return -1;
+    if (o && o.index < c.index) {
+      const gt = html.indexOf('>', o.index);
+      if (gt !== -1 && html[gt - 1] === '/') { i = gt + 1; continue; }
+      depth++;
+      i = o.index + o[0].length;
+    } else {
+      depth--;
+      if (depth === 0) return c.index;
+      i = c.index + c[0].length;
+    }
+  }
+  return -1;
+}
+
+// Rewrite the inner HTML of every slot element using `innerFor(name)`.
+function transformSlots(html, innerFor) {
+  if (!html) return html || '';
+  const re = /<([a-zA-Z][a-zA-Z0-9-]*)\b[^>]*\bdata-ev-slot\s*=\s*(?:"([^"]*)"|'([^']*)')[^>]*>/g;
+  let out = '';
+  let last = 0;
+  let m;
+  while ((m = re.exec(html))) {
+    const tag = m[1].toLowerCase();
+    const slotName = (m[2] !== undefined ? m[2] : m[3] || '').trim();
+    const openTag = m[0];
+    const openEnd = m.index + openTag.length;
+    const fragment = innerFor(slotName) || '';
+    if (/\/\s*>$/.test(openTag)) {
+      out += html.slice(last, m.index) + openTag.replace(/\/\s*>$/, '>') + fragment + '</' + tag + '>';
+      last = openEnd;
+      re.lastIndex = openEnd;
+      continue;
+    }
+    const closeStart = findMatchingClose(html, openEnd, tag);
+    if (closeStart === -1) continue;
+    const gt = html.indexOf('>', closeStart);
+    if (gt === -1) continue;
+    const elementEnd = gt + 1;
+    out += html.slice(last, m.index) + openTag + fragment + html.slice(closeStart, elementEnd);
+    last = elementEnd;
+    re.lastIndex = elementEnd;
+  }
+  out += html.slice(last);
+  return out;
+}
+
+// Replace each slot with its rendered fragment. Values are trusted,
+// server-rendered HTML injected after user HTML has been sanitized.
+function substituteSlots(html, fragments) {
+  const map = fragments || {};
+  return transformSlots(html, (name) => map[name]);
+}
+
+// Empty every slot's children (used on write so substitution is deterministic,
+// and so users cannot smuggle markup into a slot body).
+function normalizeSlots(html) {
+  return transformSlots(html, () => '');
 }
 
 // Pronouns are free text (e.g. "he/him", "they/them" or something custom),
@@ -92,4 +175,8 @@ function sanitizePronouns(input) {
   return JSON.stringify(clean);
 }
 
-module.exports = { sanitizeProfileHTML, sanitizeCSS, parsePronouns, sanitizePronouns, PRONOUN_FIELDS_MAX, PRONOUN_LENGTH_MAX };
+module.exports = {
+  sanitizeProfileHTML, sanitizeCSS,
+  parsePronouns, sanitizePronouns, PRONOUN_FIELDS_MAX, PRONOUN_LENGTH_MAX,
+  SLOT_NAMES, substituteSlots, normalizeSlots,
+};

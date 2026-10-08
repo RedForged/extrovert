@@ -8,6 +8,15 @@ release: the codebase carries its version in `package.json`, and the sections
 ## [Unreleased]
 
 ### Features
+- **Easy Editing (visual profile editor)**: edit your profile by clicking the live page instead of
+  typing HTML/CSS. Click elements to select them, change attributes and styles in a side panel, drag
+  them to reorder or nest, add/duplicate/wrap/delete, and edit page CSS rules. The whole profile page
+  is now user-authored: live data (avatar, display name, stats, follow button, posts, …) is placed
+  through **slot** elements (`<div data-ev-slot="posts"></div>`) the server fills on render. Easy and
+  Advanced mode edit the **same document**, so the two are 100% interchangeable. The old
+  `<!--POSTS-->` comment marker never worked (`sanitize-html` strips comments) and is replaced by the
+  `posts` slot; saving from the editor migrates older profiles automatically. New save endpoint
+  `POST /u/:username/edit/visual` (owner-only, CSRF-checked, sanitized on write).
 - **Report anything**: a single report flow reachable from a **⋯ menu** on posts, comments and
   profiles, plus the existing Report chip on room messages. Reports land in one admin queue
   (`/admin/reports`) that shows the type, context, the content (or the reporter's copy for encrypted

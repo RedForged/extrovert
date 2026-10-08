@@ -184,6 +184,19 @@ function run() {
   assert(!/javascript:/i.test(cleanCss), 'javascript: stripped from CSS');
   assert(!/expression\s*\(/i.test(cleanCss), 'expression() stripped from CSS');
 
+  console.log('\nTEST 9b: profile template slot placeholders survive & fill');
+  const { substituteSlots, normalizeSlots } = require('../src/sanitize');
+  const slotTpl = '<div data-ev-slot="posts"></div><div data-ev-slot="bio"><b>x</b></div>';
+  const slotClean = sanitizeProfileHTML(slotTpl);
+  assert(/data-ev-slot="posts"/.test(slotClean), 'data-ev-slot attribute survives sanitization');
+  const filled = substituteSlots(slotClean, { posts: '<article>P</article>', bio: 'Hi' });
+  assert(/data-ev-slot="posts"><article>P<\/article><\/div>/.test(filled), 'posts slot filled with trusted fragment');
+  assert(/data-ev-slot="bio">Hi<\/div>/.test(filled), 'existing slot content replaced (not appended)');
+  assert(/data-ev-slot="nope"><\/div>/.test(substituteSlots('<div data-ev-slot="nope">x</div>', {})),
+    'unknown slot renders empty');
+  assert(normalizeSlots(slotTpl) === '<div data-ev-slot="posts"></div><div data-ev-slot="bio"></div>',
+    'normalizeSlots empties slot children on write');
+
   console.log('\nTEST 10: post markdown rendering & security');
   const { renderMarkdown } = require('../src/markdown');
   const mdSample = '# Post Title\n\nThis is **bold** and *italic*.\n\nHere is a list:\n- item 1\n- item 2\n\nCheck [this link](https://example.com) and code: `const a = 1;`';
