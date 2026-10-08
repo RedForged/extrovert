@@ -987,6 +987,77 @@ function dnsRecords(req) {
 // Public API
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Diagnostics for /admin/mail: checks each thing that has to work for a
+// message to actually leave this machine.
+// ---------------------------------------------------------------------------
+
+function canConnect(host, port, timeoutMs) {
+  return new Promise((resolve) => {
+    const sock = net.connect({ host, port });
+    let settled = false;
+    const done = (ok, detail) => {
+      if (settled) return;
+      settled = true;
+      try { sock.destroy(); } catch (e) { /* already gone */ }
+      resolve({ ok, detail });
+    };
+    sock.setTimeout(timeoutMs, () => done(false, `no answer within ${timeoutMs}ms (a blocked port looks like this)`));
+    sock.once('connect', () => done(true, 'reachable'));
+    sock.once('error', (e) => done(false, e.code || e.message || 'connection error'));
+  });
+}
+
+async function txtRecord(name) {
+  try {
+    const rows = await dns.resolveTxt(name);
+    return rows.map((r) => r.join('')).join(' ; ');
+  } catch (e) {
+    return '';
+  }
+}
+
+async function diagnose({ to } = {}) {
+  reloadConfig();
+  const recipient = String(to || '').trim() || CFG.from;
+  const domain = domainOf(recipient);
+  const fromDomain = domainOf(CFG.from);
+  const checks = [];
+  const add = (name, ok, detail) => checks.push({ name, ok, detail });
+
+  add('Configuration', true, `mode ${CFG.mode} · relay ${CFG.relay || 'none (direct to MX)'} · From ${CFG.from}` +
+    (CFG.smtpUsername ? ` · authenticating as ${CFG.smtpUsername}` : ' · no SMTP credentials'));
+  add('DKIM signing', !!CFG.dkimEnabled, CFG.dkimEnabled
+    ? `signing as ${CFG.dkimDomain || fromDomain} (selector ${CFG.dkimSelector || 'default'})`
+    : 'disabled — mail will be unauthenticated');
+
+  const spf = await txtRecord(fromDomain);
+  add('SPF record', /v=spf1/i.test(spf), spf ? `${fromDomain}: ${spf.slice(0, 140)}` : `no TXT found at ${fromDomain}`);
+  const dkimName = (CFG.dkimSelector || 'default') + '._domainkey.' + (CFG.dkimDomain || fromDomain);
+  const dkimTxt = await txtRecord(dkimName);
+  add('DKIM record', /v=DKIM1|k=rsa|p=/i.test(dkimTxt), dkimTxt ? `found at ${dkimName}` : `no TXT found at ${dkimName}`);
+  const dmarcTxt = await txtRecord('_dmarc.' + fromDomain);
+  add('DMARC record', /v=DMARC1/i.test(dmarcTxt), dmarcTxt ? `_dmarc.${fromDomain}: ${dmarcTxt.slice(0, 140)}` : `no TXT found at _dmarc.${fromDomain}`);
+
+  if (CFG.mode === 'capture') {
+    add('Outbound path', true, 'capture mode — every message is written to data/outbox and never sent');
+  } else {
+    let targets = [];
+    try {
+      targets = CFG.relay ? [parseRelay(CFG.relay)] : await mxHosts(domain);
+      add(CFG.relay ? 'Relay address' : `Mail exchanger for ${domain}`, true, targets.map((t) => t.host + ':' + t.port).join(', '));
+    } catch (err) {
+      add(CFG.relay ? 'Relay address' : `Mail exchanger for ${domain}`, false, err.message);
+    }
+    for (const t of targets.slice(0, 2)) {
+      const reach = await canConnect(t.host, t.port, Math.min(CFG.timeoutMs, 8000));
+      add(`Connect ${t.host}:${t.port}`, reach.ok, reach.detail);
+    }
+  }
+
+  return { recipient, fromDomain, checks };
+}
+
 module.exports = {
   CFG,
   reloadConfig,
@@ -999,4 +1070,5 @@ module.exports = {
   dkimTxtRecord,
   dkimPublicKeyRecord,
   dnsRecords,
+  diagnose,
 };

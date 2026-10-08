@@ -21,6 +21,26 @@
       </div>
     <% } %>
 
+    <form method="post" action="/admin/mail/test" style="display:flex;gap:8px;align-items:flex-end;margin:4px 0 16px">
+      <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+      <div style="flex:1">
+        <label for="mail-test-to">Test the mail path <span class="muted">(optional recipient to look up — defaults to the From address)</span></label>
+        <input type="text" id="mail-test-to" name="test_to" placeholder="someone@example.com" autocomplete="off">
+      </div>
+      <button class="btn ghost small">Run test</button>
+    </form>
+    <% if (locals.diagnosis) { %>
+      <div style="margin-bottom:18px;padding:12px;background:var(--surface-2);border:1px solid var(--border-soft);border-radius:var(--radius)">
+        <p class="muted" style="font-size:0.85rem;margin:0 0 10px">Checking delivery to <code><%= diagnosis.recipient %></code>:</p>
+        <% diagnosis.checks.forEach(function(c) { %>
+          <div style="display:flex;gap:8px;align-items:flex-start;font-size:0.85rem;margin-bottom:8px">
+            <span style="display:inline-flex;color:<%= c.ok ? 'var(--ok,#3c9)' : 'var(--danger)' %>"><%- include('partials/icon', { name: c.ok ? 'check' : 'alert', size: 15 }) %></span>
+            <span><strong><%= c.name %></strong><br><span class="muted"><%= c.detail %></span></span>
+          </div>
+        <% }) %>
+      </div>
+    <% } %>
+
     <form method="post" action="/admin/mail">
       <input type="hidden" name="_csrf" value="<%= csrfToken %>">
 

@@ -177,7 +177,7 @@ function dkimDomainOf(eff) {
   return eff.dkim.domain || (eff.from && eff.from.includes('@') ? eff.from.split('@')[1] : '');
 }
 
-function renderMailPanel(req, res, { error = null, saved = false } = {}) {
+function renderMailPanel(req, res, { error = null, saved = false, diagnosis = null } = {}) {
   const effective = mailer.reloadConfig();
   let lastMail = null;
   try {
@@ -196,6 +196,7 @@ function renderMailPanel(req, res, { error = null, saved = false } = {}) {
     effective,
     dkimDomain: dkimDomainOf(effective),
     lastMail,
+    diagnosis,
     error,
     saved,
   });
@@ -286,6 +287,17 @@ router.post('/storage', requireAdmin, (req, res) => {
     console.error('admin/storage: save failed', err);
     renderStoragePanel(req, res, { error: 'Failed to save: ' + (err.message || err) });
   }
+});
+
+// ---------- Mail path diagnostic ----------
+router.post('/mail/test', requireAdmin, async (req, res) => {
+  let diagnosis = null;
+  try {
+    diagnosis = await mailer.diagnose({ to: String((req.body && req.body.test_to) || '').trim() });
+  } catch (err) {
+    console.error('mail diagnostic failed', err);
+  }
+  renderMailPanel(req, res, { diagnosis });
 });
 
 module.exports = router;
