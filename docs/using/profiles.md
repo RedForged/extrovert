@@ -54,11 +54,15 @@ The slots are: `avatar`, `displayName`, `botBadge`, `handle`, `pronouns`, `bio`,
 You don't have to write HTML/CSS by hand. Open your own profile and click **Easy edit** (or add
 `?edit=1` to the URL). The page keeps its exact appearance while you work:
 
-- **Click** any element to select it; the side panel shows its attributes and styles.
-- **Edit** attributes (`class`, `id`, `href`, `src`, …) and a full style panel (color, typography,
-  box model, spacing, border, display/flex). Live slots show as locked placeholders.
-- **Drag** elements to reorder them or nest them into other containers, **+ Add** a new element,
+- **Click** any element you authored to select it; the side panel shows its attributes and styles.
+- **Drag** your elements to reorder them or nest them into other containers, **+ Add** a new element,
   **Duplicate**, **Wrap**, **Delete**.
+- **Live content is one element.** Everything a slot renders — all your posts, the comments, the
+  header fragments — is treated as a single block. Clicking inside it selects the slot (never one
+  individual post), and you can move and style that block. To style *what's inside* it (every post,
+  the post body, comments, …), add a **page CSS rule**: the Page CSS section has an **Add** field
+  with suggestions such as `.post-body`, and one rule applies to every match. That's the general way
+  to restyle posts — you never edit them one by one.
 - **Page CSS** lets you pick a selector and edit its declarations without touching the rest of your
   stylesheet.
 

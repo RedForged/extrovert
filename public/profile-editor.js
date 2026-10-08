@@ -60,6 +60,14 @@
 
   var currentState = null;
 
+  // Common shared selectors, offered when adding a page rule (e.g. to style
+  // every post at once instead of one element at a time).
+  var SUGGESTED_SELECTORS = [
+    '.ev-posts-wrap .post', '.post', '.post-head', '.post-name', '.post-handle',
+    '.post-time', '.post-body', '.post-media', '.post-stats', '.post-actions',
+    '.post-comments', '.comment', '.comment-head', '.comment-body', '.comment-form',
+  ];
+
   function init() {
     var root = document.querySelector('.pfx-page');
     var toggle = document.getElementById('ev-edit-toggle');
@@ -123,8 +131,12 @@
   function setDraggable(state, on) {
     var els = state.root.querySelectorAll('*');
     for (var i = 0; i < els.length; i++) {
-      if (on) els[i].setAttribute('draggable', 'true');
-      else els[i].removeAttribute('draggable');
+      var el = els[i];
+      // Live slot content is one element: never make its insides individually
+      // draggable (the slot itself still is).
+      var slot = closestSlot(state.root, el);
+      if (on && !(slot && slot !== el)) el.setAttribute('draggable', 'true');
+      else el.removeAttribute('draggable');
     }
     if (on) {
       state.root.setAttribute('draggable', 'false');
@@ -228,7 +240,9 @@
     var el = e.target;
     if (el === state.root) return select(state, null);
     if (!state.root.contains(el)) return;
-    select(state, el);
+    // Live slot content is a single element: a click anywhere inside a slot
+    // (e.g. any of your posts) selects the slot, not the individual node.
+    select(state, closestSlot(state.root, el) || el);
   }
 
   function select(state, el) {
@@ -278,7 +292,8 @@
     });
 
     if (isSlot(el)) {
-      body.appendChild(note('Slot "' + el.getAttribute('data-ev-slot') + '" — live content. You can move and style it, but not edit inside it.'));
+      body.appendChild(note('Live content — this is one element ("' + el.getAttribute('data-ev-slot')
+        + '"). Move and style it here. The content inside (every post, comment, etc.) is shared, so style it with a CSS rule below.'));
     } else if (isTextOnly(el)) {
       body.appendChild(field('Text', 'text', el.textContent, function (v) {
         el.textContent = v;
@@ -368,6 +383,8 @@
 
   function renderPageCss(state, body) {
     if (!state.styleEl) { body.appendChild(note('No stylesheet yet.')); return; }
+    body.appendChild(note('Rules apply to every matching element on your page — e.g. .post-body styles all your posts.'));
+
     var rules = listStyleRules(state);
     var row = document.createElement('div');
     row.className = 'ev-field';
@@ -392,15 +409,55 @@
     editor.hidden = true;
     body.appendChild(editor);
 
-    sel.addEventListener('change', function () {
-      var chosen = sel.value;
+    function showRule(selector) {
       editor.textContent = '';
-      if (!chosen) { editor.hidden = true; return; }
+      if (!selector) { editor.hidden = true; return; }
       editor.hidden = false;
-      var cssText = findRuleDecls(getUserCss(state), chosen) || '';
+      var cssText = findRuleDecls(getUserCss(state), selector) || '';
       editor.appendChild(field('CSS declarations', 'textarea', cssText, function (v) {
-        setRuleDecls(state, chosen, v);
+        setRuleDecls(state, selector, v);
       }));
+    }
+    sel.addEventListener('change', function () { showRule(sel.value); });
+
+    // Add a rule for a selector that isn't in the stylesheet yet.
+    var newRow = document.createElement('div');
+    newRow.className = 'ev-field';
+    var nl = document.createElement('span');
+    nl.textContent = 'New rule';
+    newRow.appendChild(nl);
+    var nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.placeholder = '.post-body';
+    nameInput.spellcheck = false;
+    nameInput.setAttribute('list', 'ev-sel-suggest');
+    newRow.appendChild(nameInput);
+    var addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'ev-btn';
+    addBtn.textContent = 'Add';
+    newRow.appendChild(addBtn);
+    var dl = document.createElement('datalist');
+    dl.id = 'ev-sel-suggest';
+    SUGGESTED_SELECTORS.forEach(function (s) {
+      var o = document.createElement('option');
+      o.value = s;
+      dl.appendChild(o);
+    });
+    body.appendChild(newRow);
+    body.appendChild(dl);
+    addBtn.addEventListener('click', function () {
+      var selector = nameInput.value.trim();
+      if (!selector) return;
+      if (!findRule(getUserCss(state), selector)) {
+        var option = document.createElement('option');
+        option.value = selector;
+        option.textContent = selector;
+        sel.appendChild(option);
+        setRuleDecls(state, selector, '');
+      }
+      sel.value = selector;
+      showRule(selector);
     });
   }
 
@@ -421,6 +478,9 @@
 
   function targetContainer(state) {
     var el = state.selected;
+    // A slot's insides are live content (regenerated on render): never add into
+    // them — place the new element as a sibling of the slot instead.
+    if (el && isSlot(el)) return el.parentNode || state.root;
     if (el && !VOID_TAGS[el.tagName.toLowerCase()]) return el;
     return state.root;
   }
@@ -473,6 +533,8 @@
     if (!state || !state.editing) return;
     var el = e.target;
     if (el === state.root || !state.root.contains(el)) { e.preventDefault(); return; }
+    var slot = closestSlot(state.root, el);
+    if (slot && slot !== el) { e.preventDefault(); return; }
     state.dragged = el;
     e.dataTransfer.effectAllowed = 'move';
     try { e.dataTransfer.setData('text/plain', el.tagName); } catch (_) {}
@@ -601,6 +663,16 @@
   }
 
   function isSlot(el) { return el.hasAttribute && el.hasAttribute('data-ev-slot'); }
+  // Nearest enclosing slot element (or null). Live content lives inside slots,
+  // so this is how a click deep inside a post resolves to the slot itself.
+  function closestSlot(root, el) {
+    var n = el;
+    while (n && n !== root) {
+      if (n.nodeType === 1 && n.hasAttribute('data-ev-slot')) return n;
+      n = n.parentNode;
+    }
+    return null;
+  }
   function isTextOnly(el) {
     for (var i = 0; i < el.childNodes.length; i++) {
       if (el.childNodes[i].nodeType === 1) return false;
