@@ -16,10 +16,10 @@ const { getAccountIds } = require('../accounts');
 const bcrypt = require('bcryptjs');
 const { sanitizeProfileHTML, sanitizeCSS, parsePronouns, sanitizePronouns } = require('../sanitize');
 const drive = require('../drive');
-const { getOnlineUsers, getUserPresence, sendDmEvent, cancelPendingCallByToken, broadcastGatewayEvent, getGatewayLatestSeq, updateUserRoomSubscriptions, pushRoomSessionKeyToRecipient } = require('../webrtc-signaling');
+const { getOnlineUsers, getUserPresence, sendDmEvent, cancelPendingCallByToken, broadcastGatewayEvent, broadcastTimelineEvent, removeFromVoiceChannels, getGatewayLatestSeq, updateUserRoomSubscriptions, pushRoomSessionKeyToRecipient } = require('../webrtc-signaling');
 const { onNotification } = require('../notif-broadcaster');
 const dm = require('../dm');
-const { getVapidPublicKey, validatePushEndpoint } = require('../push');
+const { getVapidPublicKey, validatePushEndpoint, validateWebhookUrl } = require('../push');
 const { renderMarkdown } = require('../markdown');
 const twofa = require('../twofa');
 const webauthn = require('../webauthn');
@@ -27,6 +27,11 @@ const captcha = require('../captcha');
 const sessionStore = require('../session-store');
 
 const router = express.Router();
+
+// The standard scope set a first-party client/paired device receives. A web
+// SESSION is a fully-authenticated user credential, so it may delegate all of
+// these; a limited bearer token is still capped to its own scopes (capScopes).
+const DEFAULT_CLIENT_SCOPES = 'read write follow notifications media.write read:direct write:direct profile';
 
 // ----- helpers -----
 const UPLOAD_DIR = path.join(__dirname, '..', '..', 'uploads');
@@ -212,7 +217,7 @@ function requireAuthOrSession(scope = 'write') {
       const user = db.getUserById(req.session.userId);
       if (user && !user.banned) {
         req.apiUser = user;
-        req.apiToken = { user_id: user.id, scopes: 'read write profile' };
+        req.apiToken = { user_id: user.id, scopes: DEFAULT_CLIENT_SCOPES };
         return next();
       }
     }
@@ -226,8 +231,10 @@ router.post('/auth/pair/init', requireAuthOrSession('write'), express.json(), (r
   const ttlMs = 5 * 60 * 1000; // 5 minutes
   const expiresAt = Date.now() + ttlMs;
 
-  const requested = String((req.body && req.body.scopes) || '').trim();
-  const scopes = requested.split(/\s+/).filter(s => VALID_SCOPES.has(s)).join(' ');
+  const requested = String((req.body && req.body.scopes) || '').trim() || 'read write follow notifications media.write read:direct write:direct profile';
+  // Pairing cannot escalate: the code (and the permanent token it yields) is
+  // capped by the scopes of the credential creating it.
+  const scopes = capScopes(requested, req.apiToken.scopes);
 
   devicePairingCodes.set(code, {
     userId: req.apiUser.id,
@@ -269,8 +276,9 @@ router.post('/auth/pair/claim', express.json(), (req, res) => {
 
   const appName = String(client_name || 'Paired Device').trim().slice(0, 100);
   const rawToken = 'ext_pat_' + crypto.randomBytes(32).toString('hex');
-  const validScopes = pairing.scopes ||
-    'read write follow notifications media.write read:direct write:direct profile';
+  // Scopes were already capped to the creating credential's scopes at init;
+  // never fall back to a full-scope default here.
+  const validScopes = pairing.scopes || 'read';
   db.createPersonalAccessToken(user.id, appName, rawToken, validScopes, null);
 
   db.auditLog('device_paired', user.id, `Paired new device: ${appName}`);
@@ -370,6 +378,48 @@ async function applySoftDelayIfNeeded(username) {
 }
 
 const DUMMY_BCRYPT_HASH = '$2b$10$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ123456';
+
+// A newly minted token may only carry a subset of the scopes the requesting
+// credential already holds. Without this a low-privilege token (e.g. a
+// third-party app authorized with only 'profile') could call the token or
+// pairing endpoints and receive a full-scope credential — including
+// read:direct/write:direct E2EE DM access.
+function capScopes(requested, callerScopes) {
+  const caller = new Set(String(callerScopes || '').split(/\s+/).filter(Boolean));
+  return String(requested || '')
+    .split(/\s+/)
+    .filter(s => VALID_SCOPES.has(s) && caller.has(s))
+    .join(' ');
+}
+
+// Parse a redirect_uri list into a canonical, validated set. Input may be an
+// array or a string whose entries are separated by whitespace/commas/newlines.
+// http(s) URLs are always allowed (no embedded credentials); the OOB URN and —
+// for native/mobile clients only (allowCustomSchemes) — custom schemes like
+// extrovert:// are allowed, but scriptable/file schemes never are. The canonical
+// stored form is comma-joined, which is exactly how authorize() matches later,
+// so a comma inside a single submitted URI can never smuggle a second,
+// unvalidated redirect target into the registered list.
+const DANGEROUS_REDIRECT_SCHEMES = new Set(['javascript:', 'data:', 'vbscript:', 'file:']);
+function parseRedirectUris(input, { allowCustomSchemes = false } = {}) {
+  const parts = Array.isArray(input) ? input.map(String) : String(input == null ? '' : input).split(/[\s,]+/);
+  const out = [];
+  for (const raw of parts) {
+    const u = raw.trim();
+    if (!u) continue;
+    if (u === 'urn:ietf:wg:oauth:2.0:oob') { if (!out.includes(u)) out.push(u); continue; }
+    let parsed;
+    try { parsed = new URL(u); } catch { return { error: `Invalid redirect URI: ${u}` }; }
+    const proto = parsed.protocol.toLowerCase();
+    if (DANGEROUS_REDIRECT_SCHEMES.has(proto)) return { error: 'Disallowed redirect URI scheme.' };
+    if (proto !== 'http:' && proto !== 'https:' && !allowCustomSchemes) {
+      return { error: 'Redirect URIs must be absolute http(s) URLs.' };
+    }
+    if (parsed.username || parsed.password) return { error: 'Embedded credentials in redirect URI not allowed.' };
+    if (!out.includes(u)) out.push(u);
+  }
+  return { uris: out };
+}
 
 function verifySecondFactor(user, code) {
   const trimmed = String(code || '').trim();
@@ -867,27 +917,11 @@ router.post('/apps', express.json(), express.urlencoded({ extended: true }), (re
 
   let redirectUris = req.body.redirect_uris;
   if (!redirectUris) redirectUris = 'urn:ietf:wg:oauth:2.0:oob';
-  const uris = Array.isArray(redirectUris) ? redirectUris.map(String) : String(redirectUris).split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-  if (!uris.length) {
+  const parsedUris = parseRedirectUris(redirectUris, { allowCustomSchemes: true });
+  if (parsedUris.error) return errorResponse(res, 400, 'Bad Request', parsedUris.error);
+  const cleanUris = parsedUris.uris;
+  if (!cleanUris.length) {
     return errorResponse(res, 400, 'Bad Request', 'redirect_uris is required.');
-  }
-
-  const cleanUris = [];
-  for (const u of uris) {
-    if (u === 'urn:ietf:wg:oauth:2.0:oob') {
-      cleanUris.push(u);
-      continue;
-    }
-    let parsed;
-    try { parsed = new URL(u); } catch { return errorResponse(res, 400, 'Bad Request', `Invalid redirect URI: ${u}`); }
-    const proto = parsed.protocol.toLowerCase();
-    if (['javascript:', 'data:', 'vbscript:', 'file:'].includes(proto)) {
-      return errorResponse(res, 400, 'Bad Request', 'Disallowed redirect URI scheme.');
-    }
-    if (parsed.username || parsed.password) {
-      return errorResponse(res, 400, 'Bad Request', 'Embedded credentials in redirect URI not allowed.');
-    }
-    cleanUris.push(u);
   }
 
   const website = String(req.body.website || '').trim().slice(0, 200);
@@ -902,7 +936,7 @@ router.post('/apps', express.json(), express.urlencoded({ extended: true }), (re
     name: clientName,
     description: String(req.body.description || 'Dynamically registered application').trim().slice(0, 500),
     website,
-    redirectUris: cleanUris.join('\n'),
+    redirectUris: cleanUris.join(','),
     clientId,
     clientSecret,
     scopes: validScopes,
@@ -947,17 +981,13 @@ router.post('/oauth/apps', (req, res) => {
 
   // redirect_uris must be absolute http(s) URLs without embedded credentials —
   // anything else (javascript:, data:, file:) could later turn the consent
-  // redirect into an open redirect or scheme injection.
-  const uris = Array.isArray(redirect_uris) ? redirect_uris.map(String) : [String(redirect_uris)];
-  const cleanUris = [];
-  for (const u of uris) {
-    let parsed;
-    try { parsed = new URL(u); } catch { return errorResponse(res, 400, 'Bad Request', 'redirect_uris must be absolute http(s) URLs.'); }
-    if ((parsed.protocol !== 'https:' && parsed.protocol !== 'http:') || parsed.username || parsed.password) {
-      return errorResponse(res, 400, 'Bad Request', 'redirect_uris must be absolute http(s) URLs without credentials.');
-    }
-    cleanUris.push(u);
-  }
+  // redirect into an open redirect or scheme injection. Use the same canonical
+  // parser as the dynamic-registration path so the stored list is comma-joined
+  // and cannot diverge from how authorize() matches it.
+  const parsedUris = parseRedirectUris(redirect_uris);
+  if (parsedUris.error) return errorResponse(res, 400, 'Bad Request', 'redirect_uris must be absolute http(s) URLs without credentials.');
+  const cleanUris = parsedUris.uris;
+  if (!cleanUris.length) return errorResponse(res, 400, 'Bad Request', 'redirect_uris is required.');
   if (website) {
     let w;
     try { w = new URL(website); } catch { return errorResponse(res, 400, 'Bad Request', 'website must be an http(s) URL.'); }
@@ -1029,7 +1059,7 @@ router.get('/oauth/authorize', (req, res) => {
     return errorResponse(res, 401, 'Invalid Client', 'Unknown client_id.');
   }
 
-  const allowedUris = app.redirect_uris.split(',');
+  const allowedUris = app.redirect_uris.split(/[\s,]+/).filter(Boolean);
   if (!redirect_uri || !allowedUris.includes(redirect_uri)) {
     return errorResponse(res, 400, 'Bad Request', 'redirect_uri does not match registered URIs.');
   }
@@ -1121,7 +1151,7 @@ router.post('/oauth/authorize', (req, res) => {
   // Never trust the body's redirect_uri — it must exactly match a registered
   // URI. (The consent page re-sends the GET-validated value, but re-check here
   // so a tampered form cannot redirect the code to an attacker's site.)
-  if (!redirect_uri || !app.redirect_uris.split(',').includes(redirect_uri)) {
+  if (!redirect_uri || !app.redirect_uris.split(/[\s,]+/).filter(Boolean).includes(redirect_uri)) {
     return errorResponse(res, 400, 'Bad Request', 'redirect_uri does not match registered URIs.');
   }
 
@@ -1154,7 +1184,7 @@ router.post('/oauth/authorize', (req, res) => {
       return errorResponse(res, 429, 'Too Many Requests',
         'Too many invalid codes. Re-open the authorization request from the application.');
     }
-    if (!codeInput || !factorUser || !factorUser.totp_enabled || !auth.verifySecondFactor(factorUser, codeInput)) {
+    if (!codeInput || !factorUser || !factorUser.totp_enabled || !verifySecondFactor(factorUser, codeInput)) {
       req.session.secondFactorAttempts = (req.session.secondFactorAttempts || 0) + 1;
       db.auditLog('2fa_verify_failed', factorUserId, 'oauth_authorize');
       relayFields.error = 'Invalid code.';
@@ -1606,7 +1636,10 @@ router.post('/accounts/tokens', requireApiAuth('profile'), express.json(), (req,
     return errorResponse(res, 400, 'Bad Request', 'name is required (max 100 chars).');
   }
   const scopes = String(req.body.scopes || 'read write follow notifications media.write read:direct write:direct profile').trim();
-  const validScopes = scopes.split(/\s+/).filter(s => VALID_SCOPES.has(s)).join(' ') || 'read';
+  const validScopes = capScopes(scopes, req.apiToken.scopes);
+  if (!validScopes) {
+    return errorResponse(res, 403, 'Forbidden', 'You cannot create a token with scopes your own token does not hold.');
+  }
   const rawToken = 'ext_pat_' + crypto.randomBytes(32).toString('hex');
   const days = req.body.expires_in_days ? Number(req.body.expires_in_days) : null;
   const expiresAt = days && days > 0 ? Date.now() + days * 86400000 : null;
@@ -1709,6 +1742,8 @@ router.get('/accounts/:id/statuses', requireApiAuth('read'), (req, res) => {
 router.get('/accounts/:id/followers', requireApiAuth('read'), (req, res) => {
   const user = db.getUserById(parseInt(req.params.id, 10));
   if (!user) return errorResponse(res, 404, 'Not Found', 'Account not found.');
+  // The follow graph follows the same network-bound visibility as the profile.
+  if (!canView(req.apiUser.id, user.id)) return errorResponse(res, 404, 'Not Found', 'Account not found.');
 
   const followers = db.getFollowers(user.id);
   responseEnvelope(res, followers.map(f => serializeAccount(f, req.apiUser.id)));
@@ -1717,6 +1752,7 @@ router.get('/accounts/:id/followers', requireApiAuth('read'), (req, res) => {
 router.get('/accounts/:id/following', requireApiAuth('read'), (req, res) => {
   const user = db.getUserById(parseInt(req.params.id, 10));
   if (!user) return errorResponse(res, 404, 'Not Found', 'Account not found.');
+  if (!canView(req.apiUser.id, user.id)) return errorResponse(res, 404, 'Not Found', 'Account not found.');
 
   const following = db.getFollowing(user.id);
   responseEnvelope(res, following.map(f => serializeAccount(f, req.apiUser.id)));
@@ -1814,7 +1850,7 @@ router.post('/statuses', requireApiAuth('write'), drive.quotaGuard(), drive.sing
   }
 
   db.auditLog('post_created', req.apiUser.id, `Post ${postId} type: ${postType}`);
-  broadcastGatewayEvent('timeline:home', 'post_create', response);
+  broadcastTimelineEvent('timeline:home', 'post_create', response, post.user_id);
   res.status(201).json(envelope);
 });
 
@@ -1844,7 +1880,7 @@ router.patch('/statuses/:id', requireApiAuth('write'), requireVerifiedApiWrite, 
   const updated = db.getPostById(post.id);
   const author = db.getUserById(updated.user_id);
   const serialized = serializePost(updated, author, req.apiUser.id);
-  broadcastGatewayEvent('timeline:home', 'post_update', serialized);
+  broadcastTimelineEvent('timeline:home', 'post_update', serialized, updated.user_id);
   responseEnvelope(res, serialized);
 });
 
@@ -1872,7 +1908,7 @@ router.delete('/statuses/:id', requireApiAuth('write'), (req, res) => {
   const media = post && post.media_path ? db.splitStoredPath(post.media_path) : null;
   if (media) db.removeStoredFile(media.root, media.path);
   db.auditLog('post_deleted', req.apiUser.id, `Post ${req.params.id}`);
-  broadcastGatewayEvent('timeline:home', 'post_delete', { id: String(req.params.id) });
+  broadcastTimelineEvent('timeline:home', 'post_delete', { id: String(req.params.id) }, post ? post.user_id : req.apiUser.id);
   res.json({ data: { ok: true } });
 });
 
@@ -1969,7 +2005,7 @@ router.post(['/statuses/:id/comment', '/statuses/:id/comments'], requireApiAuth(
   };
   if (clientId) commentData.client_id = String(clientId);
 
-  broadcastGatewayEvent('timeline:home', 'comment_create', commentData);
+  broadcastTimelineEvent('timeline:home', 'comment_create', commentData, post.user_id);
   responseEnvelope(res, commentData);
 });
 
@@ -2248,11 +2284,15 @@ router.delete('/bots/:id', requireApiAuth('write'), (req, res) => {
 
 // Bot self-service: register a webhook endpoint. The HMAC secret is returned
 // exactly once; rotate it with /bots/webhook/rotate if it leaks.
-router.post('/bots/webhook', requireApiAuth('write'), (req, res) => {
+router.post('/bots/webhook', requireApiAuth('write'), async (req, res) => {
   if (!req.apiUser.is_bot) return errorResponse(res, 403, 'Forbidden', 'Bot accounts only.');
   const url = String(req.body.url || '').trim();
   if (!/^https?:\/\/.+/i.test(url) || url.length > 500) {
     return errorResponse(res, 400, 'Bad Request', 'url must be a valid http(s) URL.');
+  }
+  const check = await validateWebhookUrl(url, { resolveHosts: false });
+  if (!check.ok) {
+    return errorResponse(res, 400, 'Bad Request', 'url must target a public host: ' + check.reason + '.');
   }
   const secret = db.generateBotWebhookSecret();
   db.setBotWebhook(req.apiUser.id, url, secret);
@@ -2632,6 +2672,9 @@ router.delete('/rooms/:id/channels/:cid', requireApiAuth('write'), (req, res) =>
 router.get('/rooms/:id/roles', requireApiAuth('read'), (req, res) => {
   const room = db.getRoom(parseInt(req.params.id, 10));
   if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
+  if (!db.isRoomMember(room.id, req.apiUser.id) && !req.apiUser.is_admin) {
+    return errorResponse(res, 403, 'Forbidden', 'You are not a member of this room.');
+  }
   const roles = db.getRoomRoles(room.id);
   responseEnvelope(res, roles.map(r => ({
     id: String(r.id),
@@ -2739,6 +2782,11 @@ router.post('/rooms/:id/members/:uid/kick', requireApiAuth('write'), (req, res) 
   if (currentMemberRole && currentMemberRole.is_founder) return errorResponse(res, 400, 'Bad Request', 'Cannot kick founder.');
 
   db.removeRoomMember(room.id, targetUser.id);
+  // Revoke realtime access immediately: drop the kicked member's room topic
+  // subscription and remove them from any voice channel, otherwise they keep
+  // receiving room frames on their existing socket until they reconnect.
+  updateUserRoomSubscriptions(targetUser.id, room.id, 'leave');
+  removeFromVoiceChannels(targetUser.id);
   broadcastGatewayEvent(`room:${room.id}`, 'member_leave', {
     room_id: String(room.id),
     user_id: String(targetUser.id),
@@ -2964,7 +3012,7 @@ router.post('/rooms/:id/channels/:cid/messages', requireApiAuth('write'), requir
       username: req.apiUser.username,
       display_name: req.apiUser.display_name,
     },
-    proto: isSticker ? 'plain' : proto,
+    proto: isSticker ? 'plain' : rawProto,
     body: isSticker ? body : '',
     ciphertext: isSticker ? null : ciphertext,
     group_session_id: null,

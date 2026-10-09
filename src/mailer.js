@@ -33,6 +33,7 @@ const dns = require('node:dns').promises;
 const crypto = require('node:crypto');
 const path = require('node:path');
 const fs = require('node:fs');
+const { isPrivateAddress, isPrivateHostname } = require('./push');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const OUTBOX_DIR = path.join(DATA_DIR, 'outbox');
@@ -583,9 +584,26 @@ function upgradeToTls(rawSocket, host, timeoutMs, { required }) {
   });
 }
 
+// Resolve a mail host to a validated public IP, returning null when it has no
+// public address (fail closed). The caller connects to THIS address while still
+// using the hostname for EHLO/SNI, closing the validate-then-reconnect window
+// where a hostile MX/A record could rebind to an internal host between checks.
+async function pinPublicAddress(host) {
+  try {
+    const addrs = await Promise.race([
+      dns.lookup(host, { all: true, verbatim: true }),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('dns timeout')), 5000)),
+    ]);
+    const pub = addrs.map((a) => a.address).filter((a) => !isPrivateAddress(a));
+    return pub[0] || null;
+  } catch {
+    return null;
+  }
+}
+
 // One full message delivery to a single host:port (the MX or relay).
-async function deliverToHost({ host, port, to, message, messageId, heloName }) {
-  const rawSocket = net.connect({ host, port });
+async function deliverToHost({ host, connectHost, port, to, message, messageId, heloName }) {
+  const rawSocket = net.connect({ host: connectHost || host, port });
   // Idle-timeout the raw socket so a stalled peer can't hold it open forever
   // (per-command deadlines in smtpCommand/smtpExchange already bound the
   // protocol steps; this covers silent stalls between them).
@@ -647,20 +665,6 @@ async function deliverToHost({ host, port, to, message, messageId, heloName }) {
   }
 }
 
-// Resolve the MX hosts for a domain, falling back to the domain's own A
-// record when no MX exists (RFC 5321 §5.1).
-async function mxHosts(domain) {
-  try {
-    const mx = await dns.resolveMx(domain);
-    if (mx.length) {
-      return mx
-        .sort((a, b) => a.priority - b.priority)
-        .map(r => ({ host: r.exchange.replace(/\.$/, ''), port: 25 }));
-    }
-  } catch { /* no MX → fall through */ }
-  return [{ host: domain, port: 25 }];
-}
-
 // ---------------------------------------------------------------------------
 // Delivery orchestration
 // ---------------------------------------------------------------------------
@@ -693,7 +697,26 @@ function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
+// A mail host is only usable when every address it resolves to is public. An
+// attacker-controlled domain whose MX (or A record) points inside the
+// deployment must not turn verification mail into an SSRF primitive against
+// internal hosts on port 25. Fail closed.
+async function isPublicMailHost(host) {
+  if (!host || isPrivateHostname(host) || isPrivateAddress(host)) return false;
+  try {
+    const addrs = await Promise.race([
+      dns.lookup(host, { all: true, verbatim: true }),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('dns timeout')), 5000)),
+    ]);
+    if (!addrs || !addrs.length) return false;
+    return !addrs.some((a) => isPrivateAddress(a.address));
+  } catch {
+    return false;
+  }
+}
+
 async function mxHosts(domain) {
+  let candidates = [];
   try {
     // Deadline the lookup: a stalled resolver must not hang delivery.
     const mx = await Promise.race([
@@ -701,12 +724,18 @@ async function mxHosts(domain) {
       new Promise((_, rej) => setTimeout(() => rej(new Error('dns timeout')), 5000)),
     ]);
     if (mx.length) {
-      return mx
+      candidates = mx
         .sort((a, b) => a.priority - b.priority)
         .map(r => ({ host: r.exchange.replace(/\.$/, ''), port: 25 }));
     }
   } catch { /* no MX or resolver timeout → fall through */ }
-  return [{ host: domain, port: 25 }];
+  if (!candidates.length) candidates = [{ host: domain, port: 25 }];
+
+  const safe = [];
+  for (const c of candidates) {
+    if (await isPublicMailHost(c.host)) safe.push(c);
+  }
+  return safe;
 }
 
 // Parse a relay setting that may be "host:port", "host", "[::1]:port" or
@@ -794,7 +823,16 @@ async function sendMail({ to, subject, text, html, template }) {
   for (let attempt = 1; attempt <= CFG.maxAttempts; attempt++) {
     for (const target of targets) {
       try {
-        await deliverToHost({ host: target.host, port: target.port, to, message: eml, messageId, heloName });
+        // Direct-to-MX is attacker-influenced (the recipient's domain controls
+        // its MX records): pin the validated public address. The operator-set
+        // relay is trusted and may legitimately be internal, so it is not pinned.
+        const connectHost = CFG.relay ? null : await pinPublicAddress(target.host);
+        if (!CFG.relay && !connectHost) {
+          lastError = new Error('No public address for ' + target.host);
+          log('error', 'Delivery skipped: ' + lastError.message);
+          continue;
+        }
+        await deliverToHost({ host: target.host, connectHost, port: target.port, to, message: eml, messageId, heloName });
         return { ok: true, messageId };
       } catch (err) {
         lastError = err;

@@ -18,10 +18,17 @@ const TRUSTED_DEVICE_COOKIE = 'extv_td';
 const PENDING_2FA_TTL_MS = 5 * 60 * 1000;
 const MAX_2FA_ATTEMPTS = 5;
 
+// A fixed, valid bcrypt hash compared against when the account is unknown (or a
+// bot), so the login response time does not reveal whether a username exists.
+const DUMMY_BCRYPT_HASH = '$2b$10$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ123456';
+
 function cookieSecureSetting() {
-  return process.env.EXTV_COOKIE_SECURE === 'false' ? false
-    : process.env.EXTV_COOKIE_SECURE === 'true' ? true
-    : process.env.NODE_ENV === 'production' ? 'auto' : false;
+  // res.cookie() needs a boolean — 'auto' is an express-session-only value and
+  // would otherwise be treated as truthy. Production means HTTPS, so mark the
+  // trusted-device cookie Secure there unless explicitly disabled.
+  if (process.env.EXTV_COOKIE_SECURE === 'false') return false;
+  if (process.env.EXTV_COOKIE_SECURE === 'true') return true;
+  return process.env.NODE_ENV === 'production';
 }
 
 // Minimal cookie reader (the app has no cookie-parser dependency).
@@ -301,7 +308,13 @@ router.post('/login', (req, res) => {
     });
   }
   const user = getUserByUsername(username);
-  if (!user || user.is_bot || !bcrypt.compareSync(password, user.password_hash)) {
+  // Always perform a bcrypt comparison — including for unknown usernames and
+  // bots — so response timing cannot be used to enumerate accounts. (The API
+  // login path does the same with its own dummy hash.)
+  const hash = (user && !user.is_bot && user.password_hash) ? user.password_hash : DUMMY_BCRYPT_HASH;
+  let passwordOk = false;
+  try { passwordOk = bcrypt.compareSync(password, hash); } catch { passwordOk = false; }
+  if (!user || user.is_bot || !passwordOk) {
     return res.render('login', {
       error: 'Invalid username or password.',
       next: nextFromBody,
@@ -477,10 +490,10 @@ router.post('/become-admin', (req, res) => {
   const user = getUserById(req.session.userId);
   if (!user) return res.redirect('/login');
   if (user.is_admin) return res.redirect('/admin');
-  if (adminExists()) return res.redirect('/');
-  const { promoteUser } = require('../db');
-  promoteUser(user.id);
-  res.redirect('/admin');
+  // Atomic bootstrap: only the first concurrent caller can win.
+  const { promoteUserIfNoAdmin } = require('../db');
+  const promoted = promoteUserIfNoAdmin(user.id);
+  res.redirect(promoted ? '/admin' : '/');
 });
 
 module.exports = router;

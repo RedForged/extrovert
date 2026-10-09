@@ -2,6 +2,7 @@
 
 const express = require('express');
 const crypto = require('node:crypto');
+const bcrypt = require('bcryptjs');
 const QRCode = require('qrcode');
 const db = require('../db');
 const drive = require('../drive');
@@ -132,6 +133,13 @@ router.post('/email', (req, res) => {
   if (!user) return res.redirect('/login');
   if (getEmailPolicy() === 'off') return res.status(400).send('Email verification is disabled on this server.');
 
+  // Changing the account's address is a sensitive action (it is an identity
+  // claim and a phishing target): require the current password.
+  const password = String(req.body.password || '');
+  if (!password || !bcrypt.compareSync(password, user.password_hash)) {
+    return renderSettings(res, user, { mailError: 'Enter your current password to change your email address.' });
+  }
+
   const email = String(req.body.email || '').trim();
   if (!isValidEmail(email)) {
     return renderSettings(res, user, { mailError: 'That email address doesn\'t look valid.' });
@@ -181,6 +189,15 @@ router.get('/delete', (req, res) => {
 router.post('/delete', (req, res) => {
   const user = res.locals.currentUser;
   if (!user) return res.redirect('/login');
+  // Irreversible: require the current password (the API delete endpoint already
+  // does), so a stolen or left-open session cannot wipe the account.
+  const password = String(req.body.password || '');
+  if (!password || !bcrypt.compareSync(password, user.password_hash)) {
+    return res.status(403).render('confirm-delete-account', {
+      csrfToken: res.locals.csrfToken,
+      error: 'Incorrect password. Your account was not deleted.',
+    });
+  }
   deleteUser(user.id);
   // F1 multi-account: remove only the deleted account from this device's list.
   // Other accounts signed in on the same device stay signed in; the whole
@@ -221,7 +238,25 @@ router.post('/developers', (req, res, next) => {
 
     const clientId = crypto.randomBytes(24).toString('hex');
     const clientSecret = crypto.randomBytes(32).toString('hex');
-    const uris = Array.isArray(redirect_uris) ? redirect_uris.join(',') : redirect_uris;
+    // Canonicalize to a validated, comma-joined list (matching how the
+    // authorize step matches redirect_uri) so a comma inside one submitted
+    // value cannot smuggle in a second, unvalidated redirect target.
+    const rawUris = Array.isArray(redirect_uris) ? redirect_uris : String(redirect_uris).split(/[\s,]+/);
+    const cleanUris = [];
+    for (const rawU of rawUris) {
+      const u = String(rawU).trim();
+      if (!u) continue;
+      let parsed;
+      try { parsed = new URL(u); } catch { return res.render('developers', { apps: db.getOAuthAppsByOwner(user.id), authorizedApps: db.getAuthorizedAppsForUser(user.id), error: 'Redirect URIs must be absolute http(s) URLs.' }); }
+      if ((parsed.protocol !== 'https:' && parsed.protocol !== 'http:') || parsed.username || parsed.password) {
+        return res.render('developers', { apps: db.getOAuthAppsByOwner(user.id), authorizedApps: db.getAuthorizedAppsForUser(user.id), error: 'Redirect URIs must be absolute http(s) URLs without credentials.' });
+      }
+      if (!cleanUris.includes(u)) cleanUris.push(u);
+    }
+    if (!cleanUris.length) {
+      return res.render('developers', { apps: db.getOAuthAppsByOwner(user.id), authorizedApps: db.getAuthorizedAppsForUser(user.id), error: 'At least one redirect URI is required.' });
+    }
+    const uris = cleanUris.join(',');
 
     db.createOAuthApp({
       name,
@@ -280,9 +315,10 @@ const TRUSTED_DEVICE_COOKIE = 'extv_td';
 const MAX_PASSKEYS_PER_USER = 10;
 
 function cookieSecureSetting() {
-  return process.env.EXTV_COOKIE_SECURE === 'false' ? false
-    : process.env.EXTV_COOKIE_SECURE === 'true' ? true
-    : process.env.NODE_ENV === 'production' ? 'auto' : false;
+  // res.cookie() needs a boolean — 'auto' is express-session-only.
+  if (process.env.EXTV_COOKIE_SECURE === 'false') return false;
+  if (process.env.EXTV_COOKIE_SECURE === 'true') return true;
+  return process.env.NODE_ENV === 'production';
 }
 
 function totpKeyConfigured() {
@@ -547,7 +583,7 @@ router.post('/bots/:id/tokens/:tokenId/revoke', (req, res) => {
   res.redirect('/settings/bots');
 });
 
-router.post('/bots/:id/webhook', (req, res) => {
+router.post('/bots/:id/webhook', async (req, res) => {
   const user = res.locals.currentUser;
   if (!user) return res.redirect('/login');
   const bot = ownBot(user, req.params.id);
@@ -555,6 +591,9 @@ router.post('/bots/:id/webhook', (req, res) => {
   if (!bot) return fail('Bot not found.');
   const url = String(req.body.url || '').trim();
   if (!/^https?:\/\/.+/i.test(url) || url.length > 500) return fail('Webhook URL must be a valid http(s) URL.');
+  const { validateWebhookUrl } = require('../push');
+  const check = await validateWebhookUrl(url, { resolveHosts: false });
+  if (!check.ok) return fail('Webhook URL must target a public host (' + check.reason + ').');
   const secret = db.generateBotWebhookSecret();
   db.setBotWebhook(bot.id, url, secret);
   db.auditLog('bot_webhook_set', user.id, `Bot @${bot.username} ${url}`);

@@ -4,10 +4,14 @@
     <h2 style="margin-top:0">Delete your account?</h2>
     <p class="muted" style="margin-bottom:20px">This removes your account, all your posts, comments, likes, messages, and every other trace. <strong style="color:var(--danger)">This cannot be undone.</strong></p>
 
+    <% if (locals.error) { %><div class="flash err"><span class="flash-ico"><%- include('partials/icon', { name: 'alert', size: 18 }) %></span><span><%= error %></span></div><% } %>
+
     <hr>
 
     <form method="post" action="/settings/delete" style="display:inline">
       <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+      <label for="delete-password" style="display:block;text-align:left">Confirm your password</label>
+      <input type="password" id="delete-password" name="password" autocomplete="current-password" required style="margin-bottom:14px">
       <button class="btn danger"><%- include('partials/icon', { name: 'trash', size: 15 }) %> Delete my account</button>
     </form>
     <a class="btn ghost" href="/settings" style="margin-left:8px">Keep my account</a>

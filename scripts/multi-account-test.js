@@ -307,7 +307,7 @@ async function main() {
   r = await s5.withCookie('/settings/delete', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: `_csrf=${encodeURIComponent(delCsrf)}`,
+    body: `_csrf=${encodeURIComponent(delCsrf)}&password=pw-eve`,
   });
   ok(r.status === 302, 'account deletion redirects');
   html = await s5.get('/account/switch');

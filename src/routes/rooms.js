@@ -22,11 +22,12 @@ const ROOM_BODY_MAX = 20000;
 const router = express.Router();
 
 // Native clients (OAuth Bearer) use the same E2EE routes as the web app.
-const { bearerOrSession } = require('../bearer-auth');
+const { bearerOrSession, requireDirectScope } = require('../bearer-auth');
 const { broadcastGatewayEvent } = require('../webrtc-signaling');
 router.use(bearerOrSession);
+router.use(requireDirectScope);
 
-const { getVoiceChannelMembers, pushRoomSessionKeyToRecipient } = require('../webrtc-signaling');
+const { getVoiceChannelMembers, pushRoomSessionKeyToRecipient, updateUserRoomSubscriptions, removeFromVoiceChannels } = require('../webrtc-signaling');
 
 const PERM = { VIEW: 1, WRITE: 2, MANAGE_CHANNELS: 4, MANAGE_ROLES: 8, MANAGE_MESSAGES: 16, MANAGE_MEMBERS: 32, MANAGE_ROOM: 64 };
 
@@ -70,6 +71,9 @@ router.get('/:id', (req, res) => {
   const isAdmin = res.locals.currentUser.is_admin;
   const isMember = isRoomMember(room.id, userId);
   if (!isMember) {
+    // Private rooms are invisible to non-members (matching the API), so their
+    // name/description/custom HTML are not disclosed by enumerating room ids.
+    if (!room.is_public && !isAdmin) return res.status(404).render('404', { thing: 'room' });
     const members = getRoomMembers(room.id);
     const roles = getRoomRoles(room.id);
     const channels = getRoomChannels(room.id);
@@ -320,6 +324,9 @@ router.post('/:id/members/:uid/kick', (req, res) => {
   const currentMemberRole = getUserRoomRole(room.id, targetUser.id);
   if (currentMemberRole && currentMemberRole.is_founder) return res.status(400).send('Cannot kick founder');
   removeRoomMember(room.id, targetUser.id);
+  // Revoke realtime access on the kicked member's live socket right away.
+  updateUserRoomSubscriptions(targetUser.id, room.id, 'leave');
+  removeFromVoiceChannels(targetUser.id);
   res.redirect('/rooms/' + room.id + '/members');
 });
 

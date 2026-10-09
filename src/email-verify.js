@@ -74,13 +74,21 @@ function canResend(userId) {
 // verification links. Otherwise derives the base from the request, falling
 // back to localhost:PORT for dev.
 function appBaseUrl(req) {
-  const explicitIssuer = process.env.OIDC_ISSUER;
+  // Prefer an explicitly configured public URL. EXTV_BASE_URL is the general
+  // setting; OIDC_ISSUER is the legacy fallback. The module's built-in default
+  // is the author's production URL and must never leak into verification links.
+  const explicitIssuer = process.env.EXTV_BASE_URL || process.env.OIDC_ISSUER;
   if (explicitIssuer && /^https?:\/\//.test(explicitIssuer) && !/localhost|127\.0\.0\.1|\.test\b|\.local\b/i.test(explicitIssuer)) {
     return explicitIssuer.replace(/\/$/, '');
   }
   if (req) {
     const proto = req.headers['x-forwarded-proto'] || req.protocol || 'http';
-    const host = req.headers['x-forwarded-host'] || req.get && req.get('host');
+    // X-Forwarded-Host is only trusted when a reverse proxy is configured
+    // (app-level trust proxy); otherwise it is attacker-controllable and would
+    // let a spoofed request rewrite the link host (phishing / token
+    // exfiltration if a future flow ever mails the token).
+    const trustProxy = req.app && req.app.get && req.app.get('trust proxy');
+    const host = (trustProxy ? req.headers['x-forwarded-host'] : null) || (req.get && req.get('host'));
     if (host) return `${proto}://${host}`;
   }
   const port = process.env.PORT || 3000;

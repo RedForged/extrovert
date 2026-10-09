@@ -358,6 +358,12 @@ try { db.exec(`ALTER TABLE users ADD COLUMN banned INTEGER NOT NULL DEFAULT 0`);
 try { db.exec(`ALTER TABLE users ADD COLUMN avatar TEXT`); } catch {}
 try { db.exec(`ALTER TABLE users ADD COLUMN email TEXT`); } catch {}
 try { db.exec(`ALTER TABLE users ADD COLUMN email_verified_at INTEGER`); } catch {}
+// Email is an identity claim (OIDC email/email_verified) and is checked case-
+// insensitively, so enforce uniqueness in the DB too — the application-level
+// "already taken" checks cannot prevent a registration race. Created best-effort:
+// if legacy rows already contain duplicates the index is skipped (and logged)
+// rather than blocking startup.
+try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_unique ON users(email COLLATE NOCASE) WHERE email IS NOT NULL`); } catch (e) { console.error('email unique index not created:', e.message); }
 try { db.exec(`ALTER TABLE rooms ADD COLUMN is_public INTEGER NOT NULL DEFAULT 1`); } catch {}
 try { db.exec(`ALTER TABLE room_channels ADD COLUMN type TEXT NOT NULL DEFAULT 'text'`); } catch {}
 try { db.exec(`ALTER TABLE posts ADD COLUMN edited_at INTEGER`); } catch {}
@@ -1586,6 +1592,16 @@ function consumeSpecificMlsKeyPackages(keypackageIds) {
   `).all(now, ...cleanIds);
 }
 
+// Owner lookup for a set of key package ids — lets the caller authorize each
+// before consuming (the consume helper itself cannot know the requester).
+function getMlsKeyPackageOwners(keypackageIds) {
+  if (!Array.isArray(keypackageIds) || !keypackageIds.length) return [];
+  const cleanIds = keypackageIds.map(Number).filter(n => Number.isInteger(n) && n > 0);
+  if (!cleanIds.length) return [];
+  const placeholders = cleanIds.map(() => '?').join(',');
+  return db.prepare(`SELECT id, user_id FROM mls_keypackages WHERE id IN (${placeholders})`).all(...cleanIds);
+}
+
 function claimMlsKeyPackage(userId, deviceId) {
   const now = Date.now();
   const nowSec = Math.floor(now / 1000);
@@ -2553,6 +2569,16 @@ function promoteUser(userId) {
   db.prepare(`UPDATE users SET is_admin = 1 WHERE id = ?`).run(userId);
 }
 
+// First-admin bootstrap without a TOCTOU race: the update only applies while no
+// admin exists yet, evaluated atomically by SQLite. Returns true when this call
+// performed the promotion.
+function promoteUserIfNoAdmin(userId) {
+  const res = db.prepare(
+    `UPDATE users SET is_admin = 1 WHERE id = ? AND NOT EXISTS (SELECT 1 FROM users WHERE is_admin = 1)`
+  ).run(userId);
+  return res.changes > 0;
+}
+
 function demoteUser(userId) {
   db.prepare(`UPDATE users SET is_admin = 0 WHERE id = ?`).run(userId);
 }
@@ -3396,7 +3422,15 @@ function isValidEmail(email) {
   if (!e || e.length > 254) return false;
   // Practical mailbox pattern (not RFC-pedantic: no validation of the domain
   // itself, which the outbound SMTP session will fail on anyway).
-  return /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(e);
+  if (!/^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(e)) return false;
+  // Reject literal / special-use domains. They are never valid mailboxes, and
+  // allowing them lets "send verification" act as an SSRF primitive that
+  // connects to an arbitrary host on port 25 (see mailer.js mxHosts).
+  const domain = e.slice(e.lastIndexOf('@') + 1);
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(domain)) return false;
+  if (domain === 'localhost' || domain.endsWith('.localhost')) return false;
+  if (domain.endsWith('.local') || domain.endsWith('.internal') || domain.endsWith('.home.arpa')) return false;
+  return true;
 }
 
 function getUserByEmail(email) {
@@ -3635,7 +3669,7 @@ module.exports = {
   // Multi-Device Olm E2EE & History Backup
   registerUserDevice, getUserDevices, getUserDevice, getSenderCurve, touchUserDevice, deleteUserDevice, addDevicePrekeys, countAvailableDevicePrekeys, claimDevicePrekey, peekDevicePrekey, getAllDeviceBundlesForUser, claimAllDevicePrekeysForUser, setUserHistoryBackup, getUserHistoryBackup,
   // admin
-  adminExists, getAllUsers, promoteUser, demoteUser, removeReferralBadge, banUser, unbanUser,
+  adminExists, getAllUsers, promoteUser, promoteUserIfNoAdmin, demoteUser, removeReferralBadge, banUser, unbanUser,
   // referrals
   setReferralCode, getUserByReferralCode, getReferralCount, getReferralCode, getReferrerIp,
   // stickers
@@ -3709,7 +3743,7 @@ module.exports = {
   getAnnouncement, setAnnouncement, clearAnnouncement,
   // MLS (RFC 9420) Delivery Service & Authentication Service
   registerMlsDevice, getMlsDevices, getMlsDevice, touchMlsDevice, revokeMlsDevice,
-  saveMlsKeyPackages, getMlsKeyPackagesForUser, consumeSpecificMlsKeyPackages,
+  saveMlsKeyPackages, getMlsKeyPackagesForUser, consumeSpecificMlsKeyPackages, getMlsKeyPackageOwners,
   claimMlsKeyPackage, claimUserMlsKeyPackages, getMlsKeyPackageStatus,
   addMlsGroupMember, removeMlsGroupMember, getMlsGroupMembers, isMlsGroupMember, getUserMlsGroups,
   saveMlsProposal, getPendingMlsProposals, consumeMlsProposals,

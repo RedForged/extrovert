@@ -32,6 +32,11 @@ async function run() {
     const aliceId = Number(db.createUser({ username: 'alice', passwordHash: 'x', displayName: 'Alice' }));
     const bobId = Number(db.createUser({ username: 'bob', passwordHash: 'x', displayName: 'Bob' }));
 
+    // E2EE DMs are between mutual followers, and claiming a peer's KeyPackages
+    // requires that relationship (self / mutual follow / shared room).
+    db.follow(aliceId, bobId);
+    db.follow(bobId, aliceId);
+
     db.createOAuthApp({ name: 'app1', description: '', website: '', redirectUris: 'https://x/cb', clientId: 'c1', clientSecret: 's1', scopes: 'read write follow read:direct write:direct', ownerId: aliceId });
     db.createOAuthApp({ name: 'app2', description: '', website: '', redirectUris: 'https://x/cb', clientId: 'c2', clientSecret: 's2', scopes: 'read write follow read:direct write:direct', ownerId: bobId });
 

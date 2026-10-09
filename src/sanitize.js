@@ -16,6 +16,9 @@ function sanitizeCSS(css) {
   out = out.replace(/@import[^;]+;/gi, '');
   out = out.replace(/<\/?script[^>]*>/gi, '');
   out = out.replace(/url\s*\(\s*['"]?\s*https?:\/\/[^)]*\)/gi, 'url()');
+  // Protocol-relative urls (url(//host/…)) also trigger an outbound request
+  // from a viewer's browser (IP/referrer leak) even without a scheme.
+  out = out.replace(/url\s*\(\s*['"]?\s*\/\/[^)]*\)/gi, 'url()');
   // Prevent breaking out of the <style> element.
   out = out.replace(/<\/style/gi, '<\\/style');
   return out;

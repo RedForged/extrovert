@@ -44,8 +44,8 @@ const bobId = db.createUser({ username: 'bob_boot', passwordHash: 'hash', displa
 // Create PATs for testing
 aliceToken = 'ext_pat_' + require('node:crypto').randomBytes(32).toString('hex');
 bobToken = 'ext_pat_' + require('node:crypto').randomBytes(32).toString('hex');
-db.createPersonalAccessToken(aliceId, 'Alice Test Token', aliceToken, 'read write profile', null);
-db.createPersonalAccessToken(bobId, 'Bob Test Token', bobToken, 'read write profile', null);
+db.createPersonalAccessToken(aliceId, 'Alice Test Token', aliceToken, 'read write follow notifications media.write read:direct write:direct profile', null);
+db.createPersonalAccessToken(bobId, 'Bob Test Token', bobToken, 'read write follow notifications media.write read:direct write:direct profile', null);
 
 // Setup room and channel for Alice & Bob
 const roomId = db.createRoom('Tech Talk', 'Technology discussion', aliceId, 1);
@@ -58,6 +58,11 @@ const postId = db.createPost({
   type: 'text',
   body: 'Welcome to Extrovert client testing!',
 });
+
+// Timeline events are network-bound (canView): make Alice and Bob mutual
+// followers so the realtime gateway legitimately delivers each other's posts.
+db.follow(aliceId, bobId);
+db.follow(bobId, aliceId);
 
 before(async () => {
   return new Promise((resolve) => {

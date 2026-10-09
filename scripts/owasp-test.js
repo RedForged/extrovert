@@ -407,11 +407,12 @@ describe('OWASP Top 10', () => {
     it('stored XSS in profile HTML/CSS is sanitized before serving', async () => {
       const evilHtml = '<script>alert(1)</script><img src=x onerror=alert(1)><a href="javascript:alert(1)">click</a><div style="background:url(javascript:alert(1))">hi</div>';
       const evilCss = 'body{background:url(javascript:alert(1))} a{behavior:url(x)}';
-      const resp = await req('/u/alice/edit', {
+      // The profile editor saves through the visual endpoint (JSON + X-CSRF-Token).
+      const resp = await req('/u/alice/edit/visual', {
         method: 'POST', jar: aliceSession, csrf: aliceSession.csrf,
-        form: { html: evilHtml, css: evilCss, displayName: 'Alice', bio: 'hi' },
+        body: { html: evilHtml, css: evilCss },
       });
-      assert.strictEqual(resp.status, 302, 'profile update accepted');
+      assert.strictEqual(resp.status, 200, 'profile update accepted');
       const page = await (await req('/u/alice', { jar: aliceSession })).text();
       assert.ok(!page.includes('alert(1)'), 'script payload stripped');
       assert.ok(!/onerror\s*=/.test(page), 'event handler attributes stripped');

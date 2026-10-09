@@ -22,8 +22,9 @@ const MESSAGE_PAGE = 100;
 const router = express.Router();
 
 // Native clients (OAuth Bearer) use the same E2EE routes as the web app.
-const { bearerOrSession } = require('../bearer-auth');
+const { bearerOrSession, requireDirectScope } = require('../bearer-auth');
 router.use(bearerOrSession);
+router.use(requireDirectScope);
 
 function back(req, fallback = '/') {
   const ref = req.get('referer');

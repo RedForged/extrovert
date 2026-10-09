@@ -553,6 +553,8 @@ router.get('/:username/followers', (req, res) => {
   if (!user) return res.redirect('/login');
   const target = getUserByUsername(req.params.username);
   if (!target) return res.status(404).render('404', { thing: 'user' });
+  // The follow graph is network-bound like the rest of the profile.
+  if (!canView(user.id, target.id)) return res.status(404).render('404', { thing: 'user' });
   const list = getFollowers(target.id).map(u => ({
     ...u, following: isFollowing(user.id, u.id),
     mutual: u.id !== user.id && areMutualFollowers(user.id, u.id),
@@ -568,6 +570,7 @@ router.get('/:username/following', (req, res) => {
   if (!user) return res.redirect('/login');
   const target = getUserByUsername(req.params.username);
   if (!target) return res.status(404).render('404', { thing: 'user' });
+  if (!canView(user.id, target.id)) return res.status(404).render('404', { thing: 'user' });
   const list = getFollowing(target.id).map(u => ({
     ...u, following: isFollowing(user.id, u.id),
     mutual: u.id !== user.id && areMutualFollowers(user.id, u.id),

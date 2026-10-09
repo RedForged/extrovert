@@ -114,6 +114,13 @@ app.use(session({
   secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
+  // express-session decides whether a `secure` cookie may be written from its
+  // OWN proxy option (it does not read app.get('trust proxy')). Without this,
+  // `secure: 'auto'` resolves against req.secure — which is false when TLS
+  // terminates at a reverse proxy — so the session cookie shipped without the
+  // Secure attribute. Trusting X-Forwarded-Proto here makes 'auto' correct
+  // behind a TLS proxy (and stays false on plain-HTTP dev).
+  proxy: IS_PROD || TRUST_PROXY !== 'false',
   cookie: {
     httpOnly: true,
     secure: process.env.EXTV_COOKIE_SECURE === 'false' ? false : process.env.EXTV_COOKIE_SECURE === 'true' ? true : IS_PROD ? 'auto' : false,
@@ -251,7 +258,6 @@ app.use((req, res, next) => {
   // (mobile login regression).
   if (!req.session.csrfToken) {
     req.session.csrfToken = crypto.randomBytes(32).toString('hex');
-    console.log('CSRF: generated new token for session', req.sessionID);
   }
   res.locals.csrfToken = req.session.csrfToken;
   res.locals.legacyE2eeEnabled = db.isLegacyE2eeEnabled ? db.isLegacyE2eeEnabled() : true;
@@ -278,11 +284,9 @@ app.use((req, res, next) => {
       // If the session was just created (stale cookie that couldn't be loaded),
       // redirect to GET so the browser gets a fresh session cookie and CSRF token.
       if (req.session.isNew && req.method === 'POST') {
-        console.log('CSRF: new session with mismatched token, redirecting to', req.originalUrl);
         const dest = req.originalUrl || req.path;
         return res.redirect(dest);
       }
-      console.log('CSRF FAIL', req.method, req.path, 'tokenMatch:', !!token, 'bodyType:', typeof req.body, 'cookie:', req.headers.cookie ? req.headers.cookie.substring(0, 50) : 'none');
       return res.status(403).send('CSRF validation failed');
     }
   }

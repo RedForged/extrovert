@@ -5,6 +5,7 @@ const { DatabaseSync } = require('node:sqlite');
 const path = require('node:path');
 const { getUserById, getUserByUsername, areMutualFollowers, getRoomChannel, isRoomMember, getRoomsForUser, getOAuthToken, getPersonalAccessTokenByHash, hashOAuthToken, createNotification, getPendingRoomSessionKeyForUserAndSession, countAvailablePrekeys } = require('./db');
 const { sendCallPush, sendMissedCallPush } = require('./push');
+const { canView } = require('./network');
 
 const SESSION_DB_PATH = process.env.EXTV_SESSION_DB_PATH || path.join(__dirname, '..', 'data', 'sessions.db');
 const SESSION_SECRET = process.env.SESSION_SECRET;
@@ -153,6 +154,38 @@ function broadcastGatewayEvent(topic, eventName, data) {
         item.ws.send(json);
       } catch {}
     }
+  }
+}
+
+// Timeline events (post/comment create, edit, delete) are authored by a single
+// user, and content visibility is network-bound via canView(). The shared
+// 'timeline:home' topic therefore cannot be broadcast verbatim to every
+// subscriber — doing so leaked every API-authored post to every connected user,
+// bypassing canView. Fan the frame out per subscriber, filtered by canView, and
+// keep the topic name so clients and the resume protocol are unchanged. The
+// author id rides on the stored frame (stripped before delivery) so replay on
+// resume applies the same filter.
+function broadcastTimelineEvent(topic, eventName, data, authorId) {
+  const frame = {
+    seq: globalSeq++,
+    type: 'gateway_event',
+    topic,
+    event: eventName,
+    data,
+    _authorId: Number(authorId),
+  };
+
+  recentGatewayEvents.push(frame);
+  if (recentGatewayEvents.length > 500) recentGatewayEvents.shift();
+
+  const subscribers = topicSubscriptions.get(topic);
+  if (!subscribers) return;
+
+  const out = JSON.stringify({ seq: frame.seq, type: frame.type, topic: frame.topic, event: frame.event, data: frame.data });
+  for (const item of subscribers) {
+    if (!item.ws || item.ws.readyState !== 1) continue;
+    if (item.userId == null || !canView(Number(item.userId), frame._authorId)) continue;
+    try { item.ws.send(out); } catch {}
   }
 }
 
@@ -342,6 +375,8 @@ function broadcastToRoomMembers(channelId, excludeUserId, msg) {
 function routeToChannelMember(msg, user, forwardType) {
   const members = voiceChannels.get(msg.channel_id);
   if (!members) return;
+  // Only a participant in the voice channel may drive its call signalling.
+  if (!members.has(user.id)) return;
   for (const otherId of members) {
     if (otherId === user.id) continue;
     if (msg.to) {
@@ -517,6 +552,11 @@ function initSignaling(wss) {
     ws.on('message', (raw) => {
       let msg;
       try { msg = JSON.parse(raw.toString()); } catch { return; }
+      // A valid-JSON primitive ("null", "42", "\"x\"") parses to a non-object;
+      // touching msg.token below would throw and (via the process-level
+      // uncaughtException handler) exit the server. Reject anything that is not
+      // a plain object before it is dereferenced.
+      if (!msg || typeof msg !== 'object') return;
 
       // Authenticate dynamically if message carries a token
       if (!user && (msg.token || msg.action === 'auth' || msg.action === 'subscribe' || msg.action === 'resume')) {
@@ -541,6 +581,17 @@ function initSignaling(wss) {
       }
 
       const actionType = msg.action || msg.type;
+
+      // Every signaling action below dereferences `user`. An unauthenticated
+      // frame (e.g. {"type":"call_offer","to":"x"}) must never reach them: a
+      // null deref here throws out of this listener, and the process-level
+      // uncaughtException handler exits the server — an anonymous remote DoS.
+      // Only 'ping' is answered before authentication.
+      if (!user && actionType !== 'ping') {
+        try { ws.send(JSON.stringify({ type: 'error', message: 'Unauthorized' })); } catch {}
+        return;
+      }
+
       switch (actionType) {
         case 'ping':
           try { ws.send(JSON.stringify({ type: 'pong' })); } catch {}
@@ -608,9 +659,15 @@ function initSignaling(wss) {
             performAutoSubscribe(ws, user);
           }
           const clientSeq = Number(msg.seq) || 0;
-          const missed = recentGatewayEvents.filter(e => e.seq > clientSeq && ws.subscribedTopics && ws.subscribedTopics.has(e.topic));
+          const missed = recentGatewayEvents.filter(e => e.seq > clientSeq
+            && ws.subscribedTopics && ws.subscribedTopics.has(e.topic)
+            // Timeline frames carry the author id; replay only what this viewer
+            // may see (the live path applies the same canView filter).
+            && (!e._authorId || (user && canView(Number(user.id), e._authorId))));
           for (const ev of missed) {
-            try { ws.send(JSON.stringify(ev)); } catch {}
+            try {
+              ws.send(JSON.stringify({ seq: ev.seq, type: ev.type, topic: ev.topic, event: ev.event, data: ev.data }));
+            } catch {}
           }
           try {
             ws.send(JSON.stringify({
@@ -626,6 +683,11 @@ function initSignaling(wss) {
           if (!user) break;
           const ch = msg.channel || (msg.room_id ? `room:${msg.room_id}` : null);
           if (ch) {
+            // Echo back to the sender (harmless, no other recipient), but only
+            // BROADCAST into a room topic the sender actually belongs to. This
+            // mirrors the read-side ('subscribe') authorization and stops any
+            // user from injecting spoofed typing events into other rooms or
+            // global topics (timeline:home, notifications, …).
             try {
               ws.send(JSON.stringify({
                 type: 'typing',
@@ -635,13 +697,18 @@ function initSignaling(wss) {
                 typing: !!msg.typing,
               }));
             } catch {}
-            broadcastGatewayEvent(ch, 'typing', {
-              channel: ch,
-              user_id: user.id,
-              username: user.username,
-              display_name: user.display_name,
-              typing: !!msg.typing,
-            });
+            if (ch.startsWith('room:')) {
+              const roomId = parseInt(ch.slice(5), 10);
+              if (roomId && (isRoomMember(roomId, user.id) || user.is_admin)) {
+                broadcastGatewayEvent(ch, 'typing', {
+                  channel: ch,
+                  user_id: user.id,
+                  username: user.username,
+                  display_name: user.display_name,
+                  typing: !!msg.typing,
+                });
+              }
+            }
           } else if (msg.scope === 'room' && msg.room_id) {
             const roomId = parseInt(msg.room_id, 10);
             if (isRoomMember(roomId, user.id) || user.is_admin) {
@@ -672,28 +739,21 @@ function initSignaling(wss) {
         // queued for ring-on-reconnect + notified of a missed call).
         case 'call_request': {
           if (msg.channel_id) break; // room voice channels use call_offer directly
-          console.log('WS msg call_request from', user.username, 'to', msg.to);
+          // Resolve the callee and require a mutual-follow relationship BEFORE
+          // revealing any online/busy state — otherwise this is a presence
+          // oracle for any account by username.
+          const callee = getUserByUsername(msg.to);
+          if (!callee || !areMutualFollowers(user.id, callee.id)) {
+            try { ws.send(JSON.stringify({ type: 'user_offline', from: msg.to })); } catch {}
+            break;
+          }
           const target = findUserByUsername(msg.to);
           if (target) {
-            if (target.inCall) {
-              console.log('  -> target busy');
-              try { ws.send(JSON.stringify({ type: 'user_busy', from: msg.to })); } catch {}
-            } else {
-              console.log('  -> target online, callee_available');
-              try { ws.send(JSON.stringify({ type: 'callee_available', to: msg.to })); } catch {}
-            }
-            break;
-          }
-          // Target offline: resolve via DB and queue a pending call.
-          const callee = getUserByUsername(msg.to);
-          if (!callee) {
-            console.log('  -> callee not found');
-            try { ws.send(JSON.stringify({ type: 'user_offline', from: msg.to })); } catch {}
-            break;
-          }
-          if (!areMutualFollowers(user.id, callee.id)) {
-            console.log('  -> not mutual followers');
-            try { ws.send(JSON.stringify({ type: 'user_offline', from: msg.to })); } catch {}
+            try {
+              ws.send(JSON.stringify(target.inCall
+                ? { type: 'user_busy', from: msg.to }
+                : { type: 'callee_available', to: msg.to }));
+            } catch {}
             break;
           }
           if (pendingCalls.has(callee.id)) {
@@ -751,6 +811,8 @@ function initSignaling(wss) {
           console.log('WS msg call_offer from', user.username, 'to', msg.to, 'channel:', msg.channel_id);
           if (msg.channel_id) {
             const members = voiceChannels.get(msg.channel_id);
+            // Sender must actually be in the voice channel to ring its members.
+            if (members && !members.has(user.id)) break;
             if (members) {
               for (const otherId of members) {
                 if (otherId === user.id) continue;
@@ -832,6 +894,7 @@ function initSignaling(wss) {
             routeToChannelMember(msg, user, 'ice_candidate');
           } else {
             const target = findUserByUsername(msg.to);
+            if (!target || !areMutualFollowers(user.id, target.userId)) break;
             if (target) {
               try {
                 target.ws.send(JSON.stringify({
@@ -850,6 +913,7 @@ function initSignaling(wss) {
             routeToChannelMember(msg, user, 'call_ended');
           } else {
             const target = findUserByUsername(msg.to);
+            if (!target || !areMutualFollowers(user.id, target.userId)) break;
             if (target) {
               console.log('  -> forwarding call_ended to', target.username);
               try {
@@ -869,6 +933,7 @@ function initSignaling(wss) {
             routeToChannelMember(msg, user, 'call_declined');
           } else {
             const target = findUserByUsername(msg.to);
+            if (!target || !areMutualFollowers(user.id, target.userId)) break;
             if (target) {
               try {
                 target.ws.send(JSON.stringify({
@@ -1106,6 +1171,8 @@ module.exports = {
   pushRoomSessionKeyToRecipient,
   cancelPendingCallByToken,
   broadcastGatewayEvent,
+  broadcastTimelineEvent,
+  removeFromVoiceChannels,
   getGatewayLatestSeq,
   updateUserRoomSubscriptions,
 };

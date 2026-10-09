@@ -10,16 +10,23 @@ const {
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
 const MAX_PASSKEYS_PER_USER = 10;
 
-// Relying-party identity is derived from the request host, mirroring how the
-// OIDC issuer is derived (oidc.js). NOTE: credentials are bound to the rpID
-// (hostname) they were created on — serving the app on a different hostname
-// invalidates previously registered passkeys. The ORIGIN includes the port
-// (WebAuthn compares scheme+host+port exactly), taken from the Host header.
+// Relying-party identity. Prefer an explicit configuration (EXTV_RP_ID /
+// EXTV_RP_ORIGIN) — WebAuthn requires a fixed rpID and origin, and deriving
+// them from the request Host header lets a host-confusion / DNS-rebind scenario
+// choose the origin being validated. The request-derived values remain as a
+// fallback for single-host installs. NOTE: credentials are bound to the rpID
+// they were created on; changing it invalidates existing passkeys.
 function rpInfo(req) {
+  const configuredId = process.env.EXTV_RP_ID ? String(process.env.EXTV_RP_ID).trim() : '';
+  const configuredOrigin = process.env.EXTV_RP_ORIGIN ? String(process.env.EXTV_RP_ORIGIN).trim().replace(/\/$/, '') : '';
   const host = req.hostname;
-  const hostHeader = req.headers.host || host; // may include :port
+  const hostHeader = req.headers.host || host;
   const https = req.protocol === 'https' || req.get('x-forwarded-proto') === 'https';
-  return { rpID: host, rpName: 'Extrovert', origin: `${https ? 'https' : 'http'}://${hostHeader}` };
+  return {
+    rpID: configuredId || host,
+    rpName: 'Extrovert',
+    origin: configuredOrigin || `${https ? 'https' : 'http'}://${hostHeader}`,
+  };
 }
 
 function setChallenge(req, kind, value) {

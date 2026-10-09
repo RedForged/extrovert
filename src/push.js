@@ -312,4 +312,34 @@ async function sendMissedCallPush(calleeUser, callerUser) {
   }
 }
 
-module.exports = { sendCallPush, sendMissedCallPush, getVapidPublicKey, validatePushEndpoint };
+// General outbound-URL guard for server-initiated requests (used by bot
+// webhooks). Blocks loopback/link-local/private/reserved literal addresses and
+// private hostnames outright. When resolveHosts is true (delivery time), the
+// hostname is also resolved and rejected if ANY address is private — fail
+// closed — which also blunts DNS rebinding. Registration can pass
+// resolveHosts:false so a temporarily-unresolvable public host can still be
+// saved (delivery re-checks). Returns { ok } | { ok:false, reason }.
+async function validateWebhookUrl(rawUrl, { resolveHosts = true } = {}) {
+  if (typeof rawUrl !== 'string' || !rawUrl.trim()) return { ok: false, reason: 'url is required' };
+  let url;
+  try {
+    url = new URL(rawUrl.trim());
+  } catch {
+    return { ok: false, reason: 'url is not a valid absolute URL' };
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return { ok: false, reason: 'url must use http: or https:' };
+  }
+  const host = url.hostname.toLowerCase();
+  if (isPrivateHostname(host)) return { ok: false, reason: 'url must target a public host' };
+  if (host.includes(':')) return { ok: true }; // non-private IPv6 literal
+  if (!resolveHosts) return { ok: true };
+  const addrs = await lookupHost(host);
+  if (addrs.length === 0) return { ok: false, reason: 'url host could not be resolved' };
+  for (const addr of addrs) {
+    if (isPrivateAddress(addr)) return { ok: false, reason: 'url must target a public host' };
+  }
+  return { ok: true };
+}
+
+module.exports = { sendCallPush, sendMissedCallPush, getVapidPublicKey, validatePushEndpoint, validateWebhookUrl, isPrivateHostname, isPrivateAddress };

@@ -10,6 +10,7 @@ const {
   saveMlsKeyPackages,
   getMlsKeyPackagesForUser,
   consumeSpecificMlsKeyPackages,
+  getMlsKeyPackageOwners,
   claimUserMlsKeyPackages,
   getMlsKeyPackageStatus,
   addMlsGroupMember,
@@ -30,6 +31,8 @@ const {
   saveMlsBackup,
   getMlsBackup,
   isRoomMember,
+  areMutualFollowers,
+  getRoomsForUser,
   getHistoricalDmMessagesForMigration,
   getHistoricalRoomMessagesForMigration,
   recordMigrationTelemetry,
@@ -73,6 +76,27 @@ function requireAuth(req, res, next) {
   next();
 }
 
+// E2EE is only used for DMs (mutual followers) and rooms (co-members), so a
+// caller may only touch another account's MLS devices / key packages when that
+// relationship exists. Without this, any signed-in user could read any user's
+// device list and drain any user's KeyPackage pool (breaking their ability to
+// be added to new groups) — user ids are small sequential integers.
+function canAccessUserKeys(viewerId, targetId) {
+  const target = Number(targetId);
+  if (!Number.isInteger(target) || target <= 0) return false;
+  if (target === Number(viewerId)) return true;
+  try { if (areMutualFollowers(Number(viewerId), target)) return true; } catch {}
+  try {
+    const mine = new Set(getRoomsForUser(Number(viewerId)).map((r) => r.id));
+    if (mine.size) {
+      for (const r of getRoomsForUser(target)) {
+        if (mine.has(r.id)) return true;
+      }
+    }
+  } catch {}
+  return false;
+}
+
 // 1. Device Registration (Authentication Service attestation)
 router.post('/device/register', requireAuth, (req, res) => {
   const user = res.locals.currentUser;
@@ -93,10 +117,13 @@ router.post('/device/register', requireAuth, (req, res) => {
   }
 });
 
-// 2. List Active Devices for Current User (or target user)
+// 2. List Active Devices for Current User (or an authorized target user)
 router.get('/devices', requireAuth, (req, res) => {
   const user = res.locals.currentUser;
   const targetUserId = req.query.user_id ? parseInt(req.query.user_id, 10) : user.id;
+  if (!Number.isInteger(targetUserId) || !canAccessUserKeys(user.id, targetUserId)) {
+    return res.status(403).json({ error: 'Not authorized for that user' });
+  }
   const devices = getMlsDevices(targetUserId);
   res.json({ ok: true, devices });
 });
@@ -228,6 +255,12 @@ router.get('/keypackages/:userId', requireAuth, (req, res) => {
   const target = getUserById(targetUserId);
   if (!target) return res.status(404).json({ error: 'User not found' });
 
+  // Claiming consumes one package per device — only for accounts the caller may
+  // legitimately add to a group (self, mutual follow, or shared room).
+  if (!canAccessUserKeys(user.id, targetUserId)) {
+    return res.status(403).json({ error: 'Not authorized for that user' });
+  }
+
   const isPeek = req.query.peek === '1' || req.query.consume === '0' || req.query.consume === 'false';
   if (isPeek) {
     const available = getMlsKeyPackagesForUser(targetUserId);
@@ -238,13 +271,22 @@ router.get('/keypackages/:userId', requireAuth, (req, res) => {
   res.json({ ok: true, user_id: targetUserId, keypackages: claimed });
 });
 
-// Phase 2: Consume specific packages after commit incorporates them
+// Phase 2: Consume specific packages after commit incorporates them.
+// Only packages belonging to users the caller may access are consumed; ids for
+// other accounts are ignored (the helper itself cannot authorize).
 router.post('/keypackages/consume', requireAuth, (req, res) => {
+  const user = res.locals.currentUser;
   const { keypackage_ids } = req.body || {};
   if (!Array.isArray(keypackage_ids) || !keypackage_ids.length) {
     return res.status(400).json({ error: 'keypackage_ids array required' });
   }
-  const consumed = consumeSpecificMlsKeyPackages(keypackage_ids);
+  const allowedIds = getMlsKeyPackageOwners(keypackage_ids)
+    .filter((row) => canAccessUserKeys(user.id, row.user_id))
+    .map((row) => row.id);
+  if (!allowedIds.length) {
+    return res.status(403).json({ error: 'Not authorized for those key packages' });
+  }
+  const consumed = consumeSpecificMlsKeyPackages(allowedIds);
   res.json({ ok: true, consumed_count: consumed.length, consumed_ids: consumed.map(c => c.id) });
 });
 
@@ -306,6 +348,9 @@ router.get('/groups/:groupId/proposals', requireAuth, (req, res) => {
   if (groupId.startsWith('dm:')) {
     const parts = groupId.slice(3).split('_').map(Number);
     if (!parts.includes(user.id)) return res.status(403).json({ error: 'Not authorized' });
+  } else if (groupId.startsWith('room:')) {
+    const roomId = parseInt(groupId.slice(5), 10);
+    if (!isRoomMember(roomId, user.id)) return res.status(403).json({ error: 'Not a room member' });
   }
 
   const proposals = getPendingMlsProposals(groupId, epoch);
