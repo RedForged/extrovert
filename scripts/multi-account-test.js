@@ -184,13 +184,13 @@ async function main() {
   const s2 = makeWebSession();
   await s2.login('alice', 'pw-alice');
   await s2.login('bob', 'pw-bob', { add: true });
-  // A normal page load materializes the session CSRF token (the OAuth GET is
-  // an /api route and skips the global CSRF-token middleware).
-  await s2.get('/');
+  // A normal page load materializes the session CSRF token.
+  const homeHtml2 = await s2.get('/');
+  const regCsrf = (homeHtml2.match(/name="csrf-token" content="([^"]+)"/) || [])[1] || '';
 
   const appReg = await s2.withCookie('/api/v1/oauth/apps', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': regCsrf },
     body: JSON.stringify({ name: 'Multi app', redirect_uris: 'https://multi.example/cb', scopes: 'read openid profile' }),
   });
   const appJson = await appReg.json();

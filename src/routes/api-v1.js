@@ -1394,6 +1394,13 @@ router.post('/oauth/token', clientAppAuth, (req, res) => {
 
   if (grant_type === 'refresh_token') {
     if (!refresh_token) return errorResponse(res, 400, 'Bad Request', 'refresh_token is required.');
+    // A refresh token is a bearer credential and, for a confidential client,
+    // the client credential is not optional: require the secret (a *wrong*
+    // secret was already rejected by clientAppAuth). Public PKCE clients are
+    // registered without a secret, so app.client_secret is empty for them.
+    if (app.client_secret && !(req.body.client_secret && db.hashOAuthToken(req.body.client_secret) === app.client_secret)) {
+      return errorResponse(res, 401, 'invalid_client', 'client_secret is required for this client.');
+    }
 
     const existing = db.getOAuthTokenByRefresh(refresh_token);
     if (!existing) {
@@ -1557,7 +1564,12 @@ router.patch('/accounts/email', requireApiAuth('profile'), (req, res) => {
   if (db.getEmailPolicy() === 'off') {
     return errorResponse(res, 400, 'Bad Request', 'Email verification is disabled on this server.');
   }
-  const { email } = req.body || {};
+  const { email, password } = req.body || {};
+  // Match the web flow: changing the account's address requires the current
+  // password (a 'profile'-scoped token alone must not repoint the email).
+  if (typeof password !== 'string' || !req.apiUser.password_hash || !bcrypt.compareSync(password, req.apiUser.password_hash)) {
+    return errorResponse(res, 403, 'Forbidden', 'Your current password is required to change your email address.');
+  }
   if (typeof email !== 'string') {
     return errorResponse(res, 400, 'Bad Request', 'email is required.');
   }
@@ -3789,8 +3801,18 @@ router.post('/stickers', requireApiAuth('write'), requireVerifiedApiWrite, (req,
   } else {
     express.json()(req, res, () => {
       const filePath = String(req.body.path || '').trim();
-      if (!filePath.startsWith('/uploads/stickers/')) {
+      // Strict shape + ownership: you may only adopt a sticker file you
+      // uploaded (a user_files row you own). Otherwise a caller could reference
+      // another user's file — including traversal such as
+      // '/uploads/stickers/../avatars/<hex>' — and the delete route would then
+      // unlink it.
+      if (!/^\/uploads\/stickers\/[A-Za-z0-9._-]+$/.test(filePath)) {
         return errorResponse(res, 400, 'Bad Request', 'Invalid sticker path.');
+      }
+      const split = db.splitStoredPath(filePath);
+      const ownerRow = split ? db.getUserFileByPath(split.root, split.path) : null;
+      if (!ownerRow || ownerRow.user_id !== req.apiUser.id) {
+        return errorResponse(res, 403, 'Forbidden', 'You can only add stickers you uploaded.');
       }
       const existing = (db.getMyStickers(req.apiUser.id) || []).find(s => s.file_path === filePath);
       if (existing) {
@@ -3812,9 +3834,15 @@ router.delete('/stickers/:id', requireApiAuth('write'), (req, res) => {
   if (!deleted) {
     return errorResponse(res, 404, 'Not Found', 'Sticker not found.');
   }
-  // Drop the stored file and free its space.
+  // Drop the stored file and free its space — only if the backing file is
+  // actually owned by the caller (never unlink another user's file).
   const stickerFile = db.splitStoredPath(sticker.file_path);
-  if (stickerFile) db.removeStoredFile(stickerFile.root, stickerFile.path);
+  if (stickerFile) {
+    const ownerRow = db.getUserFileByPath(stickerFile.root, stickerFile.path);
+    if (ownerRow && ownerRow.user_id === req.apiUser.id) {
+      db.removeStoredFile(stickerFile.root, stickerFile.path);
+    }
+  }
   res.json({ data: { ok: true } });
 });
 

@@ -96,17 +96,21 @@ function performAutoSubscribe(ws, user) {
 function updateUserRoomSubscriptions(userId, roomId, action) {
   const topic = 'room:' + roomId;
   const uid = Number(userId);
+  // Apply to EVERY socket of the user — including ones that subscribed to the
+  // room explicitly (without ?auto_subscribe=1). Revocation must not depend on
+  // how the client happened to subscribe, or a kicked/left member keeps
+  // receiving the room's events on their existing connection.
   const userDmConns = dmClients.get(uid);
   if (userDmConns) {
     for (const item of userDmConns) {
-      if (item && item.ws && item.ws.autoSubscribe) {
+      if (item && item.ws) {
         if (action === 'join') subscribeClient(item.ws, uid, topic);
         else if (action === 'leave') unsubscribeClient(item.ws, topic);
       }
     }
   }
   const client = clients.get(uid);
-  if (client && client.ws && client.ws.autoSubscribe) {
+  if (client && client.ws) {
     if (action === 'join') subscribeClient(client.ws, uid, topic);
     else if (action === 'leave') unsubscribeClient(client.ws, topic);
   }
@@ -248,23 +252,26 @@ function getSession(sid) {
   } catch { return null; }
 }
 
-function lookupTokenUser(token) {
+function lookupTokenAuth(token) {
   if (!token || typeof token !== 'string') return null;
   const trimmed = token.trim();
   const tokenRecord = getOAuthToken(trimmed);
   if (tokenRecord && (!tokenRecord.expires_at || tokenRecord.expires_at > Date.now())) {
     const user = getUserById(tokenRecord.user_id);
-    if (user && !user.banned) return user;
+    if (user && !user.banned) return { user, scopes: String(tokenRecord.scopes || '') };
   }
   const patHash = hashOAuthToken(trimmed);
   const pat = getPersonalAccessTokenByHash(patHash);
   if (pat && (!pat.expires_at || pat.expires_at > Date.now())) {
     const user = getUserById(pat.user_id);
-    if (user && !user.banned) return user;
+    if (user && !user.banned) return { user, scopes: String(pat.scopes || '') };
   }
   return null;
 }
 
+// Returns { user, scopes } | null. `scopes === null` means a session cookie
+// (a full user credential); a token carries its granted scopes, which the WS
+// layer must honor like the HTTP scope middleware does.
 function lookupUserFromRequest(req) {
   // 1. Session cookie (browser clients)
   if (SESSION_SECRET && sessionDb) {
@@ -277,26 +284,32 @@ function lookupUserFromRequest(req) {
         const session = getSession(sid);
         if (session && session.userId) {
           const user = getUserById(session.userId);
-          if (user && !user.banned) return user;
+          if (user && !user.banned) return { user, scopes: null };
         }
       }
     }
   }
   // 2. Bearer token via Authorization header
   if (req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
-    const user = lookupTokenUser(req.headers.authorization.slice(7));
-    if (user) return user;
+    const auth = lookupTokenAuth(req.headers.authorization.slice(7));
+    if (auth) return auth;
   }
   // 3. Bearer token via ?token= query param (native/mobile clients)
   try {
     const url = new URL(req.url, 'http://localhost');
     const token = url.searchParams.get('token');
     if (token) {
-      const user = lookupTokenUser(token);
-      if (user) return user;
+      const auth = lookupTokenAuth(token);
+      if (auth) return auth;
     }
   } catch {}
   return null;
+}
+
+// Does this credential satisfy `scope`? A session (scopes === null) is a full
+// user credential and satisfies everything.
+function hasScope(scopes, scope) {
+  return scopes === null || String(scopes).split(/\s+/).includes(scope);
 }
 
 function isMutualFollowerOnline(aId, bId) {
@@ -454,7 +467,13 @@ function cancelOutgoingPending(callerId, reason) {
 
 function initSignaling(wss) {
   wss.on('connection', (ws, req) => {
-    let user = lookupUserFromRequest(req);
+    let user = null;
+    // null = session (full credential); a string = the token's granted scopes.
+    let userScopes = null;
+    {
+      const a = lookupUserFromRequest(req);
+      if (a) { user = a.user; userScopes = a.scopes; }
+    }
     let registered = false;
     let clientData = null;
 
@@ -482,29 +501,41 @@ function initSignaling(wss) {
         userId: user.id,
         inCall: false,
       };
+      // A credential without read:direct must not receive DM/E2EE content over
+      // the socket (HTTP enforces this via requireDirectScope). Record it so
+      // every realtime delivery path can honor it.
+      const dmAllowed = hasScope(userScopes, 'read:direct');
+      ws.dmAllowed = dmAllowed;
+      clientData.dmAllowed = dmAllowed;
       clients.set(user.id, clientData);
 
-      // Track this connection for live DM pushes (all tabs).
-      if (!dmClients.has(user.id)) dmClients.set(user.id, new Set());
-      dmClients.get(user.id).add({ ws, username: user.username, displayName: user.display_name });
+      // Track this connection for live DM pushes (all tabs) — only when the
+      // credential may read direct messages.
+      if (dmAllowed) {
+        if (!dmClients.has(user.id)) dmClients.set(user.id, new Set());
+        dmClients.get(user.id).add({ ws, username: user.username, displayName: user.display_name, dmAllowed: true });
+      }
 
       broadcastPresence(user.id, 'user_online');
 
-      // Listen to notification broadcasts and push to this socket
-      const stopNotif = onNotification(user.id, (notif) => {
-        if (ws.readyState === 1) {
-          try {
-            ws.send(JSON.stringify({
-              seq: globalSeq++,
-              type: 'gateway_event',
-              topic: 'notifications',
-              event: 'notification_new',
-              data: notif,
-            }));
-          } catch {}
-        }
-      });
-      ws.on('close', stopNotif);
+      // Listen to notification broadcasts and push to this socket (only when
+      // the credential holds the notifications scope).
+      if (hasScope(userScopes, 'notifications')) {
+        const stopNotif = onNotification(user.id, (notif) => {
+          if (ws.readyState === 1) {
+            try {
+              ws.send(JSON.stringify({
+                seq: globalSeq++,
+                type: 'gateway_event',
+                topic: 'notifications',
+                event: 'notification_new',
+                data: notif,
+              }));
+            } catch {}
+          }
+        });
+        ws.on('close', stopNotif);
+      }
 
       for (const [otherId, client] of clients) {
         if (otherId === user.id) continue;
@@ -557,12 +588,19 @@ function initSignaling(wss) {
       // uncaughtException handler) exit the server. Reject anything that is not
       // a plain object before it is dereferenced.
       if (!msg || typeof msg !== 'object') return;
+      // Reject non-string values where a string is expected: they reach string
+      // methods (`channel`.startsWith) or a SQLite bind (`to` -> getUserByUsername),
+      // either of which throws and exits the process. Field types are fully
+      // attacker-controlled.
+      if (msg.to !== undefined && typeof msg.to !== 'string') return;
+      if (msg.channel !== undefined && typeof msg.channel !== 'string') return;
 
       // Authenticate dynamically if message carries a token
       if (!user && (msg.token || msg.action === 'auth' || msg.action === 'subscribe' || msg.action === 'resume')) {
-        const tokenUser = lookupTokenUser(msg.token);
-        if (tokenUser) {
-          user = tokenUser;
+        const auth = lookupTokenAuth(msg.token);
+        if (auth) {
+          user = auth.user;
+          userScopes = auth.scopes;
           if (msg.auto_subscribe) ws.autoSubscribe = true;
           registerSignalingClient();
         }
@@ -1103,7 +1141,7 @@ function sendDmEvent(toUsername, payload) {
   for (const [userId, conns] of dmClients) {
     for (const c of conns) {
       if (c && String(c.username || '').trim().toLowerCase() === targetLower) {
-        if (c.ws && !sentWs.has(c.ws) && c.ws.readyState === 1) {
+        if (c.ws && c.ws.dmAllowed !== false && !sentWs.has(c.ws) && c.ws.readyState === 1) {
           try { c.ws.send(JSON.stringify(message)); delivered = true; sentWs.add(c.ws); } catch {}
         }
       }
@@ -1112,7 +1150,7 @@ function sendDmEvent(toUsername, payload) {
 
   for (const [userId, client] of clients) {
     if (client && String(client.username || '').trim().toLowerCase() === targetLower) {
-      if (client.ws && !sentWs.has(client.ws) && client.ws.readyState === 1) {
+      if (client.ws && client.ws.dmAllowed !== false && !sentWs.has(client.ws) && client.ws.readyState === 1) {
         try { client.ws.send(JSON.stringify(message)); delivered = true; sentWs.add(client.ws); } catch {}
       }
     }
@@ -1144,14 +1182,14 @@ function sendToUserSockets(userId, messageObj) {
 
   if (conns) {
     for (const c of conns) {
-      if (c && c.ws && c.ws.readyState === 1 && !sentWs.has(c.ws)) {
+      if (c && c.ws && c.ws.dmAllowed !== false && c.ws.readyState === 1 && !sentWs.has(c.ws)) {
         try { c.ws.send(json); delivered = true; sentWs.add(c.ws); } catch {}
       }
     }
   }
 
   const client = clients.get(uid);
-  if (client && client.ws && client.ws.readyState === 1 && !sentWs.has(client.ws)) {
+  if (client && client.ws && client.ws.dmAllowed !== false && client.ws.readyState === 1 && !sentWs.has(client.ws)) {
     try { client.ws.send(json); delivered = true; sentWs.add(client.ws); } catch {}
   }
 

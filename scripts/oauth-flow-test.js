@@ -59,7 +59,7 @@ async function main() {
   async function registerApp(body) {
     return alice.req('/api/v1/oauth/apps', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': alice.csrf },
       body: JSON.stringify(body),
     }).then(async r => ({ status: r.status, data: await r.json() }));
   }
@@ -146,7 +146,7 @@ async function main() {
   // same-origin page showing the code (with a meta-refresh auto-redirect for
   // browsers that DO allow it) instead of a bare 302 that silently dies.
   let nativeApp = await alice.req('/api/v1/oauth/apps', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': alice.csrf },
     body: JSON.stringify({ name: 'Native app', redirect_uris: 'http://localhost:1420/oauth/callback', scopes: 'read' }),
   }).then(async r => ({ status: r.status, data: await r.json() }));
   ok(nativeApp.status === 201, 'native loopback app registered');

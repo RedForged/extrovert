@@ -262,8 +262,11 @@ app.use((req, res, next) => {
   res.locals.csrfToken = req.session.csrfToken;
   res.locals.legacyE2eeEnabled = db.isLegacyE2eeEnabled ? db.isLegacyE2eeEnabled() : true;
 
-  // Skip CSRF validation for API routes (Bearer token auth) and multipart forms.
-  if (req.path.startsWith('/api/')) return next();
+  // /api/* has no CSRF surface ONLY when it is not authenticated by a session
+  // cookie. Bearer-authenticated API calls cannot be driven cross-site; a
+  // cookie-authenticated request to /api (e.g. the web pairing button,
+  // POST /api/v1/oauth/apps) IS CSRF-able, so validate it like a web route.
+  if (req.path.startsWith('/api/') && !(req.session && req.session.userId)) return next();
 
   if (req.method === 'POST' && (
     req.path === '/stickers/upload' ||

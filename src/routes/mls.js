@@ -332,6 +332,8 @@ router.post('/groups/:groupId/proposals', requireAuth, (req, res) => {
   } else if (groupId.startsWith('room:')) {
     const roomId = parseInt(groupId.slice(5), 10);
     if (!isRoomMember(roomId, user.id)) return res.status(403).json({ error: 'Not a room member' });
+  } else {
+    return res.status(400).json({ error: 'Invalid group id' });
   }
 
   const pRef = proposal_ref || require('crypto').createHash('sha256').update(String(proposal_data)).digest('hex');
@@ -354,6 +356,8 @@ router.get('/groups/:groupId/proposals', requireAuth, (req, res) => {
   } else if (groupId.startsWith('room:')) {
     const roomId = parseInt(groupId.slice(5), 10);
     if (!isRoomMember(roomId, user.id)) return res.status(403).json({ error: 'Not a room member' });
+  } else {
+    return res.status(400).json({ error: 'Invalid group id' });
   }
 
   const proposals = getPendingMlsProposals(groupId, epoch);
@@ -377,6 +381,8 @@ router.post('/groups/init', requireAuth, (req, res) => {
     if (!isRoomMember(roomId, user.id)) {
       return res.status(403).json({ error: 'Not a member of this room' });
     }
+  } else {
+    return res.status(400).json({ error: 'Invalid group id' });
   }
 
   const initialMembers = Array.isArray(members) && members.length ? members : (device_id ? [{ user_id: user.id, device_id, leaf_index: 0, role: 'creator' }] : []);
@@ -430,6 +436,8 @@ router.post('/groups/:groupId/commit', requireAuth, (req, res) => {
     if (!isRoomMember(roomId, user.id)) {
       return res.status(403).json({ error: 'Not a member of this room' });
     }
+  } else {
+    return res.status(400).json({ error: 'Invalid group id' });
   }
 
   try {
@@ -476,6 +484,8 @@ router.get('/groups/:groupId/commits', requireAuth, (req, res) => {
     if (!isRoomMember(roomId, user.id)) {
       return res.status(403).json({ error: 'Not a member of this room' });
     }
+  } else {
+    return res.status(400).json({ error: 'Invalid group id' });
   }
 
   const commits = getMlsCommits(groupId, since);

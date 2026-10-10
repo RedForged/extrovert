@@ -520,6 +520,7 @@ describe('Extrovert REST API', () => {
         body: {
           grant_type: 'refresh_token',
           client_id: 'test-client-id',
+          client_secret: 'test-client-secret',
           refresh_token: aliceRefresh,
         },
       });

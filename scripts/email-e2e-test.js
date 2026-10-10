@@ -117,7 +117,7 @@ const { sidFromCookie, captchaAnswer } = require('./captcha-helper');
   // Set email via API.
   const setEmail = await fetch(base + '/api/v1/accounts/email', {
     method: 'PATCH', headers: { ...authHdr, 'content-type': 'application/json' },
-    body: JSON.stringify({ email: 'alice@example.org' }),
+    body: JSON.stringify({ email: 'alice@example.org', password: 'pw' }),
   });
   const setEmailJson = await setEmail.json();
   assert.strictEqual(setEmail.status, 200, 'email set via API');

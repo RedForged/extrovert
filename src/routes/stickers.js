@@ -6,7 +6,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const multer = require('multer');
 const sharp = require('sharp');
-const { addSticker, getMyStickers, createUserFile, splitStoredPath, removeStoredFile } = require('../db');
+const { addSticker, getMyStickers, createUserFile, splitStoredPath, removeStoredFile, getUserFileByPath } = require('../db');
 const drive = require('../drive');
 
 const router = express.Router();
@@ -104,7 +104,14 @@ router.get('/manage', (req, res) => {
 router.post('/add', (req, res) => {
   if (!res.locals.currentUser) return res.status(401).send('Not logged in');
   const filePath = String(req.body.path || '').trim();
-  if (!filePath.startsWith('/uploads/stickers/')) return res.status(400).send('Invalid sticker.');
+  // Only adopt a sticker file the caller uploaded (owned user_files row), and
+  // only in the exact /uploads/stickers/<name> shape (no traversal).
+  if (!/^\/uploads\/stickers\/[A-Za-z0-9._-]+$/.test(filePath)) return res.status(400).send('Invalid sticker.');
+  const split = splitStoredPath(filePath);
+  const ownerRow = split ? getUserFileByPath(split.root, split.path) : null;
+  if (!ownerRow || ownerRow.user_id !== res.locals.currentUser.id) {
+    return res.status(403).send('You can only add stickers you uploaded.');
+  }
   // Don't duplicate.
   const existing = getMyStickers(res.locals.currentUser.id).filter(s => s.file_path === filePath);
   if (existing.length === 0) {

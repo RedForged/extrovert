@@ -64,6 +64,9 @@ const appId = db.createOAuthApp({
 
 const aliceOAuthToken = crypto.randomBytes(32).toString('hex');
 db.createOAuthToken(aliceOAuthToken, null, appId, aliceId, 'read write follow notifications media.write read:direct write:direct profile', Date.now() + 86400000);
+// An existing sticker file must have a user_files row owned by the uploader
+// (the "add by path" endpoint only adopts files you own).
+db.createUserFile({ userId: aliceId, kind: 'sticker', root: 'uploads', path: 'stickers/my_sticker.png', size: 10 });
 
 const bobOAuthToken = crypto.randomBytes(32).toString('hex');
 db.createOAuthToken(bobOAuthToken, null, appId, bobId, 'read write follow notifications media.write read:direct write:direct profile', Date.now() + 86400000);
