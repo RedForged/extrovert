@@ -297,18 +297,22 @@ app.use((req, res, next) => {
 });
 
 // Safely resolve redirect targets — only same-origin relative URLs allowed.
+// A leading backslash normalizes to '/' in browsers (WHATWG URL), so '/\host'
+// and '//host' are both off-origin and must be rejected.
+function isSafeRelativeUrl(url) {
+  if (typeof url !== 'string' || url[0] !== '/') return false;
+  if (/[\u0000-\u001f\\]/.test(url)) return false; // control chars or backslash
+  return !url.startsWith('//');
+}
 app.use((req, res, next) => {
   res.safeRedirect = function safeRedirect(url, fallback = '/') {
-    if (typeof url === 'string' && url.startsWith('/') && !url.startsWith('//')) {
+    if (isSafeRelativeUrl(url)) {
       return res.redirect(url);
     }
     res.redirect(fallback);
   };
   res.locals.safeUrl = function safeUrl(url, fallback = '/') {
-    if (typeof url === 'string' && url.startsWith('/') && !url.startsWith('//')) {
-      return url;
-    }
-    return fallback;
+    return isSafeRelativeUrl(url) ? url : fallback;
   };
   next();
 });

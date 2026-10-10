@@ -2773,6 +2773,32 @@ function hasRoomPermission(roomId, userId, permBit) {
   return role && (role.permissions & permBit) === permBit;
 }
 
+// The caller's effective permission bitmask in a room (founder gets all bits).
+const ROOM_ALL_PERMS = 127;
+function roomPermissionsFor(roomId, userId) {
+  const role = getUserRoomRole(roomId, userId);
+  if (!role) return 0;
+  return role.is_founder ? ROOM_ALL_PERMS : (role.permissions || 0);
+}
+
+// Can this member view a channel's contents? Mirrors the read-path filter:
+// a null/empty view_role_ids means open to all members; otherwise the member's
+// role must be listed. Founder role and admins always may.
+function canViewRoomChannel(channelId, userId) {
+  const ch = getRoomChannel(channelId);
+  if (!ch) return false;
+  const u = db.prepare(`SELECT is_admin FROM users WHERE id = ?`).get(userId);
+  if (u && u.is_admin) return true;
+  const role = getUserRoomRole(ch.room_id, userId);
+  if (!role) return false;
+  if (role.is_founder) return true;
+  if (!ch.view_role_ids) return true;
+  try {
+    const ids = JSON.parse(ch.view_role_ids);
+    return !Array.isArray(ids) || ids.length === 0 || ids.includes(role.id);
+  } catch { return true; }
+}
+
 // ---------- reports ----------
 function createReport(reporterId, reportedUserId, messageId, messageBody, channelId, roomId, reason) {
   return db.prepare(`INSERT INTO reports (reporter_id, reported_user_id, message_id, message_body, channel_id, room_id, reason, status, created_at) VALUES (?,?,?,?,?,?,?,'pending',?)`).run(reporterId, reportedUserId, messageId, messageBody, channelId, roomId, reason, Date.now()).lastInsertRowid;
@@ -3704,7 +3730,7 @@ module.exports = {
   getRoomMemberCount: countRoomMembers,
   createRoomRole, getRoomRole, getRoomRoles, updateRoomRole, deleteRoomRole, transferFounder,
   createRoomChannel, getRoomChannel, getRoomChannels, updateRoomChannel, deleteRoomChannel,
-  getRoomMessages, sendRoomMessage, deleteRoomMessage, joinDefaultRole, hasRoomPermission,
+  getRoomMessages, sendRoomMessage, deleteRoomMessage, joinDefaultRole, hasRoomPermission, roomPermissionsFor, canViewRoomChannel,
   publishRoomGroupSession, getRoomGroupSession, isRoomGroupSessionUsable, pruneSupersededRoomGroupSessions, saveRoomSessionKeys, ensureRoomSessionRecipient, getPendingRoomSessionKeys, getPendingRoomSessionKeyForUserAndSession, getRoomSessionKeyById, markRoomSessionKeyDelivered, getRoomSessionRecipients, getRoomSessionEmptyKeyRecipients,
   // reports
   createReport, getPendingReports, getReport, resolveReport, dismissReport,

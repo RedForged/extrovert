@@ -8,7 +8,7 @@ const {
   isRoomMember, addRoomMember, removeRoomMember, getRoomMembers, getUserRoomRole, countRoomMembers,
   createRoomRole, getRoomRole, getRoomRoles, updateRoomRole, deleteRoomRole, transferFounder,
   createRoomChannel, getRoomChannel, getRoomChannels, updateRoomChannel, deleteRoomChannel,
-  getRoomMessages, sendRoomMessage, joinDefaultRole, hasRoomPermission, getUserById, getUserByUsername, db,
+  getRoomMessages, sendRoomMessage, joinDefaultRole, hasRoomPermission, roomPermissionsFor, getUserById, getUserByUsername, db,
   createContentReport,
   createJoinRequest, getJoinRequests, getJoinRequestById, approveJoinRequest, rejectJoinRequest, hasPendingRequest,
   publishRoomGroupSession, getRoomGroupSession, isRoomGroupSessionUsable, saveRoomSessionKeys, ensureRoomSessionRecipient, getPendingRoomSessionKeys, getRoomSessionKeyById, markRoomSessionKeyDelivered, getRoomSessionRecipients, getRoomSessionEmptyKeyRecipients,
@@ -257,6 +257,8 @@ router.post('/:id/roles/create', (req, res) => {
   if (req.body.can_manage_messages) permissions |= PERM.MANAGE_MESSAGES;
   if (req.body.can_manage_members) permissions |= PERM.MANAGE_MEMBERS;
   if (req.body.can_manage_room) permissions |= PERM.MANAGE_ROOM;
+  // A role may not carry permissions its creator does not hold.
+  if (permissions & ~roomPermissionsFor(room.id, res.locals.currentUser.id)) return res.status(403).send('Cannot grant permissions you do not hold');
   createRoomRole(room.id, name, color, permissions, 0);
   res.redirect('/rooms/' + room.id + '/roles');
 });
@@ -279,6 +281,7 @@ router.post('/:id/roles/:rid/update', (req, res) => {
   if (req.body.can_manage_messages) permissions |= PERM.MANAGE_MESSAGES;
   if (req.body.can_manage_members) permissions |= PERM.MANAGE_MEMBERS;
   if (req.body.can_manage_room) permissions |= PERM.MANAGE_ROOM;
+  if (permissions & ~roomPermissionsFor(room.id, res.locals.currentUser.id)) return res.status(403).send('Cannot grant permissions you do not hold');
   updateRoomRole(role.id, name || role.name, color, permissions || 0);
   res.redirect('/rooms/' + room.id + '/roles');
 });

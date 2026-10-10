@@ -1722,6 +1722,8 @@ router.get('/accounts/relationships', requireApiAuth('read'), (req, res) => {
 router.get('/accounts/:id', requireApiAuth('read'), (req, res) => {
   const user = db.getUserById(parseInt(req.params.id, 10));
   if (!user) return errorResponse(res, 404, 'Not Found', 'Account not found.');
+  // Match the other account endpoints: profiles are network-bound.
+  if (!canView(req.apiUser.id, user.id)) return errorResponse(res, 404, 'Not Found', 'Account not found.');
   responseEnvelope(res, serializeAccount(user, req.apiUser.id));
 });
 
@@ -2709,6 +2711,11 @@ router.post('/rooms/:id/roles', requireApiAuth('write'), express.json(), (req, r
   if (!name || name.length > 50) return errorResponse(res, 400, 'Bad Request', 'name is required (max 50 chars).');
   const color = /^#[0-9a-fA-F]{6}$/.test(String(req.body.color || '').trim()) ? String(req.body.color).trim() : '#cccccc';
   const permissions = Number(req.body.permissions) || 0;
+  // Cannot grant a role permissions the caller does not itself hold (otherwise
+  // a MANAGE_ROLES holder could mint/upgrade a role to full room control).
+  if (permissions & ~db.roomPermissionsFor(room.id, req.apiUser.id)) {
+    return errorResponse(res, 403, 'Forbidden', 'Cannot grant permissions you do not hold.');
+  }
 
   const rid = db.createRoomRole(room.id, name, color, permissions, 0);
   res.status(201).json({
@@ -2737,6 +2744,12 @@ router.patch('/rooms/:id/roles/:rid', requireApiAuth('write'), express.json(), (
   if (!name) return errorResponse(res, 400, 'Bad Request', 'name cannot be empty.');
   const color = req.body.color !== undefined && /^#[0-9a-fA-F]{6}$/.test(String(req.body.color).trim()) ? String(req.body.color).trim() : role.color;
   const permissions = req.body.permissions !== undefined ? Number(req.body.permissions) : role.permissions;
+  // The new value may not exceed the caller's own permissions — this blocks
+  // self-elevation (editing your own role up to full control) and granting
+  // others more than you hold.
+  if (permissions & ~db.roomPermissionsFor(room.id, req.apiUser.id)) {
+    return errorResponse(res, 403, 'Forbidden', 'Cannot grant permissions you do not hold.');
+  }
 
   db.updateRoomRole(role.id, name, color, permissions);
   responseEnvelope(res, {
@@ -2985,6 +2998,11 @@ router.post('/rooms/:id/channels/:cid/messages', requireApiAuth('write'), requir
   if (!db.isRoomMember(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'Not a member.');
   const channel = db.getRoomChannel(parseInt(req.params.cid, 10));
   if (!channel || channel.room_id !== room.id) return errorResponse(res, 404, 'Not Found', 'Channel not found.');
+  // Room-level write permission (mirrors the web route). Without this a member
+  // whose role has WRITE removed could still post via the API.
+  if (!db.hasRoomPermission(room.id, req.apiUser.id, ROOM_PERM.WRITE)) {
+    return errorResponse(res, 403, 'Forbidden', 'No permission to post in this room.');
+  }
 
   // Per-channel write restriction — mirrors the web route's semantics: a null
   // or unparseable write_role_ids column means open to all members.

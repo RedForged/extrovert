@@ -3,7 +3,7 @@
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 const path = require('node:path');
-const { getUserById, getUserByUsername, areMutualFollowers, getRoomChannel, isRoomMember, getRoomsForUser, getOAuthToken, getPersonalAccessTokenByHash, hashOAuthToken, createNotification, getPendingRoomSessionKeyForUserAndSession, countAvailablePrekeys } = require('./db');
+const { getUserById, getUserByUsername, areMutualFollowers, getRoomChannel, isRoomMember, getRoomsForUser, getOAuthToken, getPersonalAccessTokenByHash, hashOAuthToken, createNotification, getPendingRoomSessionKeyForUserAndSession, countAvailablePrekeys, canViewRoomChannel } = require('./db');
 const { sendCallPush, sendMissedCallPush } = require('./push');
 const { canView } = require('./network');
 
@@ -28,10 +28,14 @@ let globalSeq = 1;
 
 const { onNotification } = require('./notif-broadcaster');
 
+const MAX_TOPICS_PER_WS = 200;
 function subscribeClient(ws, userId, topic) {
+  if (!ws.subscribedTopics) ws.subscribedTopics = new Set();
+  // Bound per-connection subscriptions so a client cannot grow server memory
+  // without limit (and so the subscribe reply stays small).
+  if (!ws.subscribedTopics.has(topic) && ws.subscribedTopics.size >= MAX_TOPICS_PER_WS) return;
   if (!topicSubscriptions.has(topic)) topicSubscriptions.set(topic, new Set());
   topicSubscriptions.get(topic).add({ ws, userId });
-  if (!ws.subscribedTopics) ws.subscribedTopics = new Set();
   ws.subscribedTopics.add(topic);
 }
 
@@ -135,29 +139,38 @@ function broadcastGatewayEvent(topic, eventName, data) {
   const subscribers = topicSubscriptions.get(topic);
   if (!subscribers) return;
 
-  const isRoomMsg = topic.startsWith('room:') && eventName === 'message_create' && data && data.group_session_id;
+  const isRoomTopic = topic.startsWith('room:');
+  const channelId = data && data.channel_id ? Number(data.channel_id) : null;
+  const isRoomMsg = isRoomTopic && eventName === 'message_create' && data && data.group_session_id;
 
   const json = JSON.stringify(frame);
   for (const item of subscribers) {
-    if (item.ws && item.ws.readyState === 1) {
-      try {
-        if (isRoomMsg && item.userId && Number(item.userId) !== Number(data.user_id)) {
-          const pendingKey = getPendingRoomSessionKeyForUserAndSession(item.userId, data.group_session_id);
-          if (pendingKey) {
-            const customizedData = Object.assign({}, data, {
-              session_key: {
-                key_id: pendingKey.key_id,
-                encrypted_key: pendingKey.encrypted_key,
-                sender_id: String(pendingKey.sender_id),
-              },
-            });
-            item.ws.send(JSON.stringify(Object.assign({}, frame, { data: customizedData })));
-            continue;
-          }
-        }
-        item.ws.send(json);
-      } catch {}
+    if (!item.ws || item.ws.readyState !== 1) continue;
+    // Room content is E2EE and channel-scoped: a credential without read:direct
+    // must not receive it, and a member may only receive a channel they are
+    // permitted to view (view_role_ids is enforced on read paths but must also
+    // gate delivery — the topic is room-level, the ACL is channel-level).
+    if (isRoomTopic) {
+      if (item.ws.dmAllowed === false) continue;
+      if (channelId && !canViewRoomChannel(channelId, Number(item.userId))) continue;
     }
+    try {
+      if (isRoomMsg && item.userId && Number(item.userId) !== Number(data.user_id)) {
+        const pendingKey = getPendingRoomSessionKeyForUserAndSession(item.userId, data.group_session_id);
+        if (pendingKey) {
+          const customizedData = Object.assign({}, data, {
+            session_key: {
+              key_id: pendingKey.key_id,
+              encrypted_key: pendingKey.encrypted_key,
+              sender_id: String(pendingKey.sender_id),
+            },
+          });
+          item.ws.send(JSON.stringify(Object.assign({}, frame, { data: customizedData })));
+          continue;
+        }
+      }
+      item.ws.send(json);
+    } catch {}
   }
 }
 
@@ -509,12 +522,13 @@ function initSignaling(wss) {
       clientData.dmAllowed = dmAllowed;
       clients.set(user.id, clientData);
 
-      // Track this connection for live DM pushes (all tabs) — only when the
-      // credential may read direct messages.
-      if (dmAllowed) {
-        if (!dmClients.has(user.id)) dmClients.set(user.id, new Set());
-        dmClients.get(user.id).add({ ws, username: user.username, displayName: user.display_name, dmAllowed: true });
-      }
+      // Track EVERY live socket of this user (not just DM-capable ones): room
+      // subscription revocation and targeted sends walk this map, and a socket
+      // whose token lacks read:direct must still be revocable when kicked.
+      // DM/E2EE delivery is gated per socket by ws.dmAllowed in
+      // sendDmEvent/sendToUserSockets and the room filter in broadcastGatewayEvent.
+      if (!dmClients.has(user.id)) dmClients.set(user.id, new Set());
+      dmClients.get(user.id).add({ ws, username: user.username, displayName: user.display_name, dmAllowed });
 
       broadcastPresence(user.id, 'user_online');
 
@@ -662,9 +676,9 @@ function initSignaling(wss) {
           if (msg.auto_subscribe) {
             performAutoSubscribe(ws, user);
           }
-          const channels = Array.isArray(msg.channels)
+          const channels = (Array.isArray(msg.channels)
             ? msg.channels
-            : (msg.channel ? [msg.channel] : (msg.topic ? [msg.topic] : []));
+            : (msg.channel ? [msg.channel] : (msg.topic ? [msg.topic] : []))).slice(0, MAX_TOPICS_PER_WS);
           for (const ch of channels) {
             const topic = String(ch || '').trim();
             if (!topic) continue;
@@ -710,7 +724,12 @@ function initSignaling(wss) {
             && ws.subscribedTopics && ws.subscribedTopics.has(e.topic)
             // Timeline frames carry the author id; replay only what this viewer
             // may see (the live path applies the same canView filter).
-            && (!e._authorId || (user && canView(Number(user.id), e._authorId))));
+            && (!e._authorId || (user && canView(Number(user.id), e._authorId)))
+            // Room frames: replay must honor the same scope + channel-view
+            // gate the live broadcast applies.
+            && (!e.topic.startsWith('room:')
+                || (user && ws.dmAllowed !== false
+                    && (!(e.data && e.data.channel_id) || canViewRoomChannel(Number(e.data.channel_id), Number(user.id))))));
           for (const ev of missed) {
             try {
               ws.send(JSON.stringify({ seq: ev.seq, type: ev.type, topic: ev.topic, event: ev.event, data: ev.data }));
