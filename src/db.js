@@ -4,6 +4,7 @@ const { DatabaseSync } = require('node:sqlite');
 const path = require('node:path');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
+const twofa = require('./twofa');
 
 const DB_PATH = process.env.EXTV_DB_PATH || path.join(__dirname, '..', 'data', 'extrovert.db');
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
@@ -346,6 +347,7 @@ try { db.exec(`ALTER TABLE profile_customization ADD COLUMN effect TEXT NOT NULL
 try { db.exec(`ALTER TABLE profile_customization ADD COLUMN template_version INTEGER NOT NULL DEFAULT 0`); } catch {}
 try { db.exec(`ALTER TABLE users ADD COLUMN pronouns TEXT NOT NULL DEFAULT ''`); } catch {}
 try { db.exec(`ALTER TABLE users ADD COLUMN custom_font TEXT NOT NULL DEFAULT ''`); } catch {}
+try { db.exec(`ALTER TABLE users ADD COLUMN totp_last_step INTEGER`); } catch {}
 try { db.exec(`ALTER TABLE users ADD COLUMN developer_mode INTEGER NOT NULL DEFAULT 0`); } catch {}
 try { db.exec(`ALTER TABLE messages ADD COLUMN key_for_sender TEXT`); } catch {}
 try { db.exec(`ALTER TABLE messages ADD COLUMN key_for_recipient TEXT`); } catch {}
@@ -892,6 +894,16 @@ function getUserByUsername(username) {
 
 function getUserById(id) {
   return db.prepare(`SELECT * FROM users WHERE id = ?`).get(id);
+}
+
+// Verify a TOTP code AND consume its time-step atomically, so a code observed
+// within its acceptance window cannot be replayed (RFC 6238 §5.2).
+function consumeTotpCode(userId, encryptedSecret, code) {
+  let step;
+  try { step = twofa.verifyTotpStep(twofa.decryptSecret(encryptedSecret), String(code)); } catch { return false; }
+  if (step === null) return false;
+  const res = db.prepare(`UPDATE users SET totp_last_step = ? WHERE id = ? AND (totp_last_step IS NULL OR totp_last_step < ?)`).run(step, userId, step);
+  return res.changes > 0;
 }
 
 function updateUserProfile(id, { displayName, bio, pronouns }) {
@@ -3669,7 +3681,7 @@ function clearAnnouncement() {
 module.exports = {
   db,
   // users
-  createUser, getUserByUsername, getUserById, updateUserProfile,
+  createUser, getUserByUsername, getUserById, consumeTotpCode, updateUserProfile,
   // follows
   follow, unfollow, isFollowing, followingIds, countFollowers, countFollowing, recordFollowFromPost,
   // posts

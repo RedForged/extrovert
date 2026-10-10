@@ -36,6 +36,13 @@ const twofa = require('../src/twofa');
 const SessionStore = require('../src/session-store');
 const { destroySessionsForUser } = SessionStore;
 
+// TOTP codes are single-use per time-step (anti-replay). Advance a fake clock
+// by one step before each TOTP use so the suite's confirm/login/disable steps
+// are distinct — otherwise the later uses correctly fail as replays.
+let fakeNow = Date.now();
+Date.now = () => fakeNow;
+const advanceStep = () => { fakeNow += 30000; };
+
 let failures = 0;
 function ok(cond, msg) { console.log((cond ? '  [OK]   ' : '  [FAIL] ') + msg); if (!cond) failures++; }
 
@@ -111,6 +118,7 @@ async function main() {
   const setupHtml2 = await s.post('/settings/security/totp/setup', { _csrf: setupCsrf }).then((x) => x.text());
   const secret2 = twofa.base32Decode(secretFromSetup(setupHtml2));
   ok(!!secret2, 're-setup produced a fresh secret');
+  advanceStep();
   const goodCode = twofa.hotp(secret2, twofa.currentCounter());
   r = await s.post('/settings/security/totp/confirm', { _csrf: setupCsrf, code: goodCode });
   const recHtml = await r.text();
@@ -127,6 +135,7 @@ async function main() {
   await s3.post('/login', { username: 'alice', password: 'pw-alice', _csrf: await s3.getCsrf('/login') });
   const chS3 = await s3.withCookie('/login/totp').then((x) => x.text());
   const csrfS3 = (chS3.match(/name="_csrf" value="([^"]+)"/) || [])[1] || '';
+  advanceStep();
   await s3.post('/login/totp', { _csrf: csrfS3, code: twofa.hotp(liveSecret, twofa.currentCounter()) });
   const destroyed = destroySessionsForUser(aliceId, null);
   ok(destroyed >= 2, `destroySessionsForUser wiped ${destroyed} sessions (>=2: confirm-regen + s3)`);
@@ -154,6 +163,7 @@ async function main() {
   const beforeSid = s5.sid();
   const ch2 = await s5.withCookie('/login/totp').then((x) => x.text());
   const csrf5 = (ch2.match(/name="_csrf" value="([^"]+)"/) || [])[1] || '';
+  advanceStep();
   const codeNow = twofa.hotp(liveSecret, twofa.currentCounter());
   r = await s5.post('/login/totp', { _csrf: csrf5, code: codeNow });
   ok(r.status === 302 && !(r.headers.get('location') || '').includes('login'), 'valid TOTP completes login');
@@ -199,6 +209,7 @@ async function main() {
   const secCsrf = await s8.getCsrf('/settings/security');
   r = await s8.post('/settings/security/totp/disable', { _csrf: secCsrf, code: '999999' });
   ok((await r.text()).includes('Enter a valid authentication code or recovery code to disable'), 'disable with wrong code rejected');
+  advanceStep();
   const disCode = twofa.hotp(liveSecret, twofa.currentCounter());
   r = await s8.post('/settings/security/totp/disable', { _csrf: secCsrf, code: disCode });
   ok((await r.text()).includes('Two-factor authentication is now off'), 'disable with valid code succeeds');
@@ -242,6 +253,7 @@ async function main() {
   });
   ok((await r.text()).includes('Invalid code.'), 'wrong code keeps interstitial with generic error');
   // Correct code bounces back to the GET → consent renders.
+  advanceStep();
   const goodOtp = twofa.hotp(secretX, twofa.currentCounter());
   r = await so.post('/api/v1/oauth/authorize', {
     _csrf: csrfInt, client_id: 'cid-twofa-test', redirect_uri: 'https://client.example/callback',

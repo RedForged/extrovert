@@ -6,7 +6,7 @@ const {
   toggleLike, addComment, commentsForPost, hasLiked, hasShared,
   sharePost, hasReposted, recordFollowFromPost, isFollowing,
   createNotification, deletePost,
-  editPost, editComment, getEditHistory, getCommentById, getRoomMessageById, getRoomChannel, isRoomMember,
+  editPost, editComment, getEditHistory, getCommentById, getRoomMessageById, getRoomChannel, isRoomMember, canViewRoomChannel,
   deleteComment,
   splitStoredPath, removeStoredFile,
 } = require('../db');
@@ -262,7 +262,7 @@ router.get('/:id/history', (req, res) => {
   } else if (entityType === 'room_message') {
     const msg = getRoomMessageById(entityId);
     const channel = msg ? getRoomChannel(msg.channel_id) : null;
-    allowed = !!channel && isRoomMember(channel.room_id, user.id);
+    allowed = !!channel && isRoomMember(channel.room_id, user.id) && canViewRoomChannel(channel.id, user.id);
   }
   if (!allowed) return res.redirect('/');
 

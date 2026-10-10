@@ -400,6 +400,7 @@ router.post('/:id/channels/:cid/send', (req, res) => {
   if (!isRoomMember(room.id, res.locals.currentUser.id)) return res.status(403).json({ error: 'Not a member' });
   const channel = getRoomChannel(Number(req.params.cid));
   if (!channel || channel.room_id !== room.id) return res.status(404).json({ error: 'Channel not found' });
+  if (!res.locals.currentUser.is_admin && !canViewRoomChannel(channel.id, res.locals.currentUser.id)) return res.status(403).json({ error: 'No view permission' });
   const role = getUserRoomRole(room.id, res.locals.currentUser.id);
   if (channel.write_role_ids) {
     try {

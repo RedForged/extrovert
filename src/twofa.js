@@ -64,15 +64,21 @@ function currentCounter(now = Date.now()) {
 
 // Verifies a 6-digit token against counter-1..counter+1. Constant-time compare.
 function verifyTotp(secretBuf, token, now = Date.now()) {
+  return verifyTotpStep(secretBuf, token, now) !== null;
+}
+
+// Like verifyTotp, but returns the matched counter (time-step) or null. The
+// counter lets callers persist "last accepted step" so a code cannot be
+// replayed within its acceptance window (RFC 6238 §5.2).
+function verifyTotpStep(secretBuf, token, now = Date.now()) {
   const clean = String(token || '').replace(/\s+/g, '');
-  if (!/^\d{6}$/.test(clean)) return false;
-  const want = Buffer.from(hotp(secretBuf, currentCounter(now)));
-  const got = Buffer.from(clean);
+  if (!/^\d{6}$/.test(clean)) return null;
   const counter = currentCounter(now);
+  const got = Buffer.from(clean);
   for (let i = counter - VERIFY_WINDOW; i <= counter + VERIFY_WINDOW; i++) {
-    if (got.equals(Buffer.from(hotp(secretBuf, i)))) return true;
+    if (got.equals(Buffer.from(hotp(secretBuf, i)))) return i;
   }
-  return false;
+  return null;
 }
 
 function generateTotpSecret() {
@@ -163,7 +169,7 @@ function hashTrustedDeviceToken(token) {
 module.exports = {
   TOTP_PERIOD, TOTP_DIGITS, VERIFY_WINDOW, RECOVERY_CODE_COUNT, TRUSTED_DEVICE_DAYS,
   base32Encode, base32Decode,
-  hotp, currentCounter, verifyTotp, generateTotpSecret, otpauthUri,
+  hotp, currentCounter, verifyTotp, verifyTotpStep, generateTotpSecret, otpauthUri,
   encryptSecret, decryptSecret,
   generateRecoveryCodes, hashRecoveryCode,
   generateTrustedDeviceToken, hashTrustedDeviceToken,

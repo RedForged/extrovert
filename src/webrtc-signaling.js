@@ -31,9 +31,10 @@ const { onNotification } = require('./notif-broadcaster');
 const MAX_TOPICS_PER_WS = 200;
 function subscribeClient(ws, userId, topic) {
   if (!ws.subscribedTopics) ws.subscribedTopics = new Set();
-  // Bound per-connection subscriptions so a client cannot grow server memory
-  // without limit (and so the subscribe reply stays small).
-  if (!ws.subscribedTopics.has(topic) && ws.subscribedTopics.size >= MAX_TOPICS_PER_WS) return;
+  // Idempotent: a repeated subscribe must not add duplicate {ws,userId} entries
+  // (they leak — unsubscribe/cleanup remove only one — and amplify broadcasts).
+  if (ws.subscribedTopics.has(topic)) return;
+  if (ws.subscribedTopics.size >= MAX_TOPICS_PER_WS) return;
   if (!topicSubscriptions.has(topic)) topicSubscriptions.set(topic, new Set());
   topicSubscriptions.get(topic).add({ ws, userId });
   ws.subscribedTopics.add(topic);

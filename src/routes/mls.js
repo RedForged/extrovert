@@ -100,6 +100,23 @@ function canAccessUserKeys(viewerId, targetId) {
   return false;
 }
 
+// A caller may only address MLS control-plane artifacts (welcomes, membership
+// changes) to users they may interact with (self / mutual follow / shared room).
+// Without this, any group creator could inject attacker-authored Welcome blobs
+// into an unrelated account's queue.
+function mlsRecipientsAuthorized(viewerId, ...lists) {
+  for (const list of lists) {
+    if (!Array.isArray(list)) continue;
+    for (const item of list) {
+      const uid = item && item.user_id != null ? Number(item.user_id) : NaN;
+      if (!Number.isInteger(uid) || uid <= 0) continue;
+      if (uid === Number(viewerId)) continue;
+      if (!canAccessUserKeys(viewerId, uid)) return false;
+    }
+  }
+  return true;
+}
+
 // 1. Device Registration (Authentication Service attestation)
 router.post('/device/register', requireAuth, (req, res) => {
   const user = res.locals.currentUser;
@@ -388,6 +405,10 @@ router.post('/groups/init', requireAuth, (req, res) => {
     return res.status(400).json({ error: 'Invalid group id' });
   }
 
+  if (!mlsRecipientsAuthorized(user.id, welcomes, members)) {
+    return res.status(403).json({ error: 'Not authorized for those recipients' });
+  }
+
   const initialMembers = Array.isArray(members) && members.length ? members : (device_id ? [{ user_id: user.id, device_id, leaf_index: 0, role: 'creator' }] : []);
 
   const runInit = () => initMlsGroup(group_id, 0, initialMembers, initial_commit || null, welcomes || [], idempotency_key || null);
@@ -441,6 +462,10 @@ router.post('/groups/:groupId/commit', requireAuth, (req, res) => {
     }
   } else {
     return res.status(400).json({ error: 'Invalid group id' });
+  }
+
+  if (!mlsRecipientsAuthorized(user.id, welcomes, members_added)) {
+    return res.status(403).json({ error: 'Not authorized for those recipients' });
   }
 
   try {

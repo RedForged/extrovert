@@ -384,7 +384,7 @@ router.post('/security/totp/confirm', (req, res) => {
   }
   let ok = false;
   try {
-    ok = twofa.verifyTotp(twofa.decryptSecret(user.totp_secret), String(req.body.code || ''));
+    ok = db.consumeTotpCode(user.id, user.totp_secret, String(req.body.code || ''));
   } catch (err) {
     console.error('totp confirm: decrypt failed:', err.message);
   }
@@ -428,7 +428,7 @@ router.post('/security/totp/disable', (req, res) => {
   let ok = false;
   try {
     if (/^\d{6}$/.test(code.replace(/\s+/g, ''))) {
-      ok = twofa.verifyTotp(twofa.decryptSecret(user.totp_secret), code);
+      ok = db.consumeTotpCode(user.id, user.totp_secret, code);
     } else if (code) {
       ok = db.consumeRecoveryCode(user.id, twofa.hashRecoveryCode(code));
     }
@@ -457,7 +457,7 @@ router.post('/security/recovery/regenerate', (req, res) => {
   let ok = false;
   try {
     ok = /^\d{6}$/.test(code.replace(/\s+/g, ''))
-      ? twofa.verifyTotp(twofa.decryptSecret(user.totp_secret), code)
+      ? db.consumeTotpCode(user.id, user.totp_secret, code)
       : !!code && db.consumeRecoveryCode(user.id, twofa.hashRecoveryCode(code));
   } catch (err) {
     console.error('recovery regenerate: verify failed:', err.message);

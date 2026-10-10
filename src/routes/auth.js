@@ -65,7 +65,8 @@ function verifySecondFactor(user, code) {
   if (!trimmed) return false;
   try {
     if (/^\d{6}$/.test(trimmed.replace(/\s+/g, ''))) {
-      return twofa.verifyTotp(twofa.decryptSecret(user.totp_secret), trimmed);
+      // Consume the time-step so the code is single-use (anti-replay).
+      return db.consumeTotpCode(user.id, user.totp_secret, trimmed);
     }
     return db.consumeRecoveryCode(user.id, twofa.hashRecoveryCode(trimmed));
   } catch (err) {
@@ -286,7 +287,7 @@ router.get('/verify-email', async (req, res) => {
   const token = String(req.query.token || '');
   const userId = req.session.userId;
   if (!userId) {
-    return res.status(400).render('login', { error: 'Please log in first, then open the verification link again. If you\'re already logged in, the link should work.', next: '' });
+    return res.status(400).render('login', { error: 'Please log in first, then open the verification link again. If you\'re already logged in, the link should work.', next: '', addMode: false, signedInAccounts: [] });
   }
   const result = emailVerify.verify(userId, token);
   res.render('verify-email', {

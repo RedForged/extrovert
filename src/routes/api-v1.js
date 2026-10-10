@@ -426,7 +426,8 @@ function verifySecondFactor(user, code) {
   if (!trimmed) return false;
   try {
     if (/^\d{6}$/.test(trimmed.replace(/\s+/g, ''))) {
-      return twofa.verifyTotp(twofa.decryptSecret(user.totp_secret), trimmed);
+      // Consume the time-step so the code is single-use (anti-replay).
+      return db.consumeTotpCode(user.id, user.totp_secret, trimmed);
     }
     return db.consumeRecoveryCode(user.id, twofa.hashRecoveryCode(trimmed));
   } catch (err) {
@@ -3011,6 +3012,9 @@ router.post('/rooms/:id/channels/:cid/messages', requireApiAuth('write:direct'),
   // whose role has WRITE removed could still post via the API.
   if (!db.hasRoomPermission(room.id, req.apiUser.id, ROOM_PERM.WRITE)) {
     return errorResponse(res, 403, 'Forbidden', 'No permission to post in this room.');
+  }
+  if (!req.apiUser.is_admin && !db.canViewRoomChannel(channel.id, req.apiUser.id)) {
+    return errorResponse(res, 403, 'Forbidden', 'No view permission for this channel.');
   }
 
   // Per-channel write restriction — mirrors the web route's semantics: a null
