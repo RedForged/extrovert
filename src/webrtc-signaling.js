@@ -592,6 +592,15 @@ function initSignaling(wss) {
         return;
       }
 
+      // A `push_register` socket is push-only: it sets `registered` WITHOUT
+      // building `clientData` (only registerSignalingClient does that). Every
+      // call/channel action below dereferences `clientData` (e.g.
+      // `clientData.inCall`), so processing one here would throw and exit the
+      // process. Answer only 'ping' on such a socket.
+      if (registered && !clientData && actionType !== 'ping') {
+        return;
+      }
+
       switch (actionType) {
         case 'ping':
           try { ws.send(JSON.stringify({ type: 'pong' })); } catch {}
@@ -989,10 +998,15 @@ function initSignaling(wss) {
         case 'leave_channel': {
           const channelId = msg.channel_id;
           if (!channelId) return;
+          // Only a member of the channel's room may emit presence events into it
+          // (mirrors join_channel); otherwise a non-member could spoof
+          // user_left_channel into any room.
+          const channel = getRoomChannel(Number(channelId));
+          if (!channel || !isRoomMember(channel.room_id, user.id)) break;
           const members = voiceChannels.get(channelId);
           if (!members) return;
           members.delete(user.id);
-          clientData.inCall = false;
+          if (clientData) clientData.inCall = false;
           if (members.size === 0) {
             voiceChannels.delete(channelId);
           }
@@ -1155,9 +1169,10 @@ function pushRoomSessionKeyToRecipient(recipientId, keyPayload) {
     event: 'room_session_key',
     data: keyPayload,
   };
-  recentGatewayEvents.push(frame);
-  if (recentGatewayEvents.length > 500) recentGatewayEvents.shift();
-
+  // Do NOT add this to recentGatewayEvents: it is addressed to ONE recipient,
+  // and the shared replay buffer is replayed on `resume` by topic alone, which
+  // would deliver it to every other room member who reconnects. Offline
+  // recipients get it via the pending-session-key mechanism instead.
   return sendToUserSockets(uid, frame);
 }
 

@@ -40,10 +40,13 @@ const {
   getLegacyTrafficSunsetStatus,
   isLegacyE2eeEnabled,
 } = require('../db');
-const { bearerOrSession } = require('../bearer-auth');
+const { bearerOrSession, requireDirectScope } = require('../bearer-auth');
 
 const router = express.Router();
 router.use(bearerOrSession);
+// E2EE material: a bearer token needs read:direct (GET) / write:direct (mutate);
+// a session is unrestricted. Matches the /chats and /rooms E2EE routes.
+router.use(requireDirectScope);
 
 // Rate limiting map for KeyPackage queries (max 30 per min per IP/user)
 const kpRateLimit = new Map();

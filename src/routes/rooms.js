@@ -137,6 +137,10 @@ router.post('/:id/leave', (req, res) => {
     return res.status(400).send('Transfer founder before leaving');
   }
   removeRoomMember(room.id, userId);
+  // Revoke realtime access on this socket immediately (matches the kick path):
+  // otherwise a left member keeps receiving the room's live events.
+  updateUserRoomSubscriptions(userId, room.id, 'leave');
+  removeFromVoiceChannels(userId);
   res.redirect('/rooms');
 });
 
@@ -218,7 +222,11 @@ router.post('/:id/channels/:cid/delete', (req, res) => {
   const room = getRoom(Number(req.params.id));
   if (!room) return res.status(404).send('Room not found');
   if (!checkPerm(room.id, res.locals.currentUser.id, PERM.MANAGE_CHANNELS)) return res.status(403).send('No permission');
-  deleteRoomChannel(Number(req.params.cid));
+  // The channel must belong to THIS room — otherwise a manager of one room
+  // could delete another room's channel (and all its messages) by id.
+  const channel = getRoomChannel(Number(req.params.cid));
+  if (!channel || channel.room_id !== room.id) return res.status(404).send('Channel not found');
+  deleteRoomChannel(channel.id);
   res.redirect('/rooms/' + room.id + '/channels');
 });
 
@@ -280,7 +288,10 @@ router.post('/:id/roles/:rid/delete', (req, res) => {
   const room = getRoom(Number(req.params.id));
   if (!room) return res.status(404).send('Room not found');
   if (!checkPerm(room.id, res.locals.currentUser.id, PERM.MANAGE_ROLES)) return res.status(403).send('No permission');
-  if (!deleteRoomRole(Number(req.params.rid))) return res.status(400).send('Cannot delete founder role');
+  // The role must belong to THIS room.
+  const role = getRoomRole(Number(req.params.rid));
+  if (!role || role.room_id !== room.id) return res.status(404).send('Role not found');
+  if (!deleteRoomRole(role.id)) return res.status(400).send('Cannot delete founder role');
   res.redirect('/rooms/' + room.id + '/roles');
 });
 

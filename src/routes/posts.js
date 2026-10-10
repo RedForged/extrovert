@@ -6,7 +6,7 @@ const {
   toggleLike, addComment, commentsForPost, hasLiked, hasShared,
   sharePost, hasReposted, recordFollowFromPost, isFollowing,
   createNotification, deletePost,
-  editPost, editComment, getEditHistory,
+  editPost, editComment, getEditHistory, getCommentById, getRoomMessageById, getRoomChannel, isRoomMember,
   deleteComment,
   splitStoredPath, removeStoredFile,
 } = require('../db');
@@ -234,15 +234,39 @@ router.post('/:id/follow-from', (req, res) => {
   res.redirect(back(req, '/'));
 });
 
-// View edit history for a post or comment.
+// View edit history for a post, comment, DM message, or room message.
 router.get('/:id/history', (req, res) => {
   const user = res.locals.currentUser;
   if (!user) return res.redirect('/login');
-  const entityType = req.query.type || 'post';
+  const entityType = String(req.query.type || 'post');
   const entityId = Number(req.params.id);
+  if (!Number.isInteger(entityId) || entityId <= 0) return res.redirect('/');
+
+  // Authorize by resolving the entity actually being read — never trust the
+  // caller-supplied id/type pairing. Previously the guard keyed off a post id
+  // taken from the wrong table (and was skipped when it resolved to nothing),
+  // so any user could read the edit history of others' comments, DMs, room
+  // messages, and even deleted posts.
+  let allowed = false;
+  let post = null;
+  if (entityType === 'post') {
+    post = getPostById(entityId);
+    allowed = !!post && canView(user.id, post.user_id);
+  } else if (entityType === 'comment') {
+    const comment = getCommentById(entityId);
+    post = comment ? getPostById(comment.post_id) : null;
+    allowed = !!post && canView(user.id, post.user_id);
+  } else if (entityType === 'message') {
+    const msg = db.prepare(`SELECT from_id, to_id FROM messages WHERE id = ?`).get(entityId);
+    allowed = !!msg && (msg.from_id === user.id || msg.to_id === user.id);
+  } else if (entityType === 'room_message') {
+    const msg = getRoomMessageById(entityId);
+    const channel = msg ? getRoomChannel(msg.channel_id) : null;
+    allowed = !!channel && isRoomMember(channel.room_id, user.id);
+  }
+  if (!allowed) return res.redirect('/');
+
   const history = getEditHistory(entityType, entityId);
-  const post = getPostById(entityType === 'comment' ? Number(req.query.post_id || 0) : Number(req.params.id));
-  if (post && !canView(user.id, post.user_id)) return res.redirect('/');
   res.render('edit-history', { entityType, entityId, history, post });
 });
 
