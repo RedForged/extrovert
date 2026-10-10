@@ -1553,7 +1553,7 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
       get: {
         summary: 'Fetch messages in a channel (last 50, or older than ?cursor=<message id>)',
         tags: ['Rooms'],
-        security: [{ oauth2: ['read'] }],
+        security: [{ oauth2: ['read:direct'] }],
         parameters: [
           { name: 'id', in: 'path', required: true, schema: { type: 'integer' } },
           { name: 'cid', in: 'path', required: true, schema: { type: 'integer' } },
@@ -1564,7 +1564,7 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
       post: {
         summary: 'Send a room message (MLS-encrypted — proto: "mls" — unless it is a sticker path)',
         tags: ['Rooms'],
-        security: [{ oauth2: ['write'] }],
+        security: [{ oauth2: ['write:direct'] }],
         parameters: [
           { name: 'id', in: 'path', required: true, schema: { type: 'integer' } },
           { name: 'cid', in: 'path', required: true, schema: { type: 'integer' } },
@@ -1590,7 +1590,7 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
       delete: {
         summary: 'Delete a room message (own message, or moderator with MANAGE_MESSAGES / admin)',
         tags: ['Rooms'],
-        security: [{ oauth2: ['write'] }],
+        security: [{ oauth2: ['write:direct'] }],
         parameters: [
           { name: 'id', in: 'path', required: true, schema: { type: 'integer' } },
           { name: 'cid', in: 'path', required: true, schema: { type: 'integer' } },

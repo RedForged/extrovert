@@ -883,6 +883,10 @@ function createUser({ username, passwordHash, displayName, referredBy, referrerI
 }
 
 function getUserByUsername(username) {
+  // Guard the bind: a non-string (undefined/object) would make node:sqlite
+  // throw, which an uncaught caller (e.g. a WS handler) could turn into a
+  // process exit.
+  if (typeof username !== 'string') return null;
   return db.prepare(`SELECT * FROM users WHERE username = ?`).get(username);
 }
 

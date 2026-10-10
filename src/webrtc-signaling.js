@@ -806,6 +806,7 @@ function initSignaling(wss) {
         // queued for ring-on-reconnect + notified of a missed call).
         case 'call_request': {
           if (msg.channel_id) break; // room voice channels use call_offer directly
+          if (typeof msg.to !== 'string' || !msg.to) break; // to is required
           // Resolve the callee and require a mutual-follow relationship BEFORE
           // revealing any online/busy state — otherwise this is a presence
           // oracle for any account by username.

@@ -589,8 +589,7 @@ router.post('/:username/referral', (req, res) => {
   const profileUser = getUserByUsername(req.params.username);
   if (!profileUser || profileUser.id !== viewer.id) return res.status(403).send('Not your profile.');
   setReferralCode(viewer.id, req.ip);
-  const next = typeof req.body.next === 'string' && req.body.next.startsWith('/') && !req.body.next.startsWith('//') ? req.body.next : null;
-  res.redirect(next || '/u/' + viewer.username);
+  res.safeRedirect(req.body.next, '/u/' + viewer.username);
 });
 
 module.exports = router;

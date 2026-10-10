@@ -798,7 +798,9 @@ router.get('/client/bootstrap', requireApiAuth('read'), (req, res) => {
   // 4. Joined rooms with channels, members count, user role, and latest messages
   const userRooms = db.getRoomsForUser(userId) || [];
   const rooms = userRooms.map(r => {
-    const channels = db.getRoomChannels(r.id) || [];
+    // Only channels this member may view (per-channel ACL), and only the
+    // default channel's messages — never a restricted channel's ciphertext.
+    const channels = (db.getRoomChannels(r.id) || []).filter(c => db.canViewRoomChannel(c.id, userId));
     const defaultChan = channels.find(c => c.name === 'general') || channels[0];
     let latestMessages = [];
     if (defaultChan) {
@@ -2960,7 +2962,7 @@ router.get('/rooms/:id', requireApiAuth('read'), (req, res) => {
   });
 });
 
-router.get('/rooms/:id/channels/:cid/messages', requireApiAuth('read'), (req, res) => {
+router.get('/rooms/:id/channels/:cid/messages', requireApiAuth('read:direct'), (req, res) => {
   const room = db.getRoom(parseInt(req.params.id, 10));
   if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
   if (!db.isRoomMember(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'Not a member.');
@@ -2999,7 +3001,7 @@ router.get('/rooms/:id/channels/:cid/messages', requireApiAuth('read'), (req, re
   });
 });
 
-router.post('/rooms/:id/channels/:cid/messages', requireApiAuth('write'), requireVerifiedApiWrite, (req, res) => {
+router.post('/rooms/:id/channels/:cid/messages', requireApiAuth('write:direct'), requireVerifiedApiWrite, (req, res) => {
   const room = db.getRoom(parseInt(req.params.id, 10));
   if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
   if (!db.isRoomMember(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'Not a member.');
@@ -3061,7 +3063,7 @@ router.post('/rooms/:id/channels/:cid/messages', requireApiAuth('write'), requir
   res.status(201).json({ data: msgData });
 });
 
-router.delete('/rooms/:id/channels/:cid/messages/:mid', requireApiAuth('write'), (req, res) => {
+router.delete('/rooms/:id/channels/:cid/messages/:mid', requireApiAuth('write:direct'), (req, res) => {
   const room = db.getRoom(parseInt(req.params.id, 10));
   if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
   if (!db.isRoomMember(room.id, req.apiUser.id) && !req.apiUser.is_admin) return errorResponse(res, 403, 'Forbidden', 'Not a member.');

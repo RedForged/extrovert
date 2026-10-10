@@ -8,7 +8,7 @@ const {
   isRoomMember, addRoomMember, removeRoomMember, getRoomMembers, getUserRoomRole, countRoomMembers,
   createRoomRole, getRoomRole, getRoomRoles, updateRoomRole, deleteRoomRole, transferFounder,
   createRoomChannel, getRoomChannel, getRoomChannels, updateRoomChannel, deleteRoomChannel,
-  getRoomMessages, sendRoomMessage, joinDefaultRole, hasRoomPermission, roomPermissionsFor, getUserById, getUserByUsername, db,
+  getRoomMessages, sendRoomMessage, joinDefaultRole, hasRoomPermission, roomPermissionsFor, canViewRoomChannel, getUserById, getUserByUsername, db,
   createContentReport,
   createJoinRequest, getJoinRequests, getJoinRequestById, approveJoinRequest, rejectJoinRequest, hasPendingRequest,
   publishRoomGroupSession, getRoomGroupSession, isRoomGroupSessionUsable, saveRoomSessionKeys, ensureRoomSessionRecipient, getPendingRoomSessionKeys, getRoomSessionKeyById, markRoomSessionKeyDelivered, getRoomSessionRecipients, getRoomSessionEmptyKeyRecipients,
@@ -450,6 +450,7 @@ router.post('/:id/channels/:cid/messages/:mid/delete', (req, res) => {
   if (!isRoomMember(room.id, userId) && !res.locals.currentUser.is_admin) return res.status(403).json({ error: 'Not a member' });
   const channel = getRoomChannel(Number(req.params.cid));
   if (!channel || channel.room_id !== room.id) return res.status(404).json({ error: 'Channel not found' });
+  if (!res.locals.currentUser.is_admin && !canViewRoomChannel(channel.id, userId)) return res.status(403).json({ error: 'No view permission' });
   const msgId = Number(req.params.mid);
   const msgs = getRoomMessages(channel.id);
   const msg = msgs.find(m => m.id === msgId);
@@ -475,6 +476,7 @@ router.post('/:id/channels/:cid/messages/:mid/edit', (req, res) => {
   if (!isRoomMember(room.id, userId) && !res.locals.currentUser.is_admin) return res.status(403).json({ error: 'Not a member' });
   const channel = getRoomChannel(Number(req.params.cid));
   if (!channel || channel.room_id !== room.id) return res.status(404).json({ error: 'Channel not found' });
+  if (!res.locals.currentUser.is_admin && !canViewRoomChannel(channel.id, userId)) return res.status(403).json({ error: 'No view permission' });
   const body = String(req.body.body || '').trim();
   const rawProto = String(req.body.proto || '').trim();
   const ciphertextRaw = String(req.body.ciphertext || '').trim();
