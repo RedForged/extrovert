@@ -19,7 +19,7 @@ const router = express.Router();
 
 function back(req, fallback = '/') {
   const ref = req.get('referer');
-  if (ref && ref.startsWith('/') && !ref.startsWith('//')) return ref;
+  if (ref && ref.startsWith('/') && !ref.startsWith('//') && !/[\u0000-\u001f\\]/.test(ref)) return ref;
   return fallback;
 }
 

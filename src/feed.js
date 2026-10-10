@@ -2,6 +2,7 @@
 
 const { db } = require('./db');
 const { getDisplayPost, getUserById, commentsForPost, hasLiked, hasShared, areMutualFollowers } = require('./db');
+const { canView } = require('./network');
 
 // In-memory feed cache per user with TTL
 const feedCache = new Map();
@@ -176,9 +177,15 @@ function hydrateItem(row, viewerId, score) {
   let author = reposter;
   if (row.type === 'repost' && row.repost_of_id) {
     const disp = getDisplayPost(row.repost_of_id);
-    if (disp) {
+    // Never surface the original author's content to a viewer outside their
+    // network: a repost must not bypass the canView boundary the single-post
+    // and realtime paths enforce. Blank the content instead.
+    if (disp && canView(viewerId, disp.post.user_id)) {
       contentPost = disp.post;
       author = getUserById(contentPost.user_id);
+    } else {
+      contentPost = Object.assign({}, row, { body: '', media_path: null });
+      author = reposter;
     }
   }
   const interactId = contentPost.id; // engagement targets underlying content

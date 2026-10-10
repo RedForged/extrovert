@@ -1485,6 +1485,16 @@ function registerMlsDevice(userId, deviceId, deviceName, signingKeyPub) {
   const cleanKey = String(signingKeyPub || '').trim();
   if (!cleanId || !cleanKey) throw new Error('deviceId and signingKeyPub are required');
 
+  // device_id is globally UNIQUE. The upsert below rewrites user_id on conflict,
+  // so without this check a caller could rebind (steal) another account's
+  // device by re-registering its id. Never let a device change owner.
+  const existing = db.prepare(`SELECT user_id FROM mls_devices WHERE device_id = ?`).get(cleanId);
+  if (existing && Number(existing.user_id) !== Number(userId)) {
+    const err = new Error('That device id is already registered to another account.');
+    err.code = 'DEVICE_TAKEN';
+    throw err;
+  }
+
   const activeCount = db.prepare(`SELECT COUNT(*) AS count FROM mls_devices WHERE user_id = ? AND revoked_at IS NULL AND device_id != ?`).get(userId, cleanId);
   if (activeCount && activeCount.count >= MAX_MLS_DEVICES_PER_USER) {
     const err = new Error('Device quota exceeded (maximum ' + MAX_MLS_DEVICES_PER_USER + ' active devices). Please revoke an old device first.');
@@ -1496,11 +1506,11 @@ function registerMlsDevice(userId, deviceId, deviceName, signingKeyPub) {
     INSERT INTO mls_devices (user_id, device_id, device_name, signing_key_pub, created_at, last_seen_at, revoked_at)
     VALUES (?, ?, ?, ?, ?, ?, NULL)
     ON CONFLICT(device_id) DO UPDATE SET
-      user_id = excluded.user_id,
       device_name = excluded.device_name,
       signing_key_pub = excluded.signing_key_pub,
       last_seen_at = excluded.last_seen_at,
       revoked_at = NULL
+    WHERE mls_devices.user_id = excluded.user_id
   `).run(userId, cleanId, cleanName, cleanKey, now, now);
 
   return { device_id: cleanId, user_id: userId, device_name: cleanName, signing_key_pub: cleanKey };

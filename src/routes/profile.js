@@ -184,7 +184,9 @@ function hydrateProfilePosts(userId, viewerId) {
     let author = reposter;
     if (row.type === 'repost' && row.repost_of_id) {
       const disp = getDisplayPost(row.repost_of_id);
-      if (disp) { content = disp.post; author = getUserById(content.user_id); }
+      // Repost content is bounded by the original author's network visibility.
+      if (disp && canView(viewerId, disp.post.user_id)) { content = disp.post; author = getUserById(content.user_id); }
+      else { content = Object.assign({}, row, { body: '', media_path: null }); author = reposter; }
     }
     const comments = commentsForPost(content.id);
     return {

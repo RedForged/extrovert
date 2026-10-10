@@ -2787,6 +2787,11 @@ router.post('/rooms/:id/members/:uid/roles', requireApiAuth('write'), express.js
   const targetRole = db.getRoomRole(roleId);
   if (!targetRole || targetRole.room_id !== room.id) return errorResponse(res, 404, 'Not Found', 'Role not found.');
   if (targetRole.is_founder) return errorResponse(res, 400, 'Bad Request', 'Cannot assign founder role.');
+  // Cannot assign a role more privileged than you hold (blocks a
+  // MANAGE_MEMBERS holder from assigning themselves a higher role).
+  if (targetRole.permissions & ~db.roomPermissionsFor(room.id, req.apiUser.id)) {
+    return errorResponse(res, 403, 'Forbidden', 'Cannot assign a role with permissions you do not hold.');
+  }
   const currentMemberRole = db.getUserRoomRole(room.id, targetUser.id);
   if (currentMemberRole && currentMemberRole.is_founder) return errorResponse(res, 400, 'Bad Request', 'Cannot change founder role.');
 
@@ -2929,11 +2934,13 @@ router.get('/rooms/:id', requireApiAuth('read'), (req, res) => {
       member_count: db.countRoomMembers(room.id),
     });
   }
-  const channels = db.getRoomChannels(room.id).map(c => ({
-    id: String(c.id),
-    name: c.name,
-    type: c.type || 'text',
-  }));
+  const channels = db.getRoomChannels(room.id)
+    .filter(c => req.apiUser.is_admin || db.canViewRoomChannel(c.id, req.apiUser.id))
+    .map(c => ({
+      id: String(c.id),
+      name: c.name,
+      type: c.type || 'text',
+    }));
   const members = db.getRoomMembers(room.id).map(m => ({
     id: String(m.user_id),
     username: m.username,

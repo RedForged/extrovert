@@ -392,7 +392,8 @@ function broadcastToRoomMembers(channelId, excludeUserId, msg) {
   if (!ch) return;
   for (const [otherId, other] of clients) {
     if (otherId === excludeUserId) continue;
-    if (isRoomMember(ch.room_id, otherId)) {
+    // Only members who may view THIS channel learn of its voice presence.
+    if (isRoomMember(ch.room_id, otherId) && canViewRoomChannel(channelId, otherId)) {
       try { other.ws.send(JSON.stringify(msg)); } catch {}
     }
   }
@@ -1016,10 +1017,11 @@ function initSignaling(wss) {
           const channelId = msg.channel_id;
           if (!channelId) return;
 
-          // Only room members may join a channel: prevents roster leaks of
-          // private rooms via channel_joined and ring-spam by non-members.
+          // Only room members may join a channel, and only if the channel's
+          // view ACL permits them: prevents roster leaks, ring-spam, and entry
+          // to channels the member is not allowed to see.
           const channel = getRoomChannel(Number(channelId));
-          if (!channel || !isRoomMember(channel.room_id, user.id)) {
+          if (!channel || !isRoomMember(channel.room_id, user.id) || !canViewRoomChannel(Number(channelId), user.id)) {
             try { ws.send(JSON.stringify({ type: 'error', error: 'not_a_member' })); } catch {}
             break;
           }

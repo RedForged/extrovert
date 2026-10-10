@@ -84,6 +84,10 @@ function isPrivateHostname(hostname) {
     const zone = ip.indexOf('%');
     if (zone !== -1) ip = ip.slice(0, zone);
     if (ip === '::' || ip === '::1') return true;
+    // Anything else beginning with '::' is the IPv4-compatible/unspecified
+    // ::/96 range (e.g. Node canonicalizes http://[::127.0.0.1] to [::7f00:1]),
+    // which embeds an IPv4 address. Fail closed rather than enumerate.
+    if (ip.startsWith('::')) return true;
     if (ip.startsWith('fc') || ip.startsWith('fd')) return true;            // fc00::/7 ULA
     if (ip.startsWith('fe8') || ip.startsWith('fe9') || ip.startsWith('fea') || ip.startsWith('feb')) return true; // fe80::/10
     if (ip.startsWith('ff')) return true;                                    // multicast
@@ -140,6 +144,8 @@ function isPrivateAddress(address) {
   const a = String(address).toLowerCase();
   if (a.includes(':')) {
     if (a === '::1' || a === '::') return true;
+    // ::/96 IPv4-compatible (and unspecified) — fail closed.
+    if (a.startsWith('::')) return true;
     if (a.startsWith('fc') || a.startsWith('fd') || a.startsWith('fe8') || a.startsWith('fe9') || a.startsWith('fea') || a.startsWith('feb') || a.startsWith('ff')) return true;
     // 6to4 embeds an IPv4 address in 2002:V4ADDR::/48; NAT64's well-known
     // prefix 64:ff9b::/96 embeds one in the final 32 bits; Teredo is

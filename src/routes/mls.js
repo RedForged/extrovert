@@ -115,6 +115,9 @@ router.post('/device/register', requireAuth, (req, res) => {
     if (err.code === 'QUOTA_EXCEEDED') {
       return res.status(429).json({ error: err.message, code: 'QUOTA_EXCEEDED' });
     }
+    if (err.code === 'DEVICE_TAKEN') {
+      return res.status(409).json({ error: 'That device id is already registered to another account.' });
+    }
     console.error('Error registering MLS device:', err);
     res.status(500).json({ error: 'Internal server error' });
   }

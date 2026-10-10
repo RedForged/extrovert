@@ -244,6 +244,10 @@ app.use((req, res, next) => {
   // irrelevant when the credential isn't a cookie, and creating a session for
   // them is pointless.
   if (req.headers.authorization && req.headers.authorization.startsWith('Bearer ') && bearerUser(req)) {
+    // Still provide the locals views expect (some routes render a page for a
+    // Bearer caller), or the template would throw on an undefined csrfToken.
+    res.locals.csrfToken = (req.session && req.session.csrfToken) || '';
+    res.locals.legacyE2eeEnabled = db.isLegacyE2eeEnabled ? db.isLegacyE2eeEnabled() : true;
     return next();
   }
 
@@ -387,7 +391,16 @@ app.use((req, res, next) => {
     res.locals.theme = getUserTheme(res.locals.currentUser.id);
     res.locals.announcement = getAnnouncement();
     res.locals.referralCode = getReferralCode(res.locals.currentUser.id);
-    res.locals.inviteUrl = res.locals.referralCode ? req.protocol + '://' + req.get('host') + '/register?ref=' + res.locals.referralCode : null;
+    // Prefer a configured public base URL; only fall back to the request host
+    // when a reverse proxy is trusted (otherwise Host is attacker-controlled).
+    let inviteBase = process.env.EXTV_BASE_URL || process.env.OIDC_ISSUER || '';
+    if (!/^https?:\/\//.test(inviteBase)) {
+      const trustProxy = req.app && req.app.get && req.app.get('trust proxy');
+      const host = (trustProxy ? req.headers['x-forwarded-host'] : null) || req.get('host');
+      inviteBase = (req.headers['x-forwarded-proto'] || req.protocol) + '://' + host;
+    }
+    inviteBase = inviteBase.replace(/\/$/, '');
+    res.locals.inviteUrl = res.locals.referralCode ? inviteBase + '/register?ref=' + res.locals.referralCode : null;
     // Show a banner when email verification is required but the account
     // hasn't verified an address yet.
     res.locals.verifyBanner = requireVerifiedEmail(res.locals.currentUser);

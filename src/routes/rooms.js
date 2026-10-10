@@ -322,6 +322,7 @@ router.post('/:id/members/:uid/setrole', (req, res) => {
   const targetRole = getRoomRole(roleId);
   if (!targetRole || targetRole.room_id !== room.id) return res.status(404).send('Role not found');
   if (targetRole.is_founder) return res.status(400).send('Cannot assign founder role');
+  if (targetRole.permissions & ~roomPermissionsFor(room.id, res.locals.currentUser.id)) return res.status(403).send('Cannot assign a role with permissions you do not hold');
   const currentMemberRole = getUserRoomRole(room.id, targetUser.id);
   if (currentMemberRole && currentMemberRole.is_founder) return res.status(400).send('Cannot change founder role');
   db.prepare(`UPDATE room_members SET role_id = ? WHERE room_id = ? AND user_id = ?`).run(roleId, room.id, targetUser.id);
