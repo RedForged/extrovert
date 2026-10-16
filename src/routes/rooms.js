@@ -517,6 +517,7 @@ router.post('/:id/channels/:cid/report', (req, res) => {
   if (!isRoomMember(room.id, res.locals.currentUser.id) && !res.locals.currentUser.is_admin) return res.status(403).json({ error: 'Not a member' });
   const channel = getRoomChannel(Number(req.params.cid));
   if (!channel || channel.room_id !== room.id) return res.status(404).json({ error: 'Channel not found' });
+  if (!res.locals.currentUser.is_admin && !canViewRoomChannel(channel.id, res.locals.currentUser.id)) return res.status(403).json({ error: 'No view permission' });
   const messageId = Number(req.body.message_id);
   const reason = String(req.body.reason || '').trim();
   if (!messageId || !reason) return res.status(400).json({ error: 'Missing message ID or reason' });

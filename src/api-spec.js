@@ -1607,7 +1607,7 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
       post: {
         summary: 'Publish or refresh your Megolm group session for a room, with encrypted keys per member (pushes room_session_key via WebSocket in realtime)',
         tags: ['Rooms'],
-        security: [{ oauth2: ['write'] }],
+        security: [{ oauth2: ['write:direct'] }],
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
         requestBody: {
           content: { 'application/json': { schema: {
@@ -1630,7 +1630,7 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
       post: {
         summary: 'Atomic room session sync (publish keys, receive pending keys for caller, ACK delivered, and get missing members in 1 call)',
         tags: ['Rooms'],
-        security: [{ oauth2: ['write'] }],
+        security: [{ oauth2: ['write:direct'] }],
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
         requestBody: {
           content: { 'application/json': { schema: {
@@ -1660,7 +1660,7 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
       get: {
         summary: 'Get pending Megolm session keys addressed to you',
         tags: ['Rooms'],
-        security: [{ oauth2: ['read'] }],
+        security: [{ oauth2: ['read:direct'] }],
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
         responses: { '200': { description: '{ keys: [{ key_id, session_id, room_id, sender_id, encrypted_key }] }' } },
       },
@@ -1669,7 +1669,7 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
       post: {
         summary: 'Mark delivered session keys as received',
         tags: ['Rooms'],
-        security: [{ oauth2: ['write'] }],
+        security: [{ oauth2: ['write:direct'] }],
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
         requestBody: {
           content: { 'application/json': { schema: {
@@ -1684,7 +1684,7 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
       get: {
         summary: "Which members hold the caller's room session keys",
         tags: ['Rooms'],
-        security: [{ oauth2: ['read'] }],
+        security: [{ oauth2: ['read:direct'] }],
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
         responses: { '200': { description: '{ session_id, recipients: [...], empty_keys_for: [...] }' } },
       },
@@ -1693,7 +1693,7 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
       get: {
         summary: 'Batch fetch Olm prekey bundles of room members (optionally filtered by missing_for_session)',
         tags: ['Rooms'],
-        security: [{ oauth2: ['read'] }],
+        security: [{ oauth2: ['read:direct'] }],
         parameters: [
           { name: 'id', in: 'path', required: true, schema: { type: 'integer' } },
           { name: 'missing_for_session', in: 'query', required: false, schema: { type: 'string' }, description: 'Only return bundles for members lacking keys for this session ID' },
@@ -1712,7 +1712,7 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
       get: {
         summary: 'Room-scoped Olm prekey bundle of another member (no mutual-follower requirement)',
         tags: ['Rooms'],
-        security: [{ oauth2: ['read'] }],
+        security: [{ oauth2: ['read:direct'] }],
         parameters: [
           { name: 'id', in: 'path', required: true, schema: { type: 'integer' } },
           { name: 'username', in: 'path', required: true, schema: { type: 'string' } },

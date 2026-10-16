@@ -3099,7 +3099,7 @@ router.delete('/rooms/:id/channels/:cid/messages/:mid', requireApiAuth('write:di
 });
 
 // Publish / refresh the caller's Megolm group session for a room + encrypted keys.
-router.post('/rooms/:id/session', requireApiAuth('write'), (req, res) => {
+router.post('/rooms/:id/session', requireApiAuth('write:direct'), (req, res) => {
   const room = db.getRoom(parseInt(req.params.id, 10));
   if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
   if (!db.isRoomMember(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'Not a member.');
@@ -3132,7 +3132,7 @@ router.post('/rooms/:id/session', requireApiAuth('write'), (req, res) => {
 
 // Unified Room Session Sync: atomically distribute new keys, fetch incoming pending keys,
 // acknowledge delivered keys, and identify unkeyed room members in one round-trip.
-router.post('/rooms/:id/session/sync', requireApiAuth('write'), express.json(), (req, res) => {
+router.post('/rooms/:id/session/sync', requireApiAuth('write:direct'), express.json(), (req, res) => {
   const room = db.getRoom(parseInt(req.params.id, 10));
   if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
   if (!db.isRoomMember(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'Not a member.');
@@ -3222,7 +3222,7 @@ router.post('/rooms/:id/session/sync', requireApiAuth('write'), express.json(), 
 });
 
 // Pending Megolm session keys for the caller.
-router.get('/rooms/:id/session/keys', requireApiAuth('read'), (req, res) => {
+router.get('/rooms/:id/session/keys', requireApiAuth('read:direct'), (req, res) => {
   const room = db.getRoom(parseInt(req.params.id, 10));
   if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
   if (!db.isRoomMember(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'Not a member.');
@@ -3235,7 +3235,7 @@ router.get('/rooms/:id/session/keys', requireApiAuth('read'), (req, res) => {
 });
 
 // Mark delivered session keys as received.
-router.post('/rooms/:id/session/keys/delivered', requireApiAuth('write'), (req, res) => {
+router.post('/rooms/:id/session/keys/delivered', requireApiAuth('write:direct'), (req, res) => {
   const room = db.getRoom(parseInt(req.params.id, 10));
   if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
   if (!db.isRoomMember(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'Not a member.');
@@ -3252,7 +3252,7 @@ router.post('/rooms/:id/session/keys/delivered', requireApiAuth('write'), (req, 
 });
 
 // Which members hold the caller's session keys.
-router.get('/rooms/:id/session/status', requireApiAuth('read'), (req, res) => {
+router.get('/rooms/:id/session/status', requireApiAuth('read:direct'), (req, res) => {
   const room = db.getRoom(parseInt(req.params.id, 10));
   if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
   if (!db.isRoomMember(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'Not a member.');
@@ -3263,7 +3263,7 @@ router.get('/rooms/:id/session/status', requireApiAuth('read'), (req, res) => {
 });
 
 // Batch prekey bundles for room members (optionally filtered by members missing active session key)
-router.get('/rooms/:id/bundles', requireApiAuth('read'), (req, res) => {
+router.get('/rooms/:id/bundles', requireApiAuth('read:direct'), (req, res) => {
   const room = db.getRoom(parseInt(req.params.id, 10));
   if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
   if (!db.isRoomMember(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'Not a member.');
@@ -3315,7 +3315,7 @@ router.get('/rooms/:id/bundles', requireApiAuth('read'), (req, res) => {
 
 // Room-scoped prekey bundle (no mutual-follower requirement). READ-ONLY: the
 // one_time_key is an unclaimed preview (?claim=1 keeps the legacy behavior).
-router.get('/rooms/:id/bundle/:username', requireApiAuth('read'), (req, res) => {
+router.get('/rooms/:id/bundle/:username', requireApiAuth('read:direct'), (req, res) => {
   const room = db.getRoom(parseInt(req.params.id, 10));
   if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
   if (!db.isRoomMember(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'Not a member.');
@@ -3337,7 +3337,7 @@ router.get('/rooms/:id/bundle/:username', requireApiAuth('read'), (req, res) => 
 
 // Claim one one-time prekey per listed device of a room member (session-key
 // wrapping establishes a new 1:1 session).
-router.post('/rooms/:id/claim/:username', requireApiAuth('write'), express.json(), (req, res) => {
+router.post('/rooms/:id/claim/:username', requireApiAuth('write:direct'), express.json(), (req, res) => {
   const room = db.getRoom(parseInt(req.params.id, 10));
   if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
   if (!db.isRoomMember(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'Not a member.');
