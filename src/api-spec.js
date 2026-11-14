@@ -645,7 +645,7 @@ Network-visibility rules: accounts and posts outside your visible set return \`4
                     example: ['he/him', 'they/them'],
                     description: 'Up to 6 free-text pronoun fields. Empty values are dropped.',
                   },
-                  theme: { type: 'string', enum: ['light', 'dark', 'default'] },
+                  theme: { type: 'string', enum: ['light', 'dark', 'october', 'default'] },
                 },
               },
             },

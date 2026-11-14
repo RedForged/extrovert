@@ -1533,7 +1533,7 @@ router.patch('/accounts/update_credentials', requireApiAuth('profile'), (req, re
   const { display_name, bio, pronouns, theme, html, css } = req.body || {};
   if (display_name !== undefined) req.apiUser.display_name = String(display_name).trim().slice(0, 100);
   if (bio !== undefined) req.apiUser.bio = String(bio).trim().slice(0, 500);
-  if (theme !== undefined && ['light', 'dark', 'default'].includes(theme)) {
+  if (theme !== undefined && ['light', 'dark', 'october', 'default'].includes(theme)) {
     req.apiUser.theme = theme;
     db.setUserTheme(req.apiUser.id, theme);
   }

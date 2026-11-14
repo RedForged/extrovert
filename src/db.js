@@ -2897,7 +2897,7 @@ function getUserTheme(userId) {
   const row = db.prepare(`SELECT theme FROM users WHERE id = ?`).get(userId);
   if (!row) return 'dark';
   const t = row.theme;
-  if (t === 'light' || t === 'dark') return t;
+  if (t === 'light' || t === 'dark' || t === 'october') return t;
   return 'dark';
 }
 

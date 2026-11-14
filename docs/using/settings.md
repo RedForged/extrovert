@@ -27,7 +27,7 @@ does not affect the others' sessions.
 
 ## Theme
 
-Choose **Light** or **Dark** (dark is the default). Applied via `public/theme.css`; stored per account.
+Choose **Light**, **Dark**, or **October** (dark is the default; October is a graphite-and-ember dark variant). Applied via `public/theme.css`; stored per account.
 
 ## Account sheet
 

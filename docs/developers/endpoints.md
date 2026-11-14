@@ -40,7 +40,7 @@ Full flow documentation: [OAuth 2.0 & OpenID Connect](oauth-oidc.md).
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | GET | `/accounts/verify_credentials` | Bearer (`read`) | Your own account. |
-| PATCH | `/accounts/update_credentials` | Bearer (`profile`) | Update `display_name` (≤100), `bio` (≤500), `theme` (`light`/`dark`/`default`), `html` (custom profile markup ≤20k chars, sanitized), and `css` (custom profile styles ≤10k chars, sanitized). |
+| PATCH | `/accounts/update_credentials` | Bearer (`profile`) | Update `display_name` (≤100), `bio` (≤500), `theme` (`light`/`dark`/`october`/`default`), `html` (custom profile markup ≤20k chars, sanitized), and `css` (custom profile styles ≤10k chars, sanitized). |
 | POST | `/accounts/avatar` | Bearer (`profile`) | Multipart `avatar` (image, ≤10 MB) → resized 200×200 JPEG. |
 | DELETE | `/accounts/me` | Bearer (`write`) | Permanently delete your account. Body: `password`*. |
 | GET | `/accounts/tokens` | Bearer (`profile`) | List your personal access tokens (`id, name, token_prefix, scopes, created_at, expires_at`). |
