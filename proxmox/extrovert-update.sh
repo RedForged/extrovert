@@ -50,7 +50,7 @@ ensure_on_path() { # name
 # --------------------------------------------------------------------------
 # configuration
 # --------------------------------------------------------------------------
-REPO_URL=https://github.com/RedForged/extrovert.git
+REPO_URL=https://git.new-eve.org/redforged/extrovert.git
 REF=master
 INSTALL_DIR=/opt/extrovert
 STATE_DIR=/var/lib/extrovert
@@ -120,6 +120,17 @@ EOF
 # helpers
 # --------------------------------------------------------------------------
 current_commit() { git -C "$INSTALL_DIR" rev-parse HEAD; }
+
+sync_origin() { # keep the checkout's origin aligned with the configured repo
+  local have
+  if ! have=$(git -C "$INSTALL_DIR" remote get-url origin 2>/dev/null); then
+    git -C "$INSTALL_DIR" remote add origin "$REPO_URL"
+    info "added origin $REPO_URL"
+  elif [ "$have" != "$REPO_URL" ]; then
+    info "origin was $have — using $REPO_URL"
+    git -C "$INSTALL_DIR" remote set-url origin "$REPO_URL"
+  fi
+}
 
 describe_commit() { # rev
   git -C "$INSTALL_DIR" describe --tags --always "$1" 2>/dev/null || printf '%s' "${1:0:10}"
@@ -289,6 +300,7 @@ cmd_backup_only() {
 
 cmd_check() {
   step "Checking for updates (${REF})"
+  sync_origin
   git -C "$INSTALL_DIR" fetch --quiet --prune --tags origin
   local cur tgt
   cur=$(current_commit)
@@ -311,6 +323,7 @@ cmd_update() {
   [ "$NO_BACKUP" = 1 ] && want_backup=0
 
   step "Updating Extrovert (${ref})"
+  sync_origin
   git -C "$INSTALL_DIR" fetch --quiet --prune --tags origin
 
   local cur tgt new_version

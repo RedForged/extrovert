@@ -31,7 +31,7 @@ set -Eeuo pipefail
 # the built-in C.UTF-8 keeps UTF-8 and stops apt/perl locale warnings.
 export LC_ALL=C.UTF-8 LANG=C.UTF-8
 
-REPO_DEFAULT=https://github.com/RedForged/extrovert.git
+REPO_DEFAULT=https://git.new-eve.org/redforged/extrovert.git
 HELPER_NAME=$(basename "${BASH_SOURCE[0]:-$0}")
 
 # --------------------------------------------------------------------------
@@ -206,7 +206,7 @@ v_repo_url() { # any remote git can clone from: https, ssh, git://, file://, scp
   case $1 in
     https://*|http://*|ssh://*|git://*|file://*|/*|*@*:*) ;;
     *)
-      printf 'Enter a git URL, e.g. https://github.com/RedForged/extrovert.git, git@github.com:owner/repo.git or file:///srv/mirror.git.'
+      printf 'Enter a git URL, e.g. https://git.new-eve.org/redforged/extrovert.git, git@github.com:owner/repo.git or file:///srv/mirror.git.'
       return 1
       ;;
   esac
