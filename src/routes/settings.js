@@ -88,7 +88,7 @@ router.get('/', (req, res) => {
 router.post('/', (req, res) => {
   const user = res.locals.currentUser;
   if (!user) return res.redirect('/login');
-  const theme = ['dark', 'light', 'october'].includes(req.body.theme) ? req.body.theme : 'dark';
+  const theme = ['dark', 'light', 'october'].includes(req.body.theme) ? req.body.theme : 'october';
   setUserTheme(user.id, theme);
   setUserDeveloperMode(user.id, req.body.developer_mode === '1');
   res.redirect('/settings');

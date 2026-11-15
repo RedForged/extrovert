@@ -2993,10 +2993,10 @@ function hasPendingRequest(roomId, userId) {
 // ---------- theme ----------
 function getUserTheme(userId) {
   const row = db.prepare(`SELECT theme FROM users WHERE id = ?`).get(userId);
-  if (!row) return 'dark';
+  if (!row) return 'october';
   const t = row.theme;
   if (t === 'light' || t === 'dark' || t === 'october') return t;
-  return 'dark';
+  return 'october';
 }
 
 function setUserTheme(userId, theme) {

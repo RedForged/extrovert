@@ -204,7 +204,7 @@ your whole page — to visitors too.
 
 ## Theme
 
-`/settings` offers **Light**, **Dark**, or **October** (default dark; the `default` theme maps to dark). The choice is per-account and applied via `public/theme.css`.
+`/settings` offers **Light**, **Dark**, or **October** (default October; the `default` theme maps to October). The choice is per-account and applied via `public/theme.css`.
 
 ## Referrals
 
