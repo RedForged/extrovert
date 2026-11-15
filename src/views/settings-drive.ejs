@@ -14,7 +14,7 @@
   <% if (notice) { %><div class="flash ok" style="max-width:560px;margin:12px auto"><span><%= notice %></span></div><% } %>
   <% if (error) { %><div class="flash err" style="max-width:560px;margin:12px auto"><span class="flash-ico"><%- include('partials/icon', { name: 'alert', size: 18 }) %></span><span><%= error %></span></div><% } %>
 
-  <div class="card" style="max-width:560px;margin:0 auto">
+  <div class="card" style="max-width:560px;margin:16px auto">
     <% if (connection) { %>
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <h4 style="margin:0"><%= connection.enabled ? 'Connected' : 'Paused' %></h4>
