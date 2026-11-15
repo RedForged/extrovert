@@ -361,46 +361,75 @@ router.post('/:username/edit/visual', (req, res) => {
   res.redirect('/u/' + profileUser.username + '?edit=1');
 });
 
-// Upload/change avatar.
-router.post('/:username/avatar', (req, res, next) => {
+function requireProfileOwner(req, res, next) {
+  const viewer = res.locals.currentUser;
+  if (!viewer) return res.redirect('/login');
+  const profileUser = getUserByUsername(req.params.username);
+  if (!profileUser || profileUser.id !== viewer.id) return res.status(403).send('Not your profile.');
+  res.locals.profileUser = profileUser;
+  next();
+}
+
+function parseAvatar(req, res, next) {
   avatarUpload.single('avatar')(req, res, (err) => {
     if (err) {
       console.error('Avatar upload multer error:', err);
+      drive.discardUpload(req);
       if (err.code === 'LIMIT_FILE_SIZE') return res.status(400).send('File too large (max 10 MB).');
       return res.status(400).send('Upload error.');
     }
     next();
   });
-}, async (req, res) => {
+}
+
+// Upload/change avatar. Authentication, ownership, and quota run before multer;
+// the CSRF field is inside the multipart body, so it is checked after parsing.
+router.post('/:username/avatar', requireProfileOwner, drive.quotaGuard({ maxBytes: 10 * 1024 * 1024 }), parseAvatar, async (req, res) => {
   const viewer = res.locals.currentUser;
-  if (!viewer) return res.redirect('/login');
-  const profileUser = getUserByUsername(req.params.username);
-  if (!profileUser || profileUser.id !== viewer.id) return res.status(403).send('Not your profile.');
+  const profileUser = res.locals.profileUser;
   const token = req.body._csrf || req.headers['x-csrf-token'];
-  if (!token || token !== req.session.csrfToken) return res.status(403).send('CSRF validation failed');
-  if (!req.file) return res.redirect('/u/' + profileUser.username + '/edit');
+  if (!token || token !== req.session.csrfToken) {
+    drive.discardUpload(req);
+    return res.status(403).send('CSRF validation failed');
+  }
+  if (!req.file) {
+    drive.releaseUploadReservation(req);
+    return res.redirect('/u/' + profileUser.username + '/edit');
+  }
 
   const inputPath = req.file.path;
-  // Avatars are stored files too, so they need room in the Drive.
-  const space = drive.quotaState(viewer.id);
-  if (space.used + req.file.size > space.quota) {
-    try { fs.unlinkSync(inputPath); } catch (e) {}
+  const fit = drive.uploadFits(req, req.file.size, viewer.id);
+  if (!fit.ok) {
+    drive.discardUpload(req);
     return res.status(413).send(
-      'Not enough Drive space for a new avatar — you have ' + drive.fmt(space.remaining) + ' left. Delete something first.'
+      'Not enough Drive space for a new avatar — you have ' + drive.fmt(fit.state ? fit.state.remaining : 0) + ' left. Delete something first.'
     );
   }
   const previousAvatar = viewer.avatar;
   const outputName = crypto.randomBytes(12).toString('hex') + '.jpg';
   const outputPath = path.join(AVATAR_DIR, outputName);
+  let outputWritten = false;
 
   try {
     await sharp(inputPath).resize(200, 200, { fit: 'cover', position: 'center' }).jpeg({ quality: 85 }).toFile(outputPath);
+    outputWritten = true;
+    const outputSize = fs.statSync(outputPath).size;
+    const outputFit = drive.uploadFits(req, outputSize, viewer.id);
+    if (!outputFit.ok) {
+      try { fs.unlinkSync(outputPath); } catch {}
+      outputWritten = false;
+      drive.discardUpload(req);
+      return res.status(413).send(
+        'Not enough Drive space for a new avatar — you have ' + drive.fmt(outputFit.state ? outputFit.state.remaining : 0) + ' left. Delete something first.'
+      );
+    }
     fs.unlinkSync(inputPath);
-    setAvatar(viewer.id, '/uploads/avatars/' + outputName);
     createUserFile({
       userId: viewer.id, kind: 'avatar', root: 'uploads', path: 'avatars/' + outputName,
-      mime: 'image/jpeg', size: fs.statSync(outputPath).size,
+      mime: 'image/jpeg', size: outputSize,
     });
+    setAvatar(viewer.id, '/uploads/avatars/' + outputName);
+    drive.releaseUploadReservation(req);
     // The old avatar is dead weight — unlink it and refund its space.
     if (previousAvatar) {
       const prev = splitStoredPath(previousAvatar);
@@ -409,6 +438,11 @@ router.post('/:username/avatar', (req, res, next) => {
   } catch (e) {
     console.error('Avatar processing error:', e);
     try { fs.unlinkSync(inputPath); } catch {}
+    if (outputWritten) {
+      try { removeStoredFile('uploads', 'avatars/' + outputName); } catch {}
+      try { fs.unlinkSync(outputPath); } catch {}
+    }
+    drive.releaseUploadReservation(req);
     return res.status(400).send('Failed to process image');
   }
 
@@ -468,14 +502,9 @@ router.get('/:username/font', (req, res) => {
   res.sendFile(full);
 });
 
-router.post('/:username/font', drive.quotaGuard(), drive.single('font'), async (req, res) => {
+router.post('/:username/font', requireProfileOwner, drive.quotaGuard({ localOnly: true }), drive.single('font'), async (req, res) => {
   const viewer = res.locals.currentUser;
-  if (!viewer) return res.redirect('/login');
-  const profileUser = getUserByUsername(req.params.username);
-  if (!profileUser || profileUser.id !== viewer.id) {
-    drive.discardUpload(req);
-    return res.status(403).send('Not your profile.');
-  }
+  const profileUser = res.locals.profileUser;
   const token = req.body._csrf || req.headers['x-csrf-token'];
   if (!token || token !== req.session.csrfToken) {
     drive.discardUpload(req);
@@ -517,14 +546,20 @@ router.post('/:username/font', drive.quotaGuard(), drive.single('font'), async (
     req.file.size = verdict.size;
   }
 
-  const stored = drive.acceptUpload(req, res, { kind: 'font', userId: viewer.id });
+  const stored = await drive.acceptUpload(req, res, { kind: 'font', userId: viewer.id });
   if (!stored.ok) {
     if (stored.exceeded) return drive.rejectFull(req, res, stored.state);
     return res.redirect('/u/' + profileUser.username + '/edit');
   }
 
   const previous = viewer.custom_font;
-  setUserFont(viewer.id, stored.url);
+  try {
+    setUserFont(viewer.id, stored.url);
+  } catch (err) {
+    removeStoredFile('drive', stored.name);
+    console.error('font upload: setUserFont failed', err);
+    return res.status(500).send('Could not save that font.');
+  }
   // One profile font at a time: drop the old file and refund its space.
   if (previous && previous !== stored.url) {
     const prev = splitStoredPath(previous);

@@ -443,6 +443,9 @@ describe('Extrovert REST API', () => {
     });
 
     it('mentions timeline delivers the %mention to the bot', async () => {
+      // Mentions do not grant post visibility; follow the author so the bot is
+      // legitimately in the post's audience before exercising delivery.
+      db.follow(botId, bobId);
       const resp = await fetchJson('/api/v1/statuses', {
         method: 'POST', token: bobToken,
         body: { type: 'text', body: 'hey %echo_bot look at this' },

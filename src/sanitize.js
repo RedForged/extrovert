@@ -1,27 +1,103 @@
 'use strict';
 
 const sanitizeHtml = require('sanitize-html');
+const postcss = require('postcss');
 
-// CSS that can execute script (old IE) or load script-bearing resources is
-// neutralized. Modern CSS alone cannot run JavaScript, so this is mostly about
-// legacy vectors and keeping profiles self-contained.
+const BLOCKED_AT_RULES = /^@(?:charset|import|namespace|document|-moz-document)(?=\s|$)/i;
+const URL_BEARING_FUNCTIONS = /(?:^|[^\w-])(?:-webkit-)?(?:image-set|cross-fade)\s*\(/i;
+
+function decodeCssEscapes(value) {
+  return String(value || '').replace(
+    /\\(?:([0-9a-fA-F]{1,6})(?:\r\n|[ \n\r\t\f])?|([^\n\r\f0-9a-fA-F]))/g,
+    (_match, hex, literal) => {
+      if (hex) {
+        const codePoint = parseInt(hex, 16);
+        if (!codePoint || codePoint > 0x10ffff || (codePoint >= 0xd800 && codePoint <= 0xdfff)) {
+          return '\ufffd';
+        }
+        return String.fromCodePoint(codePoint);
+      }
+      if (literal === '\r' || literal === '\n' || literal === '\f') return '';
+      return literal;
+    }
+  );
+}
+
+function stripCssComments(value) {
+  return String(value || '').replace(/\/\*[\s\S]*?\*\//g, '');
+}
+
+// Only same-origin references are safe in user CSS. The origin is deliberately
+// fake: relative paths resolve on it, while scheme-relative and absolute URLs
+// resolve to their real origin and are rejected after backslash normalization.
+function isSafeCssUrl(value) {
+  const target = String(value || '').trim();
+  if (!target) return true;
+  if (/[\u0000-\u001f\u007f]/.test(target)) return false;
+  try {
+    return new URL(target, 'https://extrovert.invalid/').origin === 'https://extrovert.invalid';
+  } catch {
+    return false;
+  }
+}
+
+function declarationValueIsSafe(value) {
+  const decoded = stripCssComments(decodeCssEscapes(value));
+  if (/\bexpression\s*\(/i.test(decoded)) return false;
+  if (/\bprogid\s*:/i.test(decoded)) return false;
+  // image-set()/cross-fade() accept bare quoted URLs as well as url(), so a
+  // URL-token-only check would miss them. They are not needed for profile or
+  // room styling and are rejected as a class.
+  if (URL_BEARING_FUNCTIONS.test(decoded)) return false;
+
+  const urlPattern = /url\s*\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*))\s*\)/gi;
+  let match;
+  while ((match = urlPattern.exec(decoded))) {
+    const target = match[1] !== undefined ? match[1] : (match[2] !== undefined ? match[2] : match[3]);
+    if (!isSafeCssUrl(target)) return false;
+  }
+  return true;
+}
+
+// CSS is parsed before validation so escaped syntax is interpreted the same way
+// as it is by the browser. Declarations that can load remote resources are
+// removed; safe local assets (profile fonts and uploaded images) still work.
 function sanitizeCSS(css) {
   if (!css) return '';
-  let out = css;
-  out = out.replace(/expression\s*\(/gi, 'expression-disabled(');
-  out = out.replace(/url\s*\(\s*['"]?\s*javascript:[^)]*\)/gi, 'url()');
-  out = out.replace(/url\s*\(\s*['"]?\s*data:[^)]*\)/gi, 'url()');
-  out = out.replace(/-moz-binding\s*:/gi, 'disabled-binding:');
-  out = out.replace(/behavior\s*:/gi, 'disabled-behavior:');
-  out = out.replace(/@import[^;]+;/gi, '');
-  out = out.replace(/<\/?script[^>]*>/gi, '');
-  out = out.replace(/url\s*\(\s*['"]?\s*https?:\/\/[^)]*\)/gi, 'url()');
-  // Protocol-relative urls (url(//host/…)) also trigger an outbound request
-  // from a viewer's browser (IP/referrer leak) even without a scheme.
-  out = out.replace(/url\s*\(\s*['"]?\s*\/\/[^)]*\)/gi, 'url()');
-  // Prevent breaking out of the <style> element.
-  out = out.replace(/<\/style/gi, '<\\/style');
-  return out;
+  let root;
+  try {
+    root = postcss.parse(String(css), { from: undefined });
+  } catch {
+    return '';
+  }
+
+  root.walkComments((comment) => comment.remove());
+  root.walkAtRules((rule) => {
+    const text = decodeCssEscapes(stripCssComments(rule.toString())).trim();
+    if (BLOCKED_AT_RULES.test(text)) {
+      rule.remove();
+      return;
+    }
+    if (!declarationValueIsSafe(rule.params || '')) rule.remove();
+  });
+  root.walkRules((rule) => {
+    const selector = stripCssComments(decodeCssEscapes(rule.selector || ''));
+    // :has() lets otherwise harmless selectors branch on secret-bearing
+    // attributes elsewhere in the document. Custom CSS does not need it.
+    if (/:(?:has)\s*\(/i.test(selector)) rule.remove();
+  });
+  root.walkDecls((decl) => {
+    const prop = decodeCssEscapes(decl.prop || '').trim().toLowerCase();
+    if (prop === 'behavior' || prop === '-moz-binding') {
+      decl.remove();
+      return;
+    }
+    if (!declarationValueIsSafe(decl.value || '')) decl.remove();
+  });
+
+  // PostCSS preserves string contents. Make sure even an unusual node that
+  // survived the walk cannot terminate the surrounding <style> raw-text block.
+  return root.toString().replace(/<\/(style|script)/gi, '<\\/$1');
 }
 
 const ALLOWED_TAGS = [

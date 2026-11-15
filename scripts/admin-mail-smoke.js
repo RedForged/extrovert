@@ -62,8 +62,9 @@ const app = require('../src/server');
   assert(!dnsHtml.includes('not a real public domain'), 'no fallback warning with public host');
   assert(dnsHtml.includes('host <code>extrovert._domainkey.extrovert.example.org</code>'), 'DKIM host uses request domain');
   assert(dnsHtml.includes('host <code>_dmarc.extrovert.example.org</code>'), 'DMARC host uses request domain');
-  assert(dnsHtml.includes('"v=DKIM1; k=rsa; p='), 'DKIM value shown quoted');
-  assert(dnsHtml.includes('"v=spf1 mx a -all"'), 'SPF default uses domain mechanisms only');
+  assert(dnsHtml.includes('v=DKIM1; k=rsa; p='), 'DKIM value offered unquoted (copy-paste as-is)');
+  assert(dnsHtml.includes('v=spf1 mx a -all'), 'SPF default uses domain mechanisms only');
+  assert(dnsHtml.includes('without</strong> the surrounding quotes'), 'panel explains why the value is unquoted');
 
   const dns2 = await fetch(base + '/admin/mail', {
     headers: { cookie: sessCookie, 'x-forwarded-host': '127.0.0.1:3000' },

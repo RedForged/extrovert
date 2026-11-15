@@ -150,7 +150,7 @@ function listAccountSessions(sid) {
 // Destroy every session that has `userId` signed in (F2.7: enabling/disabling
 // 2FA cuts off stolen or pre-enrollment cookies). The current device's session
 // can be spared via exceptSid. Returns the number of destroyed sessions.
-function destroySessionsForUser(userId, exceptSid) {
+function destroySessionsForUser(userId, exceptSid, onDestroyed) {
   const rows = db.prepare(`SELECT DISTINCT session_id FROM account_sessions WHERE user_id = ?`).all(userId);
   const delSession = db.prepare(`DELETE FROM sessions WHERE sid = ?`);
   const delAccount = db.prepare(`DELETE FROM account_sessions WHERE session_id = ?`);
@@ -160,6 +160,9 @@ function destroySessionsForUser(userId, exceptSid) {
     delSession.run(row.session_id);
     delAccount.run(row.session_id);
     destroyed++;
+    if (typeof onDestroyed === 'function') {
+      try { onDestroyed(row.session_id); } catch {}
+    }
   }
   return destroyed;
 }

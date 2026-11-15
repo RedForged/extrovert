@@ -6,11 +6,13 @@ const bcrypt = require('bcryptjs');
 const QRCode = require('qrcode');
 const db = require('../db');
 const drive = require('../drive');
+const nextcloud = require('../nextcloud');
 const { getUserTheme, setUserTheme, getUserDeveloperMode, setUserDeveloperMode, deleteUser, isValidEmail, getUserByEmail, getEmailPolicy } = db;
 const { VALID_SCOPES } = require('../api-auth');
 const { removeAccount } = require('../accounts');
 const emailVerify = require('../email-verify');
 const twofa = require('../twofa');
+const { closeSessionSockets, closeTokenSocketsForApp, closeUserSockets } = require('../webrtc-signaling');
 
 const router = express.Router();
 
@@ -32,7 +34,7 @@ function renderSettings(res, user, { mailError = null, mailSent = false, mailNot
     version: require('../../package.json').version,
     emailStatus: emailStatusFor(user),
     usage,
-    usedPercent: usage.quota ? Math.min(100, Math.round((usage.used / usage.quota) * 100)) : 0,
+    usedPercent: usage.unlimited || !usage.quota ? 0 : Math.min(100, Math.round((usage.localUsed / usage.quota) * 100)),
     fmt: drive.fmt,
     mailError,
     mailSent,
@@ -199,6 +201,7 @@ router.post('/delete', (req, res) => {
     });
   }
   deleteUser(user.id);
+  closeUserSockets(user.id);
   // F1 multi-account: remove only the deleted account from this device's list.
   // Other accounts signed in on the same device stay signed in; the whole
   // session is destroyed only when the deleted account was the last one.
@@ -296,6 +299,7 @@ router.post('/developers/:id/delete', (req, res) => {
     return res.status(404).send('App not found.');
   }
   db.deleteOAuthApp(appId);
+  closeTokenSocketsForApp(null, appId);
   res.redirect('/settings/developers');
 });
 
@@ -306,6 +310,7 @@ router.post('/developers/authorized/:clientId/revoke', (req, res) => {
   const app = db.getOAuthAppByClientId(req.params.clientId);
   if (app) {
     db.revokeOAuthTokensForUser(user.id, app.id);
+    closeTokenSocketsForApp(user.id, app.id);
   }
   res.redirect('/settings/developers');
 });
@@ -401,9 +406,12 @@ router.post('/security/totp/confirm', (req, res) => {
   const codes = twofa.generateRecoveryCodes();
   db.replaceRecoveryCodes(user.id, codes.map(twofa.hashRecoveryCode), now);
   db.auditLog('totp_enabled', user.id, '2FA enabled');
+  const previousSid = req.sessionID;
   // Cut off any OTHER device's pre-enrollment session (F2.7); this device's
   // session is regenerated below so it survives.
-  try { require('../session-store').destroySessionsForUser(user.id, req.sessionID); } catch (err) {
+  try {
+    require('../session-store').destroySessionsForUser(user.id, req.sessionID, closeSessionSockets);
+  } catch (err) {
     console.error('totp confirm: session purge failed:', err);
   }
   req.session.regenerate((err) => {
@@ -414,6 +422,9 @@ router.post('/security/totp/confirm', (req, res) => {
     req.session.csrfToken = crypto.randomBytes(32).toString('hex');
     req.session.userId = user.id;
     req.session.accountIds = [user.id];
+    // The regenerated session has a new ID; a socket authenticated by the old
+    // pre-enrollment ID must not remain live.
+    closeSessionSockets(previousSid);
     res.render('totp-recovery', { codes, regenerated: false });
   });
 });
@@ -444,7 +455,9 @@ router.post('/security/totp/disable', (req, res) => {
   db.deleteAllTrustedDevices(user.id);
   res.clearCookie(TRUSTED_DEVICE_COOKIE, { path: '/' });
   db.auditLog('totp_disabled', user.id, '2FA disabled');
-  try { require('../session-store').destroySessionsForUser(user.id, req.sessionID); } catch {}
+  try {
+    require('../session-store').destroySessionsForUser(user.id, req.sessionID, closeSessionSockets);
+  } catch {}
   renderSecurity(res, db.getUserById(user.id), { notice: 'Two-factor authentication is now off.' });
 });
 
@@ -618,6 +631,98 @@ router.post('/bots/:id/delete', (req, res) => {
   db.deleteBot(bot.id);
   db.auditLog('bot_deleted', user.id, `Bot @${bot.username}`);
   res.redirect('/settings/bots');
+});
+
+// ---------- Drive storage backend (per-user Nextcloud) ----------
+function driveSettingsState(user, extra = {}) {
+  const connection = db.getUserNextcloud(user.id);
+  return Object.assign({
+    connection: connection ? {
+      baseUrl: connection.base_url,
+      username: connection.username,
+      verifiedAt: connection.verified_at,
+      enabled: !!connection.enabled,
+    } : null,
+    usage: drive.quotaState(user.id),
+    fmt: drive.fmt,
+    error: null,
+    notice: null,
+  }, extra);
+}
+
+router.get('/drive', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.redirect('/login');
+  res.render('settings-drive', driveSettingsState(user, { notice: req.query.notice || null }));
+});
+
+router.post('/drive', async (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.redirect('/login');
+  const existing = db.getUserNextcloud(user.id);
+  const fail = (msg) => res.render('settings-drive', driveSettingsState(user, { error: msg }));
+
+  const normalized = nextcloud.normalizeBaseUrl(req.body.base_url);
+  if (!normalized.ok) return fail(normalized.error);
+
+  const username = String(req.body.username || '').trim();
+  if (!username || username.length > 255) {
+    return fail('Enter the Nextcloud username that owns the app password.');
+  }
+  // An empty password field keeps the stored one, like the SMTP password in the
+  // admin panel: editing the URL should not force a re-type.
+  const supplied = String(req.body.app_password || '');
+  const appPassword = supplied || (existing ? existing.app_password : '');
+  if (!appPassword) {
+    return fail('Enter a Nextcloud app password (Settings → Security → Devices & sessions in Nextcloud).');
+  }
+  if (appPassword.length > 512) return fail('That app password is too long.');
+
+  const cfg = { base_url: normalized.baseUrl, username, app_password: appPassword };
+  const check = await nextcloud.probe(cfg);
+  if (!check.ok) return fail(check.error);
+  try {
+    await nextcloud.ensureDir(cfg);
+  } catch (err) {
+    return fail('Connected, but the "' + nextcloud.FOLDER + '" folder could not be created: ' + nextcloud.errorMessage(err) + '.');
+  }
+
+  db.setUserNextcloud(user.id, { baseUrl: normalized.baseUrl, username, appPassword });
+  nextcloud.resetDirCache();
+  db.auditLog('drive_backend_connected', user.id, normalized.baseUrl);
+  res.render('settings-drive', driveSettingsState(db.getUserById(user.id), {
+    notice: 'Connected. New Drive uploads now go to your Nextcloud, and the Drive size limit no longer applies.',
+  }));
+});
+
+router.post('/drive/pause', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.redirect('/login');
+  db.setUserNextcloudEnabled(user.id, false);
+  nextcloud.resetDirCache();
+  db.auditLog('drive_backend_paused', user.id, '');
+  res.redirect('/settings/drive?notice=' + encodeURIComponent('Paused. New uploads stay on this server; files already in your Nextcloud can still be opened and deleted.'));
+});
+
+router.post('/drive/resume', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.redirect('/login');
+  if (!db.getUserNextcloud(user.id)) {
+    return res.redirect('/settings/drive?notice=' + encodeURIComponent('No saved connection to resume — connect again below.'));
+  }
+  db.setUserNextcloudEnabled(user.id, true);
+  nextcloud.resetDirCache();
+  db.auditLog('drive_backend_resumed', user.id, '');
+  res.redirect('/settings/drive?notice=' + encodeURIComponent('Resumed. New uploads go to your Nextcloud again.'));
+});
+
+router.post('/drive/disconnect', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.redirect('/login');
+  db.deleteUserNextcloud(user.id);
+  nextcloud.resetDirCache();
+  db.auditLog('drive_backend_disconnected', user.id, '');
+  res.redirect('/settings/drive?notice=' + encodeURIComponent('Connection removed. Files already in your Nextcloud stay there, but their Drive links stop working until you reconnect.'));
 });
 
 module.exports = router;

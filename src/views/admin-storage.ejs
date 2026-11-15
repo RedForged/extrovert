@@ -35,6 +35,7 @@
     <p class="muted" style="font-size:0.85rem;margin:-4px 0 12px">
       <strong><%= fmt(total.bytes) %></strong> stored across <%= total.files %> file<%= total.files === 1 ? '' : 's' %>
       and <%= userCount %> account<%= userCount === 1 ? '' : 's' %><%= quota && userCount ? ' — ' + Math.round(((total.bytes / userCount) / quota) * 100) + '% of the per-user quota on average' : '' %>.
+      Files users keep in their own Nextcloud are not counted here — they never touch this server's disk.
     </p>
     <% if (consumers.length === 0) { %>
       <p class="muted">No files stored yet.</p>

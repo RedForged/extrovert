@@ -30,6 +30,7 @@ function describe(file) {
     mime: file.mime,
     size: file.size,
     created_at: file.created_at,
+    backend: file.backend || 'local',
     url,
     owned,
     usedByPost: owned ? db.countPostsUsingMedia(url) : 0,
@@ -46,7 +47,7 @@ router.get('/', (req, res) => {
   res.render('drive', {
     usage,
     files,
-    usedPercent: usage.quota ? Math.min(100, Math.round((usage.used / usage.quota) * 100)) : 0,
+    usedPercent: usage.unlimited || !usage.quota ? 0 : Math.min(100, Math.round((usage.localUsed / usage.quota) * 100)),
     fmt: drive.fmt,
   });
 });
@@ -61,20 +62,28 @@ router.get('/usage', (req, res) => {
 // Multipart bodies can't be CSRF-checked by the global middleware (it runs
 // before multer), so this route validates the token itself — same as the other
 // multipart endpoints.
-router.post('/upload', drive.quotaGuard(), drive.single('file'), (req, res) => {
+router.post('/upload', drive.quotaGuard({ remote: true }), drive.single('file'), async (req, res) => {
   const user = res.locals.currentUser;
   if (!csrfOk(req)) {
     drive.discardUpload(req);
     return res.status(403).send('CSRF validation failed');
   }
   const sealed = String(req.query.sealed || '') === '1';
-  const result = drive.acceptUpload(req, res, { kind: sealed ? 'chat' : 'drive', sealed, userId: user.id });
+  const result = await drive.acceptUpload(req, res, { kind: sealed ? 'chat' : 'drive', sealed, userId: user.id });
   if (!result.ok) {
     if (result.exceeded) return drive.rejectFull(req, res, result.state);
+    if (result.storageFailed) return res.status(502).send(result.message);
     return res.status(400).send('No file was uploaded.');
   }
   if (drive.wantsJson(req)) {
-    return res.json({ url: result.url, size: result.size, used: result.used, quota: result.quota, sealed });
+    return res.json({
+      url: result.url,
+      size: result.size,
+      used: result.used,
+      quota: result.quota,
+      backend: result.backend,
+      sealed,
+    });
   }
   res.redirect('/drive');
 });

@@ -31,6 +31,7 @@ const {
   saveMlsBackup,
   getMlsBackup,
   isRoomMember,
+  hasRoomPermission,
   areMutualFollowers,
   getRoomsForUser,
   getHistoricalDmMessagesForMigration,
@@ -389,6 +390,12 @@ router.post('/groups/init', requireAuth, (req, res) => {
   const user = res.locals.currentUser;
   const { group_id, initial_commit, welcomes, members, device_id, idempotency_key, reset_existing, expected_epoch } = req.body || {};
   if (!group_id) return res.status(400).json({ error: 'group_id is required' });
+  const wantsReset = reset_existing === true || reset_existing === 'true';
+  const expectedEpoch = Number(expected_epoch);
+  if (wantsReset && (expected_epoch === undefined || expected_epoch === null || expected_epoch === ''
+      || !Number.isInteger(expectedEpoch) || expectedEpoch < 0)) {
+    return res.status(400).json({ error: 'expected_epoch is required when reset_existing is true' });
+  }
 
   // Authorization: for DMs (dm:uid1_uid2), caller must be one of the participants
   if (group_id.startsWith('dm:')) {
@@ -411,15 +418,24 @@ router.post('/groups/init', requireAuth, (req, res) => {
 
   const initialMembers = Array.isArray(members) && members.length ? members : (device_id ? [{ user_id: user.id, device_id, leaf_index: 0, role: 'creator' }] : []);
 
-  const runInit = () => initMlsGroup(group_id, 0, initialMembers, initial_commit || null, welcomes || [], idempotency_key || null);
+  const runInit = () => initMlsGroup(group_id, 0, initialMembers, initial_commit || null, welcomes || [], idempotency_key || null, user.id);
 
   try {
     const response = runInit();
     res.status(201).json(response);
   } catch (err) {
     if (err.code === 'GROUP_EXISTS') {
-      const staleMatch = expected_epoch === undefined || expected_epoch === null || Number(expected_epoch) === err.epoch;
-      if (reset_existing && staleMatch) {
+      const staleMatch = expectedEpoch === err.epoch;
+      if (wantsReset && staleMatch) {
+        const existing = getMlsGroup(group_id);
+        if (group_id.startsWith('room:')) {
+          const roomId = parseInt(group_id.slice(5), 10);
+          if (!user.is_admin && !hasRoomPermission(roomId, user.id, 64)) {
+            return res.status(403).json({ error: 'Room-management permission is required to reset this group' });
+          }
+        } else if (!existing || Number(existing.creator_id) !== Number(user.id)) {
+          return res.status(403).json({ error: 'Only the DM group creator may reset it' });
+        }
         try {
           resetMlsGroup(group_id, err.epoch);
           const response = runInit();

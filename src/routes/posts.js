@@ -24,7 +24,7 @@ function back(req, fallback = '/') {
 }
 
 // Create a post (text / photo / video).
-router.post('/', drive.quotaGuard(), drive.single('media'), (req, res) => {
+router.post('/', drive.quotaGuard({ remote: true }), drive.single('media'), async (req, res) => {
   const user = res.locals.currentUser;
   if (!user) return res.redirect('/login');
   const { requireVerifiedEmail: gate } = require('../db');
@@ -38,30 +38,39 @@ router.post('/', drive.quotaGuard(), drive.single('media'), (req, res) => {
   const body = String(req.body.body || '').trim();
 
   let mediaPath = null;
+  let storedMedia = null;
   if ((type === 'photo' || type === 'video') && req.file) {
     // Post media is public, so it is stored as-is (never sealed). Any file the
     // Drive accepts can ride along; the feed renders images/video inline and
     // everything else as a download.
-    const stored = drive.acceptUpload(req, res, { kind: 'post', userId: user.id });
+    const stored = await drive.acceptUpload(req, res, { kind: 'post', userId: user.id });
     if (!stored.ok) {
       if (stored.exceeded) return drive.rejectFull(req, res, stored.state);
+      if (stored.storageFailed) return res.status(502).send(stored.message);
       return res.redirect(back(req, '/compose'));
     }
     mediaPath = stored.url;
+    storedMedia = stored;
   } else if (req.file) {
     // A file was sent for a post type that doesn't carry one.
     drive.discardUpload(req);
   }
 
   let postId = null;
-  if (type === 'text') {
-    if (!body) return res.redirect(back(req, '/compose'));
-    postId = createPost({ userId: user.id, type: 'text', body });
-  } else if (type === 'photo' && mediaPath) {
-    postId = createPost({ userId: user.id, type: 'photo', body, mediaPath });
-  } else if (type === 'video' && mediaPath) {
-    postId = createPost({ userId: user.id, type: 'video', body, mediaPath });
-  } else {
+  try {
+    if (type === 'text') {
+      if (!body) return res.redirect(back(req, '/compose'));
+      postId = createPost({ userId: user.id, type: 'text', body });
+    } else if (type === 'photo' && mediaPath) {
+      postId = createPost({ userId: user.id, type: 'photo', body, mediaPath });
+    } else if (type === 'video' && mediaPath) {
+      postId = createPost({ userId: user.id, type: 'video', body, mediaPath });
+    } else {
+      return res.redirect(back(req, '/compose'));
+    }
+  } catch (err) {
+    if (storedMedia) removeStoredFile('drive', storedMedia.name);
+    console.error('post upload: createPost failed', err);
     return res.redirect(back(req, '/compose'));
   }
   notifyMentions(body, user.id, postId);

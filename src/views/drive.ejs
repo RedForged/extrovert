@@ -2,22 +2,34 @@
   <div class="card">
     <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap">
       <h2 style="margin:0">Drive</h2>
-      <small class="muted"><%= fmt(usage.used) %> of <%= fmt(usage.quota) %> used</small>
+      <small class="muted">
+        <% if (usage.unlimited) { %><%= fmt(usage.used) %> stored on your Nextcloud<% } else { %><%= fmt(usage.localUsed) %> of <%= fmt(usage.quota) %> used<% } %>
+      </small>
     </div>
-    <div class="usage-bar" role="progressbar" aria-valuenow="<%= usedPercent %>" aria-valuemin="0" aria-valuemax="100">
-      <span style="width:<%= usedPercent %>%"></span>
-    </div>
-    <% if (usage.used > usage.quota) { %>
-      <p class="muted" style="margin:8px 0 0">You're over your quota. Delete something to upload again.</p>
+    <% if (!usage.unlimited) { %>
+      <div class="usage-bar" role="progressbar" aria-valuenow="<%= usedPercent %>" aria-valuemin="0" aria-valuemax="100">
+        <span style="width:<%= usedPercent %>%"></span>
+      </div>
+      <% if (usage.localUsed > usage.quota) { %>
+        <p class="muted" style="margin:8px 0 0">You're over your quota. Delete something to upload again.</p>
+      <% } %>
+      <p class="muted" style="margin:8px 0 0;font-size:var(--fs-xs)">
+        <a href="/settings/drive">Store new uploads in your own Nextcloud instead</a> — no size limit.
+      </p>
+    <% } else { %>
+      <p class="muted" style="margin:8px 0 0">
+        Uploads go to your own Nextcloud, so there is no size limit.
+        <a href="/settings/drive">Manage storage</a>.
+      </p>
     <% } %>
 
     <form method="post" action="/drive/upload" enctype="multipart/form-data" id="driveUpload"
-          data-remaining="<%= usage.remaining %>" style="margin-top:18px">
+          <% if (!usage.unlimited) { %>data-remaining="<%= usage.remaining %>"<% } %> style="margin-top:18px">
       <input type="hidden" name="_csrf" value="<%= csrfToken %>">
       <label for="drive-file">Upload a file</label>
       <input type="file" name="file" id="drive-file" required>
       <small class="muted" style="display:block;margin-top:6px">
-        No per-file limit — the only limit is your remaining space (<%= fmt(usage.remaining) %>).
+        <% if (usage.unlimited) { %>No size limit — the file is uploaded to your Nextcloud.<% } else { %>No per-file limit — the only limit is your remaining space (<%= fmt(usage.remaining) %>).<% } %>
       </small>
       <p class="drive-warn" id="driveWarn" hidden></p>
       <button class="btn" style="margin-top:12px"><%- include('partials/icon', { name: 'plus', size: 15 }) %> Upload</button>
@@ -38,7 +50,7 @@
           <div class="drive-row-main">
             <strong><%= f.sealed ? 'Chat attachment' : (f.name || (f.kind + ' file')) %></strong>
             <small class="muted">
-              <%= fmt(f.size) %> · <%= f.kind %><%= f.sealed ? ' · sealed' : '' %> · <%= locals.relTime(f.created_at) %>
+              <%= fmt(f.size) %> · <%= f.kind %><%= f.sealed ? ' · sealed' : '' %><%= f.backend === 'nextcloud' ? ' · Nextcloud' : '' %> · <%= locals.relTime(f.created_at) %>
             </small>
           </div>
           <div class="drive-row-actions">

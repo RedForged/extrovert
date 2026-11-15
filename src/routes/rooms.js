@@ -8,7 +8,7 @@ const {
   isRoomMember, addRoomMember, removeRoomMember, getRoomMembers, getUserRoomRole, countRoomMembers,
   createRoomRole, getRoomRole, getRoomRoles, updateRoomRole, deleteRoomRole, transferFounder,
   createRoomChannel, getRoomChannel, getRoomChannels, updateRoomChannel, deleteRoomChannel,
-  getRoomMessages, sendRoomMessage, joinDefaultRole, hasRoomPermission, roomPermissionsFor, canViewRoomChannel, getUserById, getUserByUsername, db,
+  getRoomMessages, sendRoomMessage, joinDefaultRole, hasRoomPermission, roomPermissionsFor, canViewRoom, canViewRoomChannel, getUserById, getUserByUsername, db,
   createContentReport,
   createJoinRequest, getJoinRequests, getJoinRequestById, approveJoinRequest, rejectJoinRequest, hasPendingRequest,
   publishRoomGroupSession, getRoomGroupSession, isRoomGroupSessionUsable, saveRoomSessionKeys, ensureRoomSessionRecipient, getPendingRoomSessionKeys, getRoomSessionKeyById, markRoomSessionKeyDelivered, getRoomSessionRecipients, getRoomSessionEmptyKeyRecipients,
@@ -21,11 +21,17 @@ const ROOM_BODY_MAX = 20000;
 
 const router = express.Router();
 
-// Native clients (OAuth Bearer) use the same E2EE routes as the web app.
-const { bearerOrSession, requireDirectScope } = require('../bearer-auth');
+// Native clients (OAuth Bearer) use the same routes as the web app. Scopes are
+// route-specific: room administration needs `write`, encrypted message/key
+// operations need `write:direct`, and reads need `read:direct`.
+const { bearerOrSession, requireBearerScope } = require('../bearer-auth');
 const { broadcastGatewayEvent } = require('../webrtc-signaling');
 router.use(bearerOrSession);
-router.use(requireDirectScope);
+
+const readScope = requireBearerScope('read');
+const readDirect = requireBearerScope('read:direct');
+const writeDirect = requireBearerScope('write:direct');
+const writeScope = requireBearerScope('write');
 
 const { getVoiceChannelMembers, pushRoomSessionKeyToRecipient, updateUserRoomSubscriptions, removeFromVoiceChannels } = require('../webrtc-signaling');
 
@@ -36,21 +42,22 @@ function checkPerm(roomId, userId, perm) {
 }
 
 // List rooms
-router.get('/', (req, res) => {
+router.get('/', readScope, (req, res) => {
   if (!res.locals.currentUser) return res.redirect('/login');
-  const myRooms = getRoomsForUser(res.locals.currentUser.id);
+  const myRooms = getRoomsForUser(res.locals.currentUser.id)
+    .filter(room => canViewRoom(room.id, res.locals.currentUser.id));
   const available = getAvailableRooms(res.locals.currentUser.id);
   res.render('rooms/index', { myRooms, available });
 });
 
 // Create room form
-router.get('/create', (req, res) => {
+router.get('/create', writeScope, (req, res) => {
   if (!res.locals.currentUser) return res.redirect('/login');
   res.render('rooms/create');
 });
 
 // Create room
-router.post('/create', (req, res) => {
+router.post('/create', writeScope, (req, res) => {
   if (!res.locals.currentUser) return res.redirect('/login');
   const { requireVerifiedEmail: gate } = require('../db');
   if (gate(res.locals.currentUser)) return res.status(403).send('Your email address must be verified before you can create rooms.');
@@ -63,7 +70,7 @@ router.post('/create', (req, res) => {
 });
 
 // View room
-router.get('/:id', (req, res) => {
+router.get('/:id', readScope, (req, res) => {
   if (!res.locals.currentUser) return res.redirect('/login');
   const room = getRoom(Number(req.params.id));
   if (!room) return res.status(404).render('404', { thing: 'room' });
@@ -80,17 +87,12 @@ router.get('/:id', (req, res) => {
     const pending = hasPendingRequest(room.id, userId);
     return res.render('rooms/room-info', { room, members, roles, channels, isAdmin, pending });
   }
+  if (!canViewRoom(room.id, userId)) return res.status(403).send('No permission to view this room');
 
   let role, channels;
   if (isMember) {
     role = getUserRoomRole(room.id, userId);
-    channels = getRoomChannels(room.id).filter(ch => {
-      if (!ch.view_role_ids) return true;
-      try {
-        const viewRoles = JSON.parse(ch.view_role_ids);
-        return Array.isArray(viewRoles) && viewRoles.includes(role.id);
-      } catch { return true; }
-    });
+    channels = getRoomChannels(room.id).filter(ch => canViewRoomChannel(ch.id, userId));
   } else {
     role = null;
     channels = getRoomChannels(room.id);
@@ -100,7 +102,9 @@ router.get('/:id', (req, res) => {
 
   const firstChannel = channels[0];
   let messages = [];
-  if (firstChannel) messages = getRoomMessages(firstChannel.id);
+  const directReadAllowed = res.locals.bearerScopes === undefined
+    || String(res.locals.bearerScopes).split(/\s+/).includes('read:direct');
+  if (firstChannel && directReadAllowed) messages = getRoomMessages(firstChannel.id);
 
   const voiceChannelMembers = {};
   channels.forEach(ch => {
@@ -111,7 +115,7 @@ router.get('/:id', (req, res) => {
 });
 
 // Join room
-router.post('/:id/join', (req, res) => {
+router.post('/:id/join', writeScope, (req, res) => {
   if (!res.locals.currentUser) return res.redirect('/login');
   const room = getRoom(Number(req.params.id));
   if (!room) return res.status(404).send('Room not found');
@@ -124,7 +128,7 @@ router.post('/:id/join', (req, res) => {
 });
 
 // Leave room
-router.post('/:id/leave', (req, res) => {
+router.post('/:id/leave', writeScope, (req, res) => {
   if (!res.locals.currentUser) return res.redirect('/login');
   const room = getRoom(Number(req.params.id));
   if (!room) return res.status(404).send('Room not found');
@@ -146,7 +150,7 @@ router.post('/:id/leave', (req, res) => {
 
 // --- Settings ---
 
-router.get('/:id/settings', (req, res) => {
+router.get('/:id/settings', writeScope, (req, res) => {
   if (!res.locals.currentUser) return res.redirect('/login');
   const room = getRoom(Number(req.params.id));
   if (!room) return res.status(404).render('404', { thing: 'room' });
@@ -155,7 +159,7 @@ router.get('/:id/settings', (req, res) => {
   res.render('rooms/settings', { room });
 });
 
-router.post('/:id/settings', (req, res) => {
+router.post('/:id/settings', writeScope, (req, res) => {
   if (!res.locals.currentUser) return res.redirect('/login');
   const room = getRoom(Number(req.params.id));
   if (!room) return res.status(404).send('Room not found');
@@ -171,7 +175,7 @@ router.post('/:id/settings', (req, res) => {
   res.redirect('/rooms/' + room.id);
 });
 
-router.post('/:id/delete', (req, res) => {
+router.post('/:id/delete', writeScope, (req, res) => {
   if (!res.locals.currentUser) return res.redirect('/login');
   const room = getRoom(Number(req.params.id));
   if (!room) return res.status(404).send('Room not found');
@@ -188,17 +192,18 @@ router.post('/:id/delete', (req, res) => {
 
 // --- Channels ---
 
-router.get('/:id/channels', (req, res) => {
+router.get('/:id/channels', writeScope, (req, res) => {
   if (!res.locals.currentUser) return res.redirect('/login');
   const room = getRoom(Number(req.params.id));
   if (!room) return res.status(404).render('404', { thing: 'room' });
+  if (!canViewRoom(room.id, res.locals.currentUser.id)) return res.status(403).send('No permission');
   if (!checkPerm(room.id, res.locals.currentUser.id, PERM.MANAGE_CHANNELS)) return res.status(403).send('No permission');
   const channels = getRoomChannels(room.id);
   const roles = getRoomRoles(room.id);
   res.render('rooms/channels', { room, channels, roles });
 });
 
-router.post('/:id/channels/create', (req, res) => {
+router.post('/:id/channels/create', writeScope, (req, res) => {
   if (!res.locals.currentUser) return res.redirect('/login');
   const room = getRoom(Number(req.params.id));
   if (!room) return res.status(404).send('Room not found');
@@ -217,7 +222,7 @@ router.post('/:id/channels/create', (req, res) => {
   res.redirect('/rooms/' + room.id + '/channels');
 });
 
-router.post('/:id/channels/:cid/delete', (req, res) => {
+router.post('/:id/channels/:cid/delete', writeScope, (req, res) => {
   if (!res.locals.currentUser) return res.redirect('/login');
   const room = getRoom(Number(req.params.id));
   if (!room) return res.status(404).send('Room not found');
@@ -232,7 +237,7 @@ router.post('/:id/channels/:cid/delete', (req, res) => {
 
 // --- Roles ---
 
-router.get('/:id/roles', (req, res) => {
+router.get('/:id/roles', writeScope, (req, res) => {
   if (!res.locals.currentUser) return res.redirect('/login');
   const room = getRoom(Number(req.params.id));
   if (!room) return res.status(404).render('404', { thing: 'room' });
@@ -241,7 +246,7 @@ router.get('/:id/roles', (req, res) => {
   res.render('rooms/roles', { room, roles });
 });
 
-router.post('/:id/roles/create', (req, res) => {
+router.post('/:id/roles/create', writeScope, (req, res) => {
   if (!res.locals.currentUser) return res.redirect('/login');
   const room = getRoom(Number(req.params.id));
   if (!room) return res.status(404).send('Room not found');
@@ -263,7 +268,7 @@ router.post('/:id/roles/create', (req, res) => {
   res.redirect('/rooms/' + room.id + '/roles');
 });
 
-router.post('/:id/roles/:rid/update', (req, res) => {
+router.post('/:id/roles/:rid/update', writeScope, (req, res) => {
   if (!res.locals.currentUser) return res.redirect('/login');
   const room = getRoom(Number(req.params.id));
   if (!room) return res.status(404).send('Room not found');
@@ -286,7 +291,7 @@ router.post('/:id/roles/:rid/update', (req, res) => {
   res.redirect('/rooms/' + room.id + '/roles');
 });
 
-router.post('/:id/roles/:rid/delete', (req, res) => {
+router.post('/:id/roles/:rid/delete', writeScope, (req, res) => {
   if (!res.locals.currentUser) return res.redirect('/login');
   const room = getRoom(Number(req.params.id));
   if (!room) return res.status(404).send('Room not found');
@@ -294,16 +299,19 @@ router.post('/:id/roles/:rid/delete', (req, res) => {
   // The role must belong to THIS room.
   const role = getRoomRole(Number(req.params.rid));
   if (!role || role.room_id !== room.id) return res.status(404).send('Role not found');
-  if (!deleteRoomRole(role.id)) return res.status(400).send('Cannot delete founder role');
+  if (!deleteRoomRole(role.id)) {
+    return res.status(400).send('Cannot delete the founder/default role, or a role still assigned to members');
+  }
   res.redirect('/rooms/' + room.id + '/roles');
 });
 
 // --- Members ---
 
-router.get('/:id/members', (req, res) => {
+router.get('/:id/members', writeScope, (req, res) => {
   if (!res.locals.currentUser) return res.redirect('/login');
   const room = getRoom(Number(req.params.id));
   if (!room) return res.status(404).render('404', { thing: 'room' });
+  if (!canViewRoom(room.id, res.locals.currentUser.id)) return res.status(403).send('No permission');
   if (!checkPerm(room.id, res.locals.currentUser.id, PERM.MANAGE_MEMBERS)) return res.status(403).send('No permission');
   const members = getRoomMembers(room.id);
   const roles = getRoomRoles(room.id);
@@ -311,7 +319,7 @@ router.get('/:id/members', (req, res) => {
   res.render('rooms/members', { room, members, roles, requests });
 });
 
-router.post('/:id/members/:uid/setrole', (req, res) => {
+router.post('/:id/members/:uid/setrole', writeScope, (req, res) => {
   if (!res.locals.currentUser) return res.redirect('/login');
   const room = getRoom(Number(req.params.id));
   if (!room) return res.status(404).send('Room not found');
@@ -329,7 +337,7 @@ router.post('/:id/members/:uid/setrole', (req, res) => {
   res.redirect('/rooms/' + room.id + '/members');
 });
 
-router.post('/:id/members/:uid/kick', (req, res) => {
+router.post('/:id/members/:uid/kick', writeScope, (req, res) => {
   if (!res.locals.currentUser) return res.redirect('/login');
   const room = getRoom(Number(req.params.id));
   if (!room) return res.status(404).send('Room not found');
@@ -346,7 +354,7 @@ router.post('/:id/members/:uid/kick', (req, res) => {
 });
 
 // Transfer founder
-router.post('/:id/transfer', (req, res) => {
+router.post('/:id/transfer', writeScope, (req, res) => {
   if (!res.locals.currentUser) return res.redirect('/login');
   const room = getRoom(Number(req.params.id));
   if (!room) return res.status(404).send('Room not found');
@@ -364,20 +372,15 @@ router.post('/:id/transfer', (req, res) => {
 
 // --- Messages (AJAX) ---
 
-router.get('/:id/channels/:cid/messages', (req, res) => {
+router.get('/:id/channels/:cid/messages', readDirect, (req, res) => {
   if (!res.locals.currentUser) return res.json([]);
   const room = getRoom(Number(req.params.id));
   if (!room) return res.json([]);
-  if (!isRoomMember(room.id, res.locals.currentUser.id)) return res.json([]);
+  if (!canViewRoom(room.id, res.locals.currentUser.id)) return res.json([]);
   const channel = getRoomChannel(Number(req.params.cid));
   if (!channel || channel.room_id !== room.id) return res.json([]);
+  if (!canViewRoomChannel(channel.id, res.locals.currentUser.id)) return res.json([]);
   const role = getUserRoomRole(room.id, res.locals.currentUser.id);
-  if (channel.view_role_ids) {
-    try {
-      const viewRoles = JSON.parse(channel.view_role_ids);
-      if (Array.isArray(viewRoles) && !viewRoles.includes(role.id)) return res.json([]);
-    } catch {}
-  }
   const before = req.query.before ? Number(req.query.before) : null;
   const messages = getRoomMessages(channel.id, before);
   const roles = getRoomRoles(room.id);
@@ -391,7 +394,7 @@ router.get('/:id/channels/:cid/messages', (req, res) => {
   res.json({ messages, roles, roleMap, canDelete });
 });
 
-router.post('/:id/channels/:cid/send', (req, res) => {
+router.post('/:id/channels/:cid/send', writeDirect, (req, res) => {
   if (!res.locals.currentUser) return res.status(401).json({ error: 'Not logged in' });
   const { requireVerifiedEmail: gate } = require('../db');
   if (gate(res.locals.currentUser)) return res.status(403).json({ error: 'email_unverified' });
@@ -443,7 +446,7 @@ router.post('/:id/channels/:cid/send', (req, res) => {
 });
 
 // Delete a message
-router.post('/:id/channels/:cid/messages/:mid/delete', (req, res) => {
+router.post('/:id/channels/:cid/messages/:mid/delete', writeDirect, (req, res) => {
   if (!res.locals.currentUser) return res.status(401).json({ error: 'Not logged in' });
   const room = getRoom(Number(req.params.id));
   if (!room) return res.status(404).json({ error: 'Room not found' });
@@ -469,7 +472,7 @@ router.post('/:id/channels/:cid/messages/:mid/delete', (req, res) => {
 });
 
 // Edit a message
-router.post('/:id/channels/:cid/messages/:mid/edit', (req, res) => {
+router.post('/:id/channels/:cid/messages/:mid/edit', writeDirect, (req, res) => {
   if (!res.locals.currentUser) return res.status(401).json({ error: 'Not logged in' });
   const room = getRoom(Number(req.params.id));
   if (!room) return res.status(404).json({ error: 'Room not found' });
@@ -510,7 +513,7 @@ router.post('/:id/channels/:cid/messages/:mid/edit', (req, res) => {
 });
 
 // Report a message
-router.post('/:id/channels/:cid/report', (req, res) => {
+router.post('/:id/channels/:cid/report', writeScope, (req, res) => {
   if (!res.locals.currentUser) return res.status(401).json({ error: 'Not logged in' });
   const room = getRoom(Number(req.params.id));
   if (!room) return res.status(404).json({ error: 'Room not found' });
@@ -538,7 +541,7 @@ router.post('/:id/channels/:cid/report', (req, res) => {
 });
 
 // Request to join private room
-router.post('/:id/request', (req, res) => {
+router.post('/:id/request', writeScope, (req, res) => {
   if (!res.locals.currentUser) return res.redirect('/login');
   const room = getRoom(Number(req.params.id));
   if (!room || room.is_public) return res.status(404).send('Room not found');
@@ -549,7 +552,7 @@ router.post('/:id/request', (req, res) => {
 });
 
 // Approve join request
-router.post('/:id/requests/:rid/approve', (req, res) => {
+router.post('/:id/requests/:rid/approve', writeScope, (req, res) => {
   if (!res.locals.currentUser) return res.redirect('/login');
   const room = getRoom(Number(req.params.id));
   if (!room) return res.status(404).send('Room not found');
@@ -561,7 +564,7 @@ router.post('/:id/requests/:rid/approve', (req, res) => {
 });
 
 // Reject join request
-router.post('/:id/requests/:rid/reject', (req, res) => {
+router.post('/:id/requests/:rid/reject', writeScope, (req, res) => {
   if (!res.locals.currentUser) return res.redirect('/login');
   const room = getRoom(Number(req.params.id));
   if (!room) return res.status(404).send('Room not found');
@@ -573,7 +576,7 @@ router.post('/:id/requests/:rid/reject', (req, res) => {
 });
 
 // Invite user to private room
-router.post('/:id/invite', (req, res) => {
+router.post('/:id/invite', writeScope, (req, res) => {
   if (!res.locals.currentUser) return res.redirect('/login');
   const room = getRoom(Number(req.params.id));
   if (!room) return res.status(404).send('Room not found');

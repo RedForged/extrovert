@@ -80,11 +80,18 @@
     <hr>
     <h4>Storage</h4>
     <p style="font-size:0.85rem;color:var(--text-muted);margin:-4px 0 10px">Everything you upload — chat attachments, post media, stickers and avatars — is kept in your Drive.</p>
-    <div class="usage-bar" role="progressbar" aria-valuenow="<%= usedPercent %>" aria-valuemin="0" aria-valuemax="100"><span style="width:<%= usedPercent %>%"></span></div>
-    <p class="muted" style="font-size:0.8rem;margin:8px 0 10px">
-      <%= fmt(usage.used) %> of <%= fmt(usage.quota) %> used<%= usage.used > usage.quota ? ' — over quota, delete something to upload again' : '' %>
-    </p>
-    <a class="btn ghost full" href="/drive" style="margin-bottom:12px"><%- include('partials/icon', { name: 'image', size: 15 }) %> Open your Drive</a>
+    <% if (!usage.unlimited) { %>
+      <div class="usage-bar" role="progressbar" aria-valuenow="<%= usedPercent %>" aria-valuemin="0" aria-valuemax="100"><span style="width:<%= usedPercent %>%"></span></div>
+      <p class="muted" style="font-size:0.8rem;margin:8px 0 10px">
+        <%= fmt(usage.localUsed) %> of <%= fmt(usage.quota) %> used<%= usage.localUsed > usage.quota ? ' — over quota, delete something to upload again' : '' %>
+      </p>
+    <% } else { %>
+      <p class="muted" style="font-size:0.8rem;margin:8px 0 10px">
+        <%= fmt(usage.used) %> stored — files go to your own Nextcloud, so there is no size limit.
+      </p>
+    <% } %>
+    <a class="btn ghost full" href="/drive" style="margin-bottom:8px"><%- include('partials/icon', { name: 'image', size: 15 }) %> Open your Drive</a>
+    <a class="btn ghost full" href="/settings/drive" style="margin-bottom:12px"><%- include('partials/icon', { name: 'cloud', size: 15 }) %> <%= usage.unlimited ? 'Nextcloud storage' : 'Connect a Nextcloud' %></a>
     <hr>
     <a class="btn ghost full" href="/settings/security" style="margin-bottom:8px"><%- include('partials/icon', { name: 'lock', size: 15 }) %> Security — 2FA &amp; passkeys</a>
     <a class="btn ghost full" href="/settings/bots" style="margin-bottom:8px"><%- include('partials/icon', { name: 'bot', size: 15 }) %> Bots — create &amp; manage your bots</a>

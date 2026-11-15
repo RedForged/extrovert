@@ -146,7 +146,7 @@ function resolveConfig(stored) {
     // the recipient's MX. E.g. EXTV_MAIL_RELAY=127.0.0.1:2525 → the catcher.
     relay: pick(s, 'relay', 'EXTV_MAIL_RELAY', '') || null,
     // Credentials for a relay that requires authentication.
-    smtpUsername: pick(s, 'smtp_username', 'EXTV_MAIL_USERNAME', ''),
+    smtpUsername: String(pick(s, 'smtp_username', 'EXTV_MAIL_USERNAME', '') || '').trim(),
     smtpPassword: pick(s, 'smtp_password', 'EXTV_MAIL_PASSWORD', ''),
     timeoutMs: num(pick(s, 'timeout_ms', 'EXTV_MAIL_TIMEOUT_MS', ENV_DEFAULTS.timeoutMs), ENV_DEFAULTS.timeoutMs),
     maxAttempts: num(pick(s, 'max_attempts', 'EXTV_MAIL_MAX_ATTEMPTS', ENV_DEFAULTS.maxAttempts), ENV_DEFAULTS.maxAttempts),
@@ -557,15 +557,29 @@ async function smtpAuth(socket, username, password, timeoutMs) {
 
 // Upgrade an existing connection to TLS (STARTTLS, RFC 3207). After this the
 // caller must switch to the returned TLSSocket — it is a drop-in Duplex.
-function upgradeToTls(rawSocket, host, timeoutMs, { required }) {
+function upgradeToTls(rawSocket, host, timeoutMs, { required, verify = false }) {
   return new Promise((resolve, reject) => {
     // servername must be a DNS name — Node forbids IP literals there.
     const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(':');
     const opts = {
       socket: rawSocket,
-      rejectUnauthorized: false, // opportunistic — we still verify nothing; see docs
+      // Opportunistic TLS for direct-to-MX is encryption against passive
+      // observers only. Authenticated relay delivery always takes the verified
+      // branch below and never sends credentials over an unverified channel.
+      rejectUnauthorized: verify,
     };
     if (!isIp) opts.servername = host;
+    if (opts.rejectUnauthorized) {
+      opts.minVersion = 'TLSv1.2';
+      const extraCa = String(process.env.EXTV_MAIL_TLS_CA || '').trim();
+      if (extraCa) {
+        try { opts.ca = fs.readFileSync(extraCa); }
+        catch (err) {
+          reject(new SmtpError('Could not read EXTV_MAIL_TLS_CA: ' + err.message));
+          return;
+        }
+      }
+    }
     const tlsSocket = tls.connect(opts);
     const timer = setTimeout(() => {
       tlsSocket.destroy();
@@ -602,7 +616,9 @@ async function pinPublicAddress(host) {
 }
 
 // One full message delivery to a single host:port (the MX or relay).
-async function deliverToHost({ host, connectHost, port, to, message, messageId, heloName }) {
+async function deliverToHost({ host, connectHost, port, to, message, messageId, heloName, trustedRelay }) {
+  const authenticatedRelay = !!(trustedRelay && CFG.smtpUsername);
+  const mustUseTls = authenticatedRelay || CFG.starttls === 'required';
   const rawSocket = net.connect({ host: connectHost || host, port });
   // Idle-timeout the raw socket so a stalled peer can't hold it open forever
   // (per-command deadlines in smtpCommand/smtpExchange already bound the
@@ -619,7 +635,7 @@ async function deliverToHost({ host, connectHost, port, to, message, messageId, 
     await smtpCommand(sock, 'EHLO ' + heloName, [250], timeoutMs);
 
     // STARTTLS (RFC 3207) — opportunistic by default.
-    if (CFG.starttls !== 'off') {
+    if (CFG.starttls !== 'off' || authenticatedRelay) {
       let upgraded = false;
       try {
         await smtpCommand(sock, 'STARTTLS', [220], timeoutMs);
@@ -628,20 +644,26 @@ async function deliverToHost({ host, connectHost, port, to, message, messageId, 
         // we ever need to fall back to plaintext on it.
         rawSocket.on('error', () => {});
         sock.removeAllListeners();
-        sock = await upgradeToTls(rawSocket, host, timeoutMs, { required: CFG.starttls === 'required' });
+        sock = await upgradeToTls(rawSocket, host, timeoutMs, {
+          required: mustUseTls,
+          verify: authenticatedRelay,
+        });
         upgraded = true;
         await smtpCommand(sock, 'EHLO ' + heloName, [250], timeoutMs);
       } catch (err) {
-        if (CFG.starttls === 'required' || upgraded) throw err;
+        if (mustUseTls || upgraded) throw err;
         // opportunistic: continue unencrypted (the retry loop handles hosts
         // that don't play nice after a half-baked TLS negotiation)
         log('debug', `STARTTLS unavailable (${err.message}); continuing plaintext`);
       }
     }
 
-    // Authenticate when credentials are configured (needed for submission
-    // ports and most relays; direct-to-MX delivery doesn't use it).
-    if (CFG.smtpUsername) {
+    // AUTH is valid only on an operator-configured relay after verified TLS.
+    // Direct-to-MX is recipient-controlled and must never receive credentials.
+    if (authenticatedRelay) {
+      if (!(sock instanceof tls.TLSSocket) || sock.authorized !== true) {
+        throw new SmtpError('Refusing SMTP AUTH without verified TLS');
+      }
       await smtpAuth(sock, CFG.smtpUsername, CFG.smtpPassword, timeoutMs);
     }
 
@@ -671,6 +693,22 @@ async function deliverToHost({ host, connectHost, port, to, message, messageId, 
 
 function ensureOutbox() {
   try { fs.mkdirSync(OUTBOX_DIR, { recursive: true }); } catch {}
+}
+
+function smtpTransportError() {
+  const username = String(CFG.smtpUsername || '').trim();
+  const password = String(CFG.smtpPassword || '');
+  if (!username && !password) return null;
+  if (!CFG.relay) {
+    return 'SMTP credentials require an explicit relay (EXTV_MAIL_RELAY); direct-to-MX delivery never authenticates.';
+  }
+  if (!username) {
+    return 'SMTP password is configured without a username.';
+  }
+  if (CFG.starttls === 'off') {
+    return 'SMTP authentication requires STARTTLS with certificate verification; EXTV_MAIL_STARTTLS=off is not permitted.';
+  }
+  return null;
 }
 
 // Write the full message (headers + body) to data/outbox as a .eml file.
@@ -799,6 +837,13 @@ async function sendMail({ to, subject, text, html, template }) {
     return { ok: wrote, messageId, captured: true, eml };
   }
 
+  const transportError = smtpTransportError();
+  if (transportError) {
+    const wrote = writeOutbox(eml, messageId);
+    log('error', transportError);
+    return { ok: wrote, error: transportError, messageId, captured: wrote };
+  }
+
   // Resolve the destination.
   let targets = [];
   try {
@@ -832,7 +877,16 @@ async function sendMail({ to, subject, text, html, template }) {
           log('error', 'Delivery skipped: ' + lastError.message);
           continue;
         }
-        await deliverToHost({ host: target.host, connectHost, port: target.port, to, message: eml, messageId, heloName });
+        await deliverToHost({
+          host: target.host,
+          connectHost,
+          port: target.port,
+          to,
+          message: eml,
+          messageId,
+          heloName,
+          trustedRelay: !!CFG.relay,
+        });
         return { ok: true, messageId };
       } catch (err) {
         lastError = err;

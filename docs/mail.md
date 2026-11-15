@@ -92,7 +92,9 @@ ISP's authenticated submission server:
 
 - Set the relay host/port and SMTP username/password in `/admin/mail`
   (`EXTV_MAIL_RELAY`, `EXTV_MAIL_USERNAME`, `EXTV_MAIL_PASSWORD`). They apply
-  immediately, without a restart.
+  immediately, without a restart. Credentials are accepted only with an explicit
+  relay and are sent only after STARTTLS with normal CA and hostname
+  verification. Direct-to-MX delivery never authenticates.
 - Authorize the relay's sending IP in SPF — `v=spf1 mx a ip4:<relay-ip> -all` —
   or the relayed mail fails SPF. The **SPF IP** field in `/admin/mail` fills
   that mechanism for you; re-publish the SPF record afterwards.
@@ -126,6 +128,8 @@ All of these can be set from `/admin/mail` (admin UI) or as env vars:
 | `EXTV_EMAIL_POLICY` | `off` | `off` / `optional` / `required` |
 | `EXTV_MAIL_MODE` | `auto` | `auto` (deliver) / `capture` (write .eml only) |
 | `EXTV_MAIL_RELAY` | — | SMTP relay `host:port`; empty = direct-to-MX |
+| `EXTV_MAIL_USERNAME` / `EXTV_MAIL_PASSWORD` | — | Relay credentials; require verified STARTTLS |
+| `EXTV_MAIL_TLS_CA` | system store | Optional CA bundle path for a private relay certificate |
 | `EXTV_MAIL_FROM` | `noreply@<your-domain>` | From address (derived from the instance URL) |
 | `EXTV_MAIL_FROM_NAME` | `Extrovert` | Display name |
 | `EXTV_MAIL_BOUNCE_FROM` | — | Return-Path / MAIL FROM |

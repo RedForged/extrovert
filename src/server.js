@@ -7,6 +7,7 @@ const rateLimit = require('express-rate-limit');
 const path = require('node:path');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
+const { Readable } = require('node:stream');
 
 const { WebSocketServer } = require('ws');
 const SqliteStore = require('./session-store');
@@ -15,6 +16,7 @@ const db = require('./db');
 const { bearerUser } = require('./bearer-auth');
 const { initSignaling } = require('./webrtc-signaling');
 const { renderMarkdown } = require('./markdown');
+const { SAFE_EXTENSIONS } = require('./drive');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -348,6 +350,46 @@ app.use('/drive/f', express.static(DRIVE_DIR, {
     res.set('Cross-Origin-Resource-Policy', 'cross-origin');
   },
 }));
+// Files a user keeps in their own Nextcloud are proxied under the same
+// capability URL, so links already handed out keep working. Only rows the
+// accounting table knows about are served — the random name is the capability.
+app.get('/drive/f/:name', async (req, res, next) => {
+  const name = String(req.params.name || '');
+  if (!/^[a-f0-9]{32}(\.[a-z0-9]{1,8})?$/i.test(name)) return next();
+  const row = db.getUserFileByPath('drive', name);
+  if (!row || row.backend !== 'nextcloud' || !row.remote_path) return next();
+  const cfg = db.getUserNextcloud(row.user_id);
+  if (!cfg) return res.status(404).end();
+  try {
+    const upstream = await require('./nextcloud').openFile(cfg, row.remote_path, { range: req.headers.range });
+    if (upstream.status !== 200 && upstream.status !== 206) {
+      try { await upstream.body?.cancel?.(); } catch (e) { /* nothing to release */ }
+      return res.status(upstream.status === 404 ? 404 : 502).end();
+    }
+    res.status(upstream.status);
+    res.set('X-Content-Type-Options', 'nosniff');
+    res.set('Cross-Origin-Resource-Policy', 'cross-origin');
+    // Never trust a client-supplied MIME: derive the type from the stored
+    // extension, exactly like the local static mount. Anything outside the
+    // allow-list (including sealed blobs, which have no extension) stays an
+    // opaque download.
+    const ext = path.extname(name).toLowerCase();
+    if (ext && SAFE_EXTENSIONS.has(ext)) res.type(ext);
+    else res.set('Content-Type', 'application/octet-stream');
+    const length = upstream.headers.get('content-length');
+    if (length) res.set('Content-Length', length);
+    const contentRange = upstream.headers.get('content-range');
+    if (contentRange) res.set('Content-Range', contentRange);
+    res.set('Accept-Ranges', upstream.headers.get('accept-ranges') || 'bytes');
+    if (!upstream.body) return res.end();
+    const body = Readable.fromWeb(upstream.body);
+    body.on('error', () => res.destroy());
+    body.pipe(res);
+  } catch (err) {
+    console.error('[Drive] Nextcloud read failed:', err.message);
+    if (!res.headersSent) res.status(502).send('Could not reach the file storage.');
+  }
+});
 
 // Original filename of a stored Drive file (for download links); '' if unknown.
 app.locals.driveFileName = function driveFileName(storedPath) {

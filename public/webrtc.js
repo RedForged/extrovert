@@ -12,6 +12,7 @@
     peerConnections: {},
     localStream: null,
     peerUsername: null,
+    callId: null,
     channelId: null,
     channelMembers: {},
     callStartTime: null,
@@ -113,6 +114,12 @@
         break;
 
       case 'incoming_call':
+        if (msg.call_id) {
+          if (state.callId && state.callId !== msg.call_id) break;
+          state.callId = msg.call_id;
+        } else if (!msg.channel_id) {
+          break;
+        }
         if (state.callState === 'calling') {
           Object.keys(state.peerConnections).forEach(closePeerConnection);
           state.peerConnections = {};
@@ -125,14 +132,18 @@
 
       case 'callee_available':
         // Callee is online and free: produce the real WebRTC offer now.
-        if (state.callState === 'calling' && state.peerUsername) {
+        if (state.callState === 'calling' && state.peerUsername && msg.to === state.peerUsername
+            && (!state.callId || state.callId === msg.call_id)) {
+          state.callId = msg.call_id || state.callId;
           produceOfferAndSend(state.peerUsername);
         }
         break;
 
       case 'calling_offline':
         // Callee is offline: queued for ring-on-reconnect. Wait without media.
-        if (state.callState === 'calling') {
+        if (state.callState === 'calling' && msg.to === state.peerUsername
+            && (!state.callId || state.callId === msg.call_id)) {
+          state.callId = msg.call_id || state.callId;
           state.pendingCall = msg.to;
           emit('calling_offline', msg.to);
           if (state.callWaitTimeout) clearTimeout(state.callWaitTimeout);
@@ -152,7 +163,9 @@
         // Callee just came online; server has rung them. Send the real offer.
         if (state.callWaitTimeout) { clearTimeout(state.callWaitTimeout); state.callWaitTimeout = null; }
         state.pendingCall = null;
-        if (state.callState === 'calling' && state.peerUsername) {
+        if (state.callState === 'calling' && state.peerUsername && msg.to === state.peerUsername
+            && (!state.callId || state.callId === msg.call_id)) {
+          state.callId = msg.call_id || state.callId;
           produceOfferAndSend(state.peerUsername);
         }
         break;
@@ -163,12 +176,14 @@
         break;
 
       case 'call_unanswered':
+        if (msg.call_id && state.callId && msg.call_id !== state.callId) break;
         if (state.callWaitTimeout) { clearTimeout(state.callWaitTimeout); state.callWaitTimeout = null; }
         emit('call_unanswered', msg.to || msg.from);
         endCallInternal();
         break;
 
       case 'call_answered':
+        if (msg.from !== state.peerUsername || (msg.call_id && state.callId && msg.call_id !== state.callId)) break;
         state.callState = 'connected';
         state.callStartTime = Date.now();
         setRemoteDescription(msg.from, msg.sdp);
@@ -176,6 +191,7 @@
         break;
 
       case 'ice_candidate':
+        if (msg.from !== state.peerUsername || (msg.call_id && state.callId && msg.call_id !== state.callId)) break;
         if (msg.candidate && state.peerConnections[msg.from]) {
           try {
             state.peerConnections[msg.from].addIceCandidate(new RTCIceCandidate(msg.candidate));
@@ -184,6 +200,7 @@
         break;
 
       case 'call_ended':
+        if (msg.from !== state.peerUsername || (msg.call_id && state.callId && msg.call_id !== state.callId)) break;
         if (state.callState !== 'idle') {
           emit('call_ended', msg.from);
           endCallInternal();
@@ -191,6 +208,7 @@
         break;
 
       case 'call_declined':
+        if (msg.from !== state.peerUsername || (msg.call_id && state.callId && msg.call_id !== state.callId)) break;
         emit('call_declined', msg.from);
         endCallInternal();
         break;
@@ -326,7 +344,7 @@
     pc.onicecandidate = function (e) {
       if (e.candidate) {
         var target = state.channelId ? username : state.peerUsername;
-        send({ type: 'ice_candidate', to: target, candidate: e.candidate.toJSON(), channel_id: state.channelId || undefined, room_id: state.channelId ? '1' : undefined });
+        send({ type: 'ice_candidate', to: target, candidate: e.candidate.toJSON(), call_id: state.channelId ? undefined : state.callId, channel_id: state.channelId || undefined, room_id: state.channelId ? '1' : undefined });
       }
     };
 
@@ -387,6 +405,7 @@
           type: 'call_offer',
           to: username,
           sdp: JSON.stringify(pc.localDescription),
+          call_id: state.callId,
         });
         emit('calling', username);
       });
@@ -405,6 +424,7 @@
     }
     state.callState = 'calling';
     state.peerUsername = username;
+    state.callId = null;
     send({ type: 'call_request', to: username });
     emit('calling', username);
   }
@@ -436,6 +456,7 @@
           type: 'call_answer',
           to: username,
           sdp: JSON.stringify(pc.localDescription),
+          call_id: state.callId,
           channel_id: state.channelId || undefined,
         });
         emit('call_connected', username);
@@ -449,7 +470,7 @@
   }
 
   function declineCall(username) {
-    send({ type: 'call_decline', to: username });
+    send({ type: 'call_decline', to: username, call_id: state.callId || undefined });
     emit('call_declined', username);
     state.callState = 'idle';
     state.peerUsername = null;
@@ -462,12 +483,12 @@
       endCallInternal();
     } else if (state.pendingCall && Object.keys(state.peerConnections).length === 0) {
       // Waiting on an offline callee who hasn't reconnected yet: cancel.
-      send({ type: 'call_cancel', to: state.pendingCall });
+      send({ type: 'call_cancel', to: state.pendingCall, call_id: state.callId || undefined });
       emit('call_ended', state.pendingCall);
       endCallInternal();
     } else {
       var peer = state.peerUsername || '';
-      send({ type: 'call_end', to: peer });
+      send({ type: 'call_end', to: peer, call_id: state.callId || undefined });
       emit('call_ended', peer);
       endCallInternal();
     }
@@ -476,6 +497,7 @@
   function endCallInternal() {
     state.callState = 'idle';
     state.peerUsername = null;
+    state.callId = null;
     state.channelId = null;
     state.callStartTime = null;
     state.channelMembers = {};

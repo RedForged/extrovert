@@ -19,6 +19,13 @@ function assert(cond, msg) {
   console.log((cond ? '  [OK]   ' : '  [FAIL] ') + msg);
   if (!cond) process.exitCode = 1;
 }
+// Minimal stand-in for node:assert's strictEqual, matching Object.is semantics.
+assert.strictEqual = function strictEqual(actual, expected, msg) {
+  const pass = Object.is(actual, expected);
+  console.log((pass ? '  [OK]   ' : '  [FAIL] ') + msg
+    + (pass ? '' : ` (got ${JSON.stringify(actual)}, expected ${JSON.stringify(expected)})`));
+  if (!pass) process.exitCode = 1;
+};
 function topAuthor(items) { return items[0]?.authorUsername; }
 function rankOf(items, authorUsername) { return items.findIndex(i => i.authorUsername === authorUsername); }
 
@@ -51,6 +58,18 @@ function run() {
   const bobP   = db.createPost({ userId: bob,   type: 'text', body: 'B', createdAt: T });
   const carolP = db.createPost({ userId: carol, type: 'text', body: 'C', createdAt: T });
   db.createPost({ userId: dave,  type: 'text', body: 'D', createdAt: T });
+
+  db.notifyMentions('@dave', alice, bobP);
+  assert(!db.getNotifications(dave).some(n => n.type === 'mention' && n.post_id === bobP),
+    'mention notifications are not created for an invisible parent post');
+  db.createNotification({ userId: dave, type: 'mention', actorId: alice, postId: bobP });
+  assert(!db.getNotifications(dave).some(n => n.type === 'mention' && n.post_id === bobP),
+    'legacy mention notifications for invisible posts are filtered');
+  assert.strictEqual(db.countUnreadNotifications(dave), 0,
+    'invisible mention notifications do not affect the unread count');
+  db.notifyMentions('@alice', bob, bobP);
+  assert(db.getNotifications(alice).some(n => n.type === 'mention' && n.post_id === bobP),
+    'mention notifications still work when the recipient can view the post');
 
   let f = feed.buildFeed(alice).items.map(i => i.body);
   assert(f.includes('B'), 'alice feed shows bob');
@@ -183,6 +202,22 @@ function run() {
   const cleanCss = sanitizeCSS(dirtyCss);
   assert(!/javascript:/i.test(cleanCss), 'javascript: stripped from CSS');
   assert(!/expression\s*\(/i.test(cleanCss), 'expression() stripped from CSS');
+  const escapedCss = sanitizeCSS(
+    '@\\69 mport url(https://evil.example/a);' +
+    'a{background:url(https\\3a //evil.example/b)}' +
+    'b{background:image-set("https://evil.example/c" 1x)}' +
+    'c{background:cross-fade("https://evil.example/d",red)}' +
+    'd{--bg:url(//evil.example/e);background:var(--bg)}' +
+    'html:has(meta[name="csrf-token"][content^="a"]){background:url(/probe)}' +
+    'e{content:"</style><script>alert(1)</script>"}'
+  );
+  assert(!/evil\.example/i.test(escapedCss), 'escaped, image-set, and protocol-relative URLs are stripped');
+  assert(!/:has\s*\(/i.test(escapedCss), 'selector-oracle :has() rules are stripped');
+  assert(!/@import/i.test(escapedCss), 'escaped @import rules are stripped');
+  assert(!/<\/style/i.test(escapedCss), 'CSS cannot terminate the surrounding style element');
+  const localCss = sanitizeCSS('@font-face{font-family:Local;src:url("/u/alice/font.woff2")} .x{background:url(/uploads/a.png);color:red}');
+  assert(localCss.includes('/u/alice/font.woff2'), 'same-origin profile fonts remain usable');
+  assert(localCss.includes('/uploads/a.png'), 'same-origin uploaded images remain usable');
 
   console.log('\nTEST 9b: profile template slot placeholders survive & fill');
   const { substituteSlots, normalizeSlots } = require('../src/sanitize');

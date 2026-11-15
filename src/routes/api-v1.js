@@ -16,7 +16,7 @@ const { getAccountIds } = require('../accounts');
 const bcrypt = require('bcryptjs');
 const { sanitizeProfileHTML, sanitizeCSS, parsePronouns, sanitizePronouns } = require('../sanitize');
 const drive = require('../drive');
-const { getOnlineUsers, getUserPresence, sendDmEvent, cancelPendingCallByToken, broadcastGatewayEvent, broadcastTimelineEvent, removeFromVoiceChannels, getGatewayLatestSeq, updateUserRoomSubscriptions, pushRoomSessionKeyToRecipient } = require('../webrtc-signaling');
+const { getOnlineUsers, getUserPresence, sendDmEvent, cancelPendingCallByToken, broadcastGatewayEvent, broadcastTimelineEvent, removeFromVoiceChannels, getGatewayLatestSeq, updateUserRoomSubscriptions, pushRoomSessionKeyToRecipient, closeTokenSockets, closeTokenSocketsForApp, closeTokenSocketsForUser, closeUserSockets } = require('../webrtc-signaling');
 const { onNotification } = require('../notif-broadcaster');
 const dm = require('../dm');
 const { getVapidPublicKey, validatePushEndpoint, validateWebhookUrl } = require('../push');
@@ -786,6 +786,8 @@ router.post('/auth/register', enforceHttpsInProduction, express.json(), (req, re
 // Single round-trip state bootstrap for native and third-party clients
 router.get('/client/bootstrap', requireApiAuth('read'), (req, res) => {
   const userId = req.apiUser.id;
+  const grantedScopes = new Set(String(req.apiToken.scopes || '').split(/\s+/));
+  const directReadAllowed = grantedScopes.has('read:direct');
 
   // 1. Current user
   const account = serializeAccount(req.apiUser, userId);
@@ -801,10 +803,13 @@ router.get('/client/bootstrap', requireApiAuth('read'), (req, res) => {
   const rooms = userRooms.map(r => {
     // Only channels this member may view (per-channel ACL), and only the
     // default channel's messages — never a restricted channel's ciphertext.
-    const channels = (db.getRoomChannels(r.id) || []).filter(c => db.canViewRoomChannel(c.id, userId));
+    const canViewRoom = db.canViewRoom(r.id, userId);
+    const channels = canViewRoom
+      ? (db.getRoomChannels(r.id) || []).filter(c => db.canViewRoomChannel(c.id, userId))
+      : [];
     const defaultChan = channels.find(c => c.name === 'general') || channels[0];
     let latestMessages = [];
-    if (defaultChan) {
+    if (defaultChan && directReadAllowed) {
       const msgs = db.getRoomMessages(defaultChan.id) || [];
       latestMessages = msgs.slice(-25).map(m => ({
         id: String(m.id),
@@ -1413,6 +1418,7 @@ router.post('/oauth/token', clientAppAuth, (req, res) => {
       // A previously rotated refresh token is being replayed — treat it as
       // token theft (RFC 6749 BCP) and kill every token for this user.
       db.revokeAllOAuthTokensForUser(existing.user_id);
+      closeTokenSocketsForUser(existing.user_id);
       db.auditLog('oauth_refresh_reuse', existing.user_id, `App "${app.name}"`);
       return errorResponse(res, 401, 'Unauthorized', 'Refresh token reuse detected; all tokens have been revoked.');
     }
@@ -1429,7 +1435,8 @@ router.post('/oauth/token', clientAppAuth, (req, res) => {
     const newRefreshToken = generateToken();
     const expiresAt = Date.now() + 86400000;
 
-    db.rotateRefreshToken(refresh_token, newToken, newRefreshToken, expiresAt);
+    const rotated = db.rotateRefreshToken(refresh_token, newToken, newRefreshToken, expiresAt);
+    if (rotated && rotated.token) closeTokenSockets(rotated.token);
     db.auditLog('oauth_token_refreshed', existing.user_id, `App "${app.name}"`);
 
     return res.json({
@@ -1450,9 +1457,10 @@ router.post('/oauth/revoke', (req, res) => {
   const { token, client_id } = req.body;
   if (!token) return errorResponse(res, 400, 'Bad Request', 'token is required.');
 
-  const tokenRecord = db.getOAuthToken(token);
+  const tokenRecord = db.findOAuthTokenForRevocation(token);
   if (tokenRecord) {
     db.revokeOAuthToken(token);
+    if (tokenRecord.token) closeTokenSockets(tokenRecord.token);
     db.auditLog('oauth_token_revoked', tokenRecord.user_id, `App id: ${tokenRecord.app_id}`);
   }
   // Always return OK to prevent token enumeration
@@ -1480,6 +1488,7 @@ router.post('/oauth/authorized_apps/:appId/revoke', (req, res) => {
   if (!req.session.userId) return errorResponse(res, 401, 'Unauthorized', 'Not logged in.');
   const appId = parseInt(req.params.appId, 10);
   db.revokeOAuthTokensForUser(req.session.userId, appId);
+  closeTokenSocketsForApp(req.session.userId, appId);
   db.auditLog('oauth_app_access_revoked', req.session.userId, `App id: ${appId}`);
   res.json({ ok: true });
 });
@@ -1522,6 +1531,17 @@ const avatarUpload = multer({
     cb(null, true);
   },
 });
+
+function parseApiAvatar(req, res, next) {
+  avatarUpload.single('avatar')(req, res, (err) => {
+    if (!err) return next();
+    drive.discardUpload(req);
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return errorResponse(res, 413, 'Payload Too Large', 'Avatar must be under 10 MB.');
+    }
+    return errorResponse(res, 400, 'Bad Request', 'Invalid avatar upload.');
+  });
+}
 
 // ======== Accounts ========
 
@@ -1596,33 +1616,52 @@ router.patch('/accounts/email', requireApiAuth('profile'), (req, res) => {
 });
 
 // Avatar upload via API
-router.post('/accounts/avatar', requireApiAuth('profile'), avatarUpload.single('avatar'), async (req, res) => {
-  if (!req.file) return errorResponse(res, 400, 'Bad Request', 'No file uploaded. Use multipart/form-data with field "avatar".');
+router.post('/accounts/avatar', requireApiAuth('profile'), drive.quotaGuard({ maxBytes: 10 * 1024 * 1024 }), parseApiAvatar, async (req, res) => {
+  if (!req.file) {
+    drive.releaseUploadReservation(req);
+    return errorResponse(res, 400, 'Bad Request', 'No file uploaded. Use multipart/form-data with field "avatar".');
+  }
 
   const inputPath = req.file.path;
-  const space = drive.quotaState(req.apiUser.id);
-  if (space.used + req.file.size > space.quota) {
+  const fit = drive.uploadFits(req, req.file.size, req.apiUser.id);
+  if (!fit.ok) {
     drive.discardUpload(req);
-    return errorResponse(res, 413, 'Payload Too Large', drive.fullMessage(space));
+    return errorResponse(res, 413, 'Payload Too Large', drive.fullMessage(fit.state));
   }
   const previousAvatar = req.apiUser.avatar;
   const outputName = crypto.randomBytes(12).toString('hex') + '.jpg';
   const outputPath = path.join(AVATAR_DIR, outputName);
+  let outputWritten = false;
 
   try {
     await sharp(inputPath).resize(200, 200, { fit: 'cover', position: 'center' }).jpeg({ quality: 85 }).toFile(outputPath);
+    outputWritten = true;
+    const outputSize = fs.statSync(outputPath).size;
+    const outputFit = drive.uploadFits(req, outputSize, req.apiUser.id);
+    if (!outputFit.ok) {
+      try { fs.unlinkSync(outputPath); } catch {}
+      outputWritten = false;
+      drive.discardUpload(req);
+      return errorResponse(res, 413, 'Payload Too Large', drive.fullMessage(outputFit.state));
+    }
     fs.unlinkSync(inputPath);
-    db.setAvatar(req.apiUser.id, '/uploads/avatars/' + outputName);
     db.createUserFile({
       userId: req.apiUser.id, kind: 'avatar', root: 'uploads', path: 'avatars/' + outputName,
-      mime: 'image/jpeg', size: fs.statSync(outputPath).size,
+      mime: 'image/jpeg', size: outputSize,
     });
+    db.setAvatar(req.apiUser.id, '/uploads/avatars/' + outputName);
+    drive.releaseUploadReservation(req);
     if (previousAvatar) {
       const prev = db.splitStoredPath(previousAvatar);
       if (prev) db.removeStoredFile(prev.root, prev.path);
     }
   } catch (e) {
     try { fs.unlinkSync(inputPath); } catch {}
+    if (outputWritten) {
+      try { db.removeStoredFile('uploads', 'avatars/' + outputName); } catch {}
+      try { fs.unlinkSync(outputPath); } catch {}
+    }
+    drive.releaseUploadReservation(req);
     return errorResponse(res, 400, 'Bad Request', 'Failed to process image.');
   }
 
@@ -1674,8 +1713,10 @@ router.post('/accounts/tokens', requireApiAuth('profile'), express.json(), (req,
 
 // Delete personal access token
 router.delete('/accounts/tokens/:id', requireApiAuth('profile'), (req, res) => {
+  const tokenRecord = db.getPersonalAccessTokenById(Number(req.params.id), req.apiUser.id);
   const ok = db.deletePersonalAccessToken(Number(req.params.id), req.apiUser.id);
   if (!ok) return errorResponse(res, 404, 'Not Found', 'Token not found.');
+  if (tokenRecord) closeTokenSockets(tokenRecord.token_hash);
   responseEnvelope(res, { ok: true });
 });
 
@@ -1695,8 +1736,10 @@ router.get('/accounts/sessions', requireApiAuth('profile'), (req, res) => {
 
 // Revoke a session token
 router.delete('/accounts/sessions/:id', requireApiAuth('profile'), (req, res) => {
+  const tokenRecord = db.getOAuthTokenForUserById(Number(req.params.id), req.apiUser.id);
   const ok = db.revokeSessionToken(Number(req.params.id), req.apiUser.id);
   if (!ok) return errorResponse(res, 404, 'Not Found', 'Session not found.');
+  if (tokenRecord && tokenRecord.token) closeTokenSockets(tokenRecord.token);
   responseEnvelope(res, { ok: true });
 });
 
@@ -1708,6 +1751,7 @@ router.delete('/accounts/me', requireApiAuth('profile'), express.json(), (req, r
     return errorResponse(res, 403, 'Forbidden', 'Incorrect password.');
   }
   db.deleteUser(req.apiUser.id);
+  closeUserSockets(req.apiUser.id);
   responseEnvelope(res, { ok: true });
 });
 
@@ -1799,7 +1843,7 @@ router.post('/accounts/:id/unfollow', requireApiAuth('follow'), (req, res) => {
 
 // ======== Statuses ========
 
-router.post('/statuses', requireApiAuth('write'), drive.quotaGuard(), drive.single('media'), (req, res) => {
+function statusUploadPreflight(req, res, next) {
   // Policy gate: 'required' instances block posting until the email is verified.
   if (db.requireVerifiedEmail(req.apiUser)) {
     return errorResponse(res, 403, 'Forbidden', 'Email verification required before posting. Use PATCH /api/v1/accounts/email to set and verify an address.');
@@ -1812,11 +1856,38 @@ router.post('/statuses', requireApiAuth('write'), drive.quotaGuard(), drive.sing
         .json(JSON.parse(cached.response));
     }
   }
+  next();
+}
+
+router.post('/statuses', requireApiAuth('write'), statusUploadPreflight, drive.quotaGuard({ remote: true }), drive.single('media'), async (req, res) => {
+  const idempotencyKey = req.headers['idempotency-key'];
 
   const postType = req.body.type || 'text';
   const postBody = req.body.body !== undefined ? req.body.body : req.body.status;
   const repost_of_id = req.body.repost_of_id;
+
+  if (postType === 'text' && !postBody) {
+    drive.discardUpload(req);
+    return errorResponse(res, 400, 'Bad Request', 'body is required for text posts.');
+  }
+  if (postType === 'repost') {
+    if (!repost_of_id) {
+      drive.discardUpload(req);
+      return errorResponse(res, 400, 'Bad Request', 'repost_of_id is required for repost type.');
+    }
+    const original = db.getPostById(parseInt(repost_of_id, 10));
+    if (!original || !canView(req.apiUser.id, original.user_id)) {
+      drive.discardUpload(req);
+      return errorResponse(res, 404, 'Not Found', 'Original post not found.');
+    }
+    if (db.hasReposted(req.apiUser.id, original.id)) {
+      drive.discardUpload(req);
+      return errorResponse(res, 409, 'Conflict', 'Already reposted this post.');
+    }
+  }
+
   let mediaPath = null;
+  let storedMedia = null;
 
   if ((postType === 'photo' || postType === 'video') && req.file) {
     const mime = String(req.file.mimetype || '');
@@ -1824,34 +1895,36 @@ router.post('/statuses', requireApiAuth('write'), drive.quotaGuard(), drive.sing
       drive.discardUpload(req);
       return errorResponse(res, 400, 'Bad Request', 'media must be an image or a video.');
     }
-    const stored = drive.acceptUpload(req, res, { kind: 'post', userId: req.apiUser.id });
+    const stored = await drive.acceptUpload(req, res, { kind: 'post', userId: req.apiUser.id });
     if (!stored.ok) {
       if (stored.exceeded) {
         return errorResponse(res, 413, 'Payload Too Large', drive.fullMessage(stored.state));
       }
+      if (stored.storageFailed) {
+        return errorResponse(res, 502, 'Bad Gateway', stored.message);
+      }
       return errorResponse(res, 400, 'Bad Request', 'Upload failed.');
     }
     mediaPath = stored.url;
+    storedMedia = stored;
   } else if (req.file) {
     drive.discardUpload(req);
   }
 
-  if (postType === 'text' && !postBody) return errorResponse(res, 400, 'Bad Request', 'body is required for text posts.');
-  if (postType === 'repost') {
-    if (!repost_of_id) return errorResponse(res, 400, 'Bad Request', 'repost_of_id is required for repost type.');
-    const original = db.getPostById(parseInt(repost_of_id, 10));
-    if (!original) return errorResponse(res, 404, 'Not Found', 'Original post not found.');
-    if (!canView(req.apiUser.id, original.user_id)) return errorResponse(res, 404, 'Not Found', 'Original post not found.');
-    if (db.hasReposted(req.apiUser.id, original.id)) return errorResponse(res, 409, 'Conflict', 'Already reposted this post.');
+  let postId;
+  try {
+    postId = db.createPost({
+      userId: req.apiUser.id,
+      type: postType,
+      body: String(postBody || '').trim().slice(0, 5000),
+      mediaPath,
+      repostOfId: repost_of_id ? parseInt(repost_of_id, 10) : null,
+    });
+  } catch (err) {
+    if (storedMedia) db.removeStoredFile('drive', storedMedia.name);
+    console.error('status upload: createPost failed', err);
+    return errorResponse(res, 500, 'Internal Server Error', 'Could not create the post.');
   }
-
-  const postId = db.createPost({
-    userId: req.apiUser.id,
-    type: postType,
-    body: String(postBody || '').trim().slice(0, 5000),
-    mediaPath,
-    repostOfId: repost_of_id ? parseInt(repost_of_id, 10) : null,
-  });
 
   const post = db.getPostById(postId);
   const author = db.getUserById(post.user_id);
@@ -2338,24 +2411,37 @@ router.get('/bot/me', requireApiAuth('read'), (req, res) => {
 // ======== Media ========
 
 router.post('/media', requireApiAuth('media.write'), drive.quotaGuard(), upload.single('file'), async (req, res) => {
-  if (!req.file) return errorResponse(res, 400, 'Bad Request', 'No file uploaded. Use multipart/form-data with field "file".');
+  if (!req.file) {
+    drive.releaseUploadReservation(req);
+    return errorResponse(res, 400, 'Bad Request', 'No file uploaded. Use multipart/form-data with field "file".');
+  }
 
   // Every upload shares the account's Drive quota — no per-file limit beyond it.
-  const space = drive.quotaState(req.apiUser.id);
-  if (space.used + req.file.size > space.quota) {
+  const fit = drive.uploadFits(req, req.file.size, req.apiUser.id);
+  if (!fit.ok) {
     drive.discardUpload(req);
-    return errorResponse(res, 413, 'Payload Too Large', drive.fullMessage(space));
+    return errorResponse(res, 413, 'Payload Too Large', drive.fullMessage(fit.state));
   }
 
   const mimeType = req.file.mimetype;
   const fileSize = req.file.size;
   const filePath = req.file.filename;
 
-  const id = db.createMediaAttachment(req.apiUser.id, filePath, mimeType, fileSize);
-  db.createUserFile({
-    userId: req.apiUser.id, kind: 'api', root: 'api-uploads', path: filePath,
-    mime: mimeType, size: fileSize, name: req.file.originalname || null,
-  });
+  let id;
+  try {
+    id = db.createMediaAttachment(req.apiUser.id, filePath, mimeType, fileSize);
+    db.createUserFile({
+      userId: req.apiUser.id, kind: 'api', root: 'api-uploads', path: filePath,
+      mime: mimeType, size: fileSize, name: req.file.originalname || null,
+    });
+  } catch (err) {
+    if (id != null) db.db.prepare(`DELETE FROM media_attachments WHERE id = ?`).run(id);
+    try { db.removeStoredFile('api-uploads', filePath); } catch {}
+    drive.discardUpload(req);
+    console.error('media upload: registration failed', err);
+    return errorResponse(res, 500, 'Internal Server Error', 'Could not save the uploaded media.');
+  }
+  drive.releaseUploadReservation(req);
 
   // Read image dimensions with sharp (skip for video).
   if (mimeType.startsWith('image/')) {
@@ -2492,7 +2578,8 @@ router.post('/push/unsubscribe', requireApiAuth(), (req, res) => {
 const ROOM_PERM = { VIEW: 1, WRITE: 2, MANAGE_CHANNELS: 4, MANAGE_ROLES: 8, MANAGE_MESSAGES: 16, MANAGE_MEMBERS: 32, MANAGE_ROOM: 64 };
 
 router.get('/rooms', requireApiAuth('read'), (req, res) => {
-  const myRooms = db.getRoomsForUser(req.apiUser.id);
+  const myRooms = db.getRoomsForUser(req.apiUser.id)
+    .filter(room => db.canViewRoom(room.id, req.apiUser.id));
   const result = myRooms.map(r => ({
     id: String(r.id),
     name: r.name,
@@ -2692,6 +2779,9 @@ router.get('/rooms/:id/roles', requireApiAuth('read'), (req, res) => {
   if (!db.isRoomMember(room.id, req.apiUser.id) && !req.apiUser.is_admin) {
     return errorResponse(res, 403, 'Forbidden', 'You are not a member of this room.');
   }
+  if (!db.canViewRoom(room.id, req.apiUser.id)) {
+    return errorResponse(res, 403, 'Forbidden', 'No permission to view this room.');
+  }
   const roles = db.getRoomRoles(room.id);
   responseEnvelope(res, roles.map(r => ({
     id: String(r.id),
@@ -2773,7 +2863,9 @@ router.delete('/rooms/:id/roles/:rid', requireApiAuth('write'), (req, res) => {
   }
   const role = db.getRoomRole(parseInt(req.params.rid, 10));
   if (!role || role.room_id !== room.id) return errorResponse(res, 404, 'Not Found', 'Role not found.');
-  if (!db.deleteRoomRole(role.id)) return errorResponse(res, 400, 'Bad Request', 'Cannot delete founder role.');
+  if (!db.deleteRoomRole(role.id)) {
+    return errorResponse(res, 400, 'Bad Request', 'Cannot delete the founder/default role, or a role still assigned to members.');
+  }
   responseEnvelope(res, { ok: true });
 });
 
@@ -2781,6 +2873,9 @@ router.delete('/rooms/:id/roles/:rid', requireApiAuth('write'), (req, res) => {
 router.post('/rooms/:id/members/:uid/roles', requireApiAuth('write'), express.json(), (req, res) => {
   const room = db.getRoom(parseInt(req.params.id, 10));
   if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
+  if (!db.canViewRoom(room.id, req.apiUser.id)) {
+    return errorResponse(res, 403, 'Forbidden', 'No permission to view this room.');
+  }
   if (!db.hasRoomPermission(room.id, req.apiUser.id, ROOM_PERM.MANAGE_MEMBERS)) {
     return errorResponse(res, 403, 'Forbidden', 'No permission to manage members.');
   }
@@ -2850,6 +2945,9 @@ router.post('/rooms/:id/transfer', requireApiAuth('write'), express.json(), (req
 router.get('/rooms/:id/requests', requireApiAuth('read'), (req, res) => {
   const room = db.getRoom(parseInt(req.params.id, 10));
   if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
+  if (!db.canViewRoom(room.id, req.apiUser.id)) {
+    return errorResponse(res, 403, 'Forbidden', 'No permission to view this room.');
+  }
   if (!db.hasRoomPermission(room.id, req.apiUser.id, ROOM_PERM.MANAGE_MEMBERS)) {
     return errorResponse(res, 403, 'Forbidden', 'No permission.');
   }
@@ -2937,6 +3035,9 @@ router.get('/rooms/:id', requireApiAuth('read'), (req, res) => {
       member_count: db.countRoomMembers(room.id),
     });
   }
+  if (!db.canViewRoom(room.id, req.apiUser.id)) {
+    return errorResponse(res, 403, 'Forbidden', 'No permission to view this room.');
+  }
   const channels = db.getRoomChannels(room.id)
     .filter(c => req.apiUser.is_admin || db.canViewRoomChannel(c.id, req.apiUser.id))
     .map(c => ({
@@ -2966,18 +3067,10 @@ router.get('/rooms/:id', requireApiAuth('read'), (req, res) => {
 router.get('/rooms/:id/channels/:cid/messages', requireApiAuth('read:direct'), (req, res) => {
   const room = db.getRoom(parseInt(req.params.id, 10));
   if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
-  if (!db.isRoomMember(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'Not a member.');
+  if (!db.canViewRoom(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'No permission to view this room.');
   const channel = db.getRoomChannel(parseInt(req.params.cid, 10));
   if (!channel || channel.room_id !== room.id) return errorResponse(res, 404, 'Not Found', 'Channel not found.');
-  // Per-channel view restriction — mirrors the web route's semantics: a null
-  // or unparseable view_role_ids column means open to all members.
-  const role = db.getUserRoomRole(room.id, req.apiUser.id);
-  if (channel.view_role_ids) {
-    try {
-      const viewRoles = JSON.parse(channel.view_role_ids);
-      if (Array.isArray(viewRoles) && !viewRoles.includes(role.id)) return errorResponse(res, 403, 'Forbidden', 'No view permission.');
-    } catch {}
-  }
+  if (!db.canViewRoomChannel(channel.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'No view permission.');
 
   const cursor = req.query.cursor ? parseInt(req.query.cursor, 10) : null;
 
@@ -3005,7 +3098,7 @@ router.get('/rooms/:id/channels/:cid/messages', requireApiAuth('read:direct'), (
 router.post('/rooms/:id/channels/:cid/messages', requireApiAuth('write:direct'), requireVerifiedApiWrite, (req, res) => {
   const room = db.getRoom(parseInt(req.params.id, 10));
   if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
-  if (!db.isRoomMember(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'Not a member.');
+  if (!db.canViewRoom(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'No permission to view this room.');
   const channel = db.getRoomChannel(parseInt(req.params.cid, 10));
   if (!channel || channel.room_id !== room.id) return errorResponse(res, 404, 'Not Found', 'Channel not found.');
   // Room-level write permission (mirrors the web route). Without this a member
@@ -3070,7 +3163,7 @@ router.post('/rooms/:id/channels/:cid/messages', requireApiAuth('write:direct'),
 router.delete('/rooms/:id/channels/:cid/messages/:mid', requireApiAuth('write:direct'), (req, res) => {
   const room = db.getRoom(parseInt(req.params.id, 10));
   if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
-  if (!db.isRoomMember(room.id, req.apiUser.id) && !req.apiUser.is_admin) return errorResponse(res, 403, 'Forbidden', 'Not a member.');
+  if (!db.canViewRoom(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'No permission to view this room.');
   const channel = db.getRoomChannel(parseInt(req.params.cid, 10));
   if (!channel || channel.room_id !== room.id) return errorResponse(res, 404, 'Not Found', 'Channel not found.');
   // Per-channel view restriction — mirrors the web route's semantics.
@@ -3102,7 +3195,7 @@ router.delete('/rooms/:id/channels/:cid/messages/:mid', requireApiAuth('write:di
 router.post('/rooms/:id/session', requireApiAuth('write:direct'), (req, res) => {
   const room = db.getRoom(parseInt(req.params.id, 10));
   if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
-  if (!db.isRoomMember(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'Not a member.');
+  if (!db.canViewRoom(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'No permission to view this room.');
   const keys = Array.isArray(req.body.keys) ? req.body.keys : [];
   const memberIds = Array.isArray(req.body.member_ids) ? req.body.member_ids.map(Number) : [];
   const rotate = req.body.rotate === true || req.body.rotate === 'true';
@@ -3135,7 +3228,7 @@ router.post('/rooms/:id/session', requireApiAuth('write:direct'), (req, res) => 
 router.post('/rooms/:id/session/sync', requireApiAuth('write:direct'), express.json(), (req, res) => {
   const room = db.getRoom(parseInt(req.params.id, 10));
   if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
-  if (!db.isRoomMember(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'Not a member.');
+  if (!db.canViewRoom(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'No permission to view this room.');
 
   const rotate = req.body.rotate === true || req.body.rotate === 'true';
   const senderDeviceId = String(req.body.sender_device_id || '').trim().slice(0, 100);
@@ -3225,7 +3318,7 @@ router.post('/rooms/:id/session/sync', requireApiAuth('write:direct'), express.j
 router.get('/rooms/:id/session/keys', requireApiAuth('read:direct'), (req, res) => {
   const room = db.getRoom(parseInt(req.params.id, 10));
   if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
-  if (!db.isRoomMember(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'Not a member.');
+  if (!db.canViewRoom(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'No permission to view this room.');
   const keys = db.getPendingRoomSessionKeys(req.apiUser.id)
     .filter(k => k.room_id === room.id)
     .map(k => ({
@@ -3238,7 +3331,7 @@ router.get('/rooms/:id/session/keys', requireApiAuth('read:direct'), (req, res) 
 router.post('/rooms/:id/session/keys/delivered', requireApiAuth('write:direct'), (req, res) => {
   const room = db.getRoom(parseInt(req.params.id, 10));
   if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
-  if (!db.isRoomMember(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'Not a member.');
+  if (!db.canViewRoom(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'No permission to view this room.');
   const ids = Array.isArray(req.body.key_ids) ? req.body.key_ids.map(Number) : [];
   // Only keys actually addressed to this caller in THIS room may be marked
   // delivered; silently skip everything else (unknown ids behave the same).
@@ -3255,7 +3348,7 @@ router.post('/rooms/:id/session/keys/delivered', requireApiAuth('write:direct'),
 router.get('/rooms/:id/session/status', requireApiAuth('read:direct'), (req, res) => {
   const room = db.getRoom(parseInt(req.params.id, 10));
   if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
-  if (!db.isRoomMember(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'Not a member.');
+  if (!db.canViewRoom(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'No permission to view this room.');
   const deviceId = String(req.query.device_id || '').trim().slice(0, 100);
   const gs = db.getRoomGroupSession(room.id, req.apiUser.id, deviceId);
   if (!gs) return responseEnvelope(res, { session_id: null, recipients: [], empty_keys_for: [] });
@@ -3266,7 +3359,7 @@ router.get('/rooms/:id/session/status', requireApiAuth('read:direct'), (req, res
 router.get('/rooms/:id/bundles', requireApiAuth('read:direct'), (req, res) => {
   const room = db.getRoom(parseInt(req.params.id, 10));
   if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
-  if (!db.isRoomMember(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'Not a member.');
+  if (!db.canViewRoom(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'No permission to view this room.');
 
   const missingForSession = String(req.query.missing_for_session || '').trim();
   let existingRecipients = new Set();
@@ -3318,7 +3411,7 @@ router.get('/rooms/:id/bundles', requireApiAuth('read:direct'), (req, res) => {
 router.get('/rooms/:id/bundle/:username', requireApiAuth('read:direct'), (req, res) => {
   const room = db.getRoom(parseInt(req.params.id, 10));
   if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
-  if (!db.isRoomMember(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'Not a member.');
+  if (!db.canViewRoom(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'No permission to view this room.');
   const other = db.getUserByUsername(req.params.username);
   if (!other) return errorResponse(res, 404, 'Not Found', 'User not found.');
   if (!db.isRoomMember(room.id, other.id)) return errorResponse(res, 403, 'Forbidden', 'Target is not a member.');
@@ -3340,7 +3433,7 @@ router.get('/rooms/:id/bundle/:username', requireApiAuth('read:direct'), (req, r
 router.post('/rooms/:id/claim/:username', requireApiAuth('write:direct'), express.json(), (req, res) => {
   const room = db.getRoom(parseInt(req.params.id, 10));
   if (!room) return errorResponse(res, 404, 'Not Found', 'Room not found.');
-  if (!db.isRoomMember(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'Not a member.');
+  if (!db.canViewRoom(room.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'No permission to view this room.');
   const other = db.getUserByUsername(req.params.username);
   if (!other) return errorResponse(res, 404, 'Not Found', 'User not found.');
   if (!db.isRoomMember(room.id, other.id)) return errorResponse(res, 403, 'Forbidden', 'Target is not a member.');
@@ -3783,14 +3876,18 @@ router.get('/stickers', requireApiAuth('read'), (req, res) => {
   responseEnvelope(res, data);
 });
 
-router.post('/stickers', requireApiAuth('write'), requireVerifiedApiWrite, (req, res, next) => {
+router.post('/stickers', requireApiAuth('write'), requireVerifiedApiWrite, drive.quotaGuard({ maxBytes: 500 * 1024 }), (req, res, next) => {
   if (req.is('multipart/form-data')) {
     stickerUpload.single('file')(req, res, async (err) => {
       if (err) {
+        drive.discardUpload(req);
         if (err.code === 'LIMIT_FILE_SIZE') return errorResponse(res, 400, 'Bad Request', 'Sticker must be under 500 KB.');
         return errorResponse(res, 400, 'Bad Request', 'Invalid sticker file.');
       }
-      if (!req.file) return errorResponse(res, 400, 'Bad Request', 'No file uploaded. Use field "file".');
+      if (!req.file) {
+        drive.releaseUploadReservation(req);
+        return errorResponse(res, 400, 'Bad Request', 'No file uploaded. Use field "file".');
+      }
       const fullPath = req.file.path;
       const ext = path.extname(req.file.originalname).toLowerCase();
       try {
@@ -3807,20 +3904,31 @@ router.post('/stickers', requireApiAuth('write'), requireVerifiedApiWrite, (req,
           }
         }
       } catch (e) {
-        try { fs.unlink(fullPath, () => {}); } catch {}
+        drive.discardUpload(req);
         return errorResponse(res, 400, 'Bad Request', 'Invalid image file.');
       }
       const filePath = '/uploads/stickers/' + req.file.filename;
-      const space = drive.quotaState(req.apiUser.id);
-      if (space.used + req.file.size > space.quota) {
-        try { fs.unlinkSync(path.join(__dirname, '..', '..', 'uploads', 'stickers', req.file.filename)); } catch (e) {}
-        return errorResponse(res, 413, 'Payload Too Large', drive.fullMessage(space));
+      const size = fs.statSync(fullPath).size;
+      const fit = drive.uploadFits(req, size, req.apiUser.id);
+      if (!fit.ok) {
+        drive.discardUpload(req);
+        return errorResponse(res, 413, 'Payload Too Large', drive.fullMessage(fit.state));
       }
-      const stickerId = db.addSticker(req.apiUser.id, filePath);
-      db.createUserFile({
-        userId: req.apiUser.id, kind: 'sticker', root: 'uploads', path: 'stickers/' + req.file.filename,
-        mime: req.file.mimetype || null, size: req.file.size, name: req.file.originalname || null,
-      });
+      let stickerId;
+      try {
+        stickerId = db.addSticker(req.apiUser.id, filePath);
+        db.createUserFile({
+          userId: req.apiUser.id, kind: 'sticker', root: 'uploads', path: 'stickers/' + req.file.filename,
+          mime: req.file.mimetype || null, size, name: req.file.originalname || null,
+        });
+      } catch (err) {
+        if (stickerId != null) db.deleteSticker(stickerId, req.apiUser.id);
+        try { db.removeStoredFile('uploads', 'stickers/' + req.file.filename); } catch {}
+        drive.discardUpload(req);
+        console.error('sticker upload: registration failed', err);
+        return errorResponse(res, 500, 'Internal Server Error', 'Could not save the uploaded sticker.');
+      }
+      drive.releaseUploadReservation(req);
       res.status(201).json({
         data: {
           id: String(stickerId || ''),
@@ -3895,7 +4003,7 @@ router.get('/discover', requireApiAuth('read'), (req, res) => {
 // ======== Admin API Endpoints (/api/v1/admin/*) ========
 
 function requireApiAdmin(req, res, next) {
-  requireApiAuth('read')(req, res, () => {
+  requireApiAuth('admin')(req, res, () => {
     if (!req.apiUser || !req.apiUser.is_admin) {
       return errorResponse(res, 403, 'Forbidden', 'Admin privileges required.');
     }
@@ -3917,6 +4025,7 @@ router.post('/admin/users/:id/ban', requireApiAdmin, (req, res) => {
   db.banUser(target.id);
   try { sessionStore.destroySessionsForUser(target.id); } catch {}
   db.revokeAllOAuthTokensForUser(target.id);
+  closeUserSockets(target.id);
   db.auditLog('user_banned', req.apiUser.id, target.username, req.ip);
   responseEnvelope(res, { ok: true, banned: true, user_id: target.id });
 });
@@ -3937,6 +4046,7 @@ router.delete('/admin/users/:id', requireApiAdmin, (req, res) => {
   if (target.is_admin) return errorResponse(res, 403, 'Forbidden', 'Cannot delete an admin.');
   db.deleteUser(target.id);
   try { sessionStore.destroySessionsForUser(target.id); } catch {}
+  closeUserSockets(target.id);
   db.auditLog('user_deleted', req.apiUser.id, target.username, req.ip);
   responseEnvelope(res, { ok: true, deleted: true, user_id: target.id });
 });

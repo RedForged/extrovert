@@ -1,0 +1,80 @@
+<%- include('partials/header') %>
+  <div class="card" style="max-width:560px;margin:0 auto">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <h2 style="margin:0">Drive storage</h2>
+      <a class="btn ghost small" href="/drive"><%- include('partials/icon', { name: 'arrowLeft', size: 13 }) %> Open Drive</a>
+    </div>
+    <p class="muted" style="font-size:var(--fs-sm);margin:6px 0 0">
+      By default your files are stored on this server and count against a size limit.
+      Connect your own Nextcloud and new Drive uploads go there instead — the files are
+      yours, and the Drive size limit stops applying.
+    </p>
+  </div>
+
+  <% if (notice) { %><div class="flash ok" style="max-width:560px;margin:12px auto"><span><%= notice %></span></div><% } %>
+  <% if (error) { %><div class="flash err" style="max-width:560px;margin:12px auto"><span class="flash-ico"><%- include('partials/icon', { name: 'alert', size: 18 }) %></span><span><%= error %></span></div><% } %>
+
+  <div class="card" style="max-width:560px;margin:0 auto">
+    <% if (connection) { %>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <h4 style="margin:0"><%= connection.enabled ? 'Connected' : 'Paused' %></h4>
+        <span class="badge" style="<%= connection.enabled ? 'color:var(--ok,#3c9);font-weight:600' : 'color:var(--text-muted)' %>"><%= connection.enabled ? 'Nextcloud' : 'uploads stay on this server' %></span>
+      </div>
+      <p style="font-size:var(--fs-sm);margin:8px 0 4px">
+        <strong><%= connection.baseUrl %></strong>
+      </p>
+      <p class="muted" style="font-size:var(--fs-sm);margin:0 0 4px">
+        Stored under <code><%= connection.username %>/Extrovert/</code><% if (connection.verifiedAt) { %> · verified <span title="<%= new Date(connection.verifiedAt).toISOString() %>"><%= locals.relTime(connection.verifiedAt) %> ago</span><% } %>
+      </p>
+      <p class="muted" style="font-size:var(--fs-xs);margin:0 0 12px">
+        <%= fmt(usage.remoteUsed) %> on your Nextcloud · <%= fmt(usage.localUsed) %> stored on this server.
+        Drive total: <%= fmt(usage.used) %>.
+        <% if (!connection.enabled) { %><br>New uploads are stored here again. Files already in your Nextcloud keep working through their Drive links.<% } %>
+      </p>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <% if (connection.enabled) { %>
+          <form method="post" action="/settings/drive/pause" style="margin:0">
+            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+            <button class="btn ghost small" type="submit">Pause new uploads</button>
+          </form>
+        <% } else { %>
+          <form method="post" action="/settings/drive/resume" style="margin:0">
+            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+            <button class="btn small" type="submit">Resume</button>
+          </form>
+        <% } %>
+        <form method="post" action="/settings/drive/disconnect" style="margin:0" data-confirm="Remove the connection? Files stay in your Nextcloud, but their Drive links stop working until you reconnect.">
+          <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+          <button class="btn ghost danger small" type="submit">Remove connection</button>
+        </form>
+      </div>
+      <hr>
+    <% } %>
+
+    <h4 style="margin-top:<%= connection ? '16px' : '0' %>"><%= connection ? 'Change connection' : 'Connect a Nextcloud' %></h4>
+    <form method="post" action="/settings/drive">
+      <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+      <label for="nc-url">Nextcloud URL</label>
+      <input type="url" id="nc-url" name="base_url" required maxlength="500"
+             value="<%= connection ? connection.baseUrl : '' %>"
+             placeholder="https://cloud.example.com">
+      <label for="nc-user">Username</label>
+      <input type="text" id="nc-user" name="username" required maxlength="255" autocomplete="username"
+             value="<%= connection ? connection.username : '' %>">
+      <label for="nc-pass">App password</label>
+      <input type="password" id="nc-pass" name="app_password" maxlength="512" autocomplete="new-password"
+             <%= connection ? '' : 'required' %>
+             placeholder="<%= connection ? 'stored — leave blank to keep' : '' %>">
+      <small class="muted" style="display:block;margin-top:6px;font-size:var(--fs-xs)">
+        In Nextcloud open <strong>Settings → Security → Devices &amp; sessions</strong> and create an app password.
+        Do not use your login password. You can revoke it there at any time.
+      </small>
+      <button class="btn full" style="margin-top:14px"><%= connection ? 'Save connection' : 'Connect' %></button>
+    </form>
+    <p class="muted" style="font-size:var(--fs-xs);margin:12px 0 0">
+      Uploads are written to an <code>Extrovert</code> folder in your Nextcloud. Files still pass through
+      this server during upload and are served through the same Drive links, which fetch them from your
+      Nextcloud on demand.
+    </p>
+  </div>
+<%- include('partials/footer') %>

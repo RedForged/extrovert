@@ -269,22 +269,22 @@ under `scripts/mls-*.js` (`npm run test:mls`).
 
 ## Administration
 
-All `/admin/*` routes require a Bearer token belonging to an account with `is_admin = 1`. Every administrative mutation is audited in the server audit log with the acting admin's user ID, target, and IP.
+All `/admin/*` routes require a Bearer token carrying the `admin` scope and belonging to an account with `is_admin = 1`. A read-only token intentionally cannot perform administrative operations. Every administrative mutation is audited in the server audit log with the acting admin's user ID, target, and IP.
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| GET | `/admin/users` | Bearer (`admin` or `read`) | List all registered users with admin and ban status. |
-| POST | `/admin/users/:id/ban` | Bearer (`admin` or `read`) | Suspend a user account, destroy all active web sessions, and revoke all OAuth tokens. Cannot ban another admin. |
-| POST | `/admin/users/:id/unban` | Bearer (`admin` or `read`) | Restore access to a suspended user account. |
-| DELETE | `/admin/users/:id` | Bearer (`admin` or `read`) | Permanently delete a user account and associated content. Cannot delete an admin. |
-| POST | `/admin/users/:id/make_admin` | Bearer (`admin` or `read`) | Promote a user to instance administrator. |
-| POST | `/admin/users/:id/remove_admin` | Bearer (`admin` or `read`) | Demote an administrator back to regular user. Cannot demote yourself. |
-| GET | `/admin/reports` | Bearer (`admin` or `read`) | List unresolved moderation reports. |
-| POST | `/admin/reports/:id/resolve` | Bearer (`admin` or `read`) | Mark a moderation report as resolved. |
-| POST | `/admin/reports/:id/dismiss` | Bearer (`admin` or `read`) | Dismiss a moderation report. |
-| GET | `/admin/announcement` | Bearer (`admin` or `read`) | Retrieve current server-wide announcement. |
-| POST | `/admin/announcement` | Bearer (`admin` or `read`) | Create or update server announcement. Body: `{body: "..."}`. |
-| DELETE | `/admin/announcement` | Bearer (`admin` or `read`) | Clear active server announcement. |
+| GET | `/admin/users` | Bearer (`admin`) | List all registered users with admin and ban status. |
+| POST | `/admin/users/:id/ban` | Bearer (`admin`) | Suspend a user account, destroy all active web sessions and sockets, and revoke all OAuth tokens. Cannot ban another admin. |
+| POST | `/admin/users/:id/unban` | Bearer (`admin`) | Restore access to a suspended user account. |
+| DELETE | `/admin/users/:id` | Bearer (`admin`) | Permanently delete a user account, associated content, and open sockets. Cannot delete an admin. |
+| POST | `/admin/users/:id/make_admin` | Bearer (`admin`) | Promote a user to instance administrator. |
+| POST | `/admin/users/:id/remove_admin` | Bearer (`admin`) | Demote an administrator back to regular user. Cannot demote yourself. |
+| GET | `/admin/reports` | Bearer (`admin`) | List unresolved moderation reports. |
+| POST | `/admin/reports/:id/resolve` | Bearer (`admin`) | Mark a moderation report as resolved. |
+| POST | `/admin/reports/:id/dismiss` | Bearer (`admin`) | Dismiss a moderation report. |
+| GET | `/admin/announcement` | Bearer (`admin`) | Retrieve current server-wide announcement. |
+| POST | `/admin/announcement` | Bearer (`admin`) | Create or update server announcement. Body: `{body: "..."}`. |
+| DELETE | `/admin/announcement` | Bearer (`admin`) | Clear active server announcement. |
 
 ## Transport & Security Configuration
 

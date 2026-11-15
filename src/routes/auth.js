@@ -10,6 +10,7 @@ const { getAccountIds, getSignedInAccounts, addAccount, setActiveAccount, remove
 const captcha = require('../captcha');
 const emailVerify = require('../email-verify');
 const twofa = require('../twofa');
+const { closeSessionSockets } = require('../webrtc-signaling');
 
 const router = express.Router();
 
@@ -422,13 +423,17 @@ router.post('/login/totp', (req, res) => {
 // of one account never invalidates the others' sessions or OAuth tokens.
 // ?all=1 (from the switcher menu) signs out of every account on the device.
 router.post('/logout', (req, res) => {
+  const sid = req.sessionID;
   if (String(req.body.all || '') === '1') {
+    closeSessionSockets(sid);
     return req.session.destroy(() => res.redirect('/login'));
   }
   const result = removeAccount(req, req.session.userId);
   if (result === 'destroyed') {
+    closeSessionSockets(sid);
     return req.session.destroy(() => res.redirect('/login'));
   }
+  closeSessionSockets(sid);
   res.safeRedirect(req.body.next, '/');
 });
 
@@ -472,8 +477,10 @@ router.post('/account/remove', (req, res) => {
     return res.status(404).send('Account is not signed in on this device.');
   }
   if (result === 'destroyed') {
+    closeSessionSockets(req.sessionID);
     return req.session.destroy(() => res.redirect('/login'));
   }
+  closeSessionSockets(req.sessionID);
   res.safeRedirect(req.body.next, '/');
 });
 

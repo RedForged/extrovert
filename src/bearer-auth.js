@@ -39,10 +39,25 @@ function bearerOrSession(req, res, next) {
   next();
 }
 
+// Enforce one explicit scope on a Bearer-authenticated request. A session
+// (browser) is a full user credential and is left as-is; a token must hold the
+// exact scope granted to the operation.
+function requireBearerScope(scope) {
+  return (req, res, next) => {
+    if (res.locals.bearerScopes === undefined) return next(); // session, or not-yet-authenticated
+    if (!String(res.locals.bearerScopes).split(/\s+/).includes(scope)) {
+      return res.status(403).json({
+        error: 'insufficient_scope',
+        error_description: `This endpoint requires the ${scope} scope.`,
+      });
+    }
+    next();
+  };
+}
+
 // Enforce the direct-message scope on E2EE routes for Bearer-authenticated
-// requests. A session (browser) is a full user credential and is left as-is;
-// a token must hold `read:direct` for reads and `write:direct` for mutations,
-// otherwise a token granted only `read` could read/send the user's DMs.
+// requests. A token must hold `read:direct` for reads and `write:direct` for
+// mutations, otherwise a token granted only `read` could read/send DMs.
 function requireDirectScope(req, res, next) {
   if (res.locals.bearerScopes === undefined) return next(); // session, or not-yet-authenticated
   const need = (req.method === 'GET' || req.method === 'HEAD') ? 'read:direct' : 'write:direct';
@@ -55,4 +70,4 @@ function requireDirectScope(req, res, next) {
   next();
 }
 
-module.exports = { bearerUser, bearerOrSession, requireDirectScope, resolveBearer };
+module.exports = { bearerUser, bearerOrSession, requireBearerScope, requireDirectScope, resolveBearer };

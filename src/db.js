@@ -144,6 +144,7 @@ function init() {
       color       TEXT NOT NULL DEFAULT '#cccccc',
       permissions INTEGER NOT NULL DEFAULT 3,
       is_founder  INTEGER NOT NULL DEFAULT 0,
+      is_default  INTEGER NOT NULL DEFAULT 0,
       position    INTEGER NOT NULL DEFAULT 0,
       created_at  INTEGER NOT NULL
     );
@@ -338,6 +339,28 @@ try { db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_user_files_user ON user_files(user_id);
 `); } catch {}
+// Which storage actually holds a row: this server's disk ('local') or the
+// user's own Nextcloud ('nextcloud', with remote_path set).
+try { db.exec(`ALTER TABLE user_files ADD COLUMN backend TEXT NOT NULL DEFAULT 'local'`); } catch {}
+try { db.exec(`ALTER TABLE user_files ADD COLUMN remote_path TEXT`); } catch {}
+
+// Optional per-user Nextcloud backend. When a row exists, new Drive uploads are
+// stored there and the Drive quota no longer applies to them (this server is
+// not storing the bytes). One connection per user.
+try { db.exec(`
+  CREATE TABLE IF NOT EXISTS user_nextcloud (
+    user_id      INTEGER PRIMARY KEY REFERENCES users(id),
+    base_url     TEXT NOT NULL,
+    username     TEXT NOT NULL,
+    app_password TEXT NOT NULL,
+    created_at   INTEGER NOT NULL,
+    verified_at  INTEGER,
+    enabled      INTEGER NOT NULL DEFAULT 1
+  );
+`); } catch {}
+// Pausing keeps the credentials so files already in the Nextcloud remain
+// readable and deletable; only new uploads go back to local disk.
+try { db.exec(`ALTER TABLE user_nextcloud ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`); } catch {}
 
 // Migrations.
 try { db.exec(`ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT 'default'`); } catch {}
@@ -367,6 +390,7 @@ try { db.exec(`ALTER TABLE users ADD COLUMN email_verified_at INTEGER`); } catch
 // rather than blocking startup.
 try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_unique ON users(email COLLATE NOCASE) WHERE email IS NOT NULL`); } catch (e) { console.error('email unique index not created:', e.message); }
 try { db.exec(`ALTER TABLE rooms ADD COLUMN is_public INTEGER NOT NULL DEFAULT 1`); } catch {}
+try { db.exec(`ALTER TABLE room_roles ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0`); } catch {}
 try { db.exec(`ALTER TABLE room_channels ADD COLUMN type TEXT NOT NULL DEFAULT 'text'`); } catch {}
 try { db.exec(`ALTER TABLE posts ADD COLUMN edited_at INTEGER`); } catch {}
 try { db.exec(`ALTER TABLE comments ADD COLUMN edited_at INTEGER`); } catch {}
@@ -377,6 +401,29 @@ try { db.exec(`ALTER TABLE oauth_tokens ADD COLUMN refresh_expires_at INTEGER`);
 // Refresh-token reuse detection: a rotated (superseded) refresh token is kept
 // with revoked_at set instead of deleted, so replaying it is detectable.
 try { db.exec(`ALTER TABLE oauth_tokens ADD COLUMN revoked_at INTEGER`); } catch {}
+
+// Every existing room needs exactly one non-founder default role. Prefer the
+// conventional Member role; otherwise choose deterministically rather than
+// reassigning members to an arbitrary role at deletion time.
+try {
+  const roomsWithoutDefault = db.prepare(`
+    SELECT DISTINCT room_id FROM room_roles
+    WHERE room_id NOT IN (SELECT room_id FROM room_roles WHERE is_default = 1)
+  `).all();
+  const markDefault = db.prepare(`UPDATE room_roles SET is_default = 1 WHERE id = ?`);
+  for (const { room_id } of roomsWithoutDefault) {
+    const role = db.prepare(`
+      SELECT id FROM room_roles
+      WHERE room_id = ? AND is_founder = 0
+      ORDER BY CASE WHEN lower(name) = 'member' THEN 0 ELSE 1 END,
+               position ASC, id ASC
+      LIMIT 1
+    `).get(room_id);
+    if (role) markDefault.run(role.id);
+  }
+} catch (e) {
+  console.error('room default-role backfill failed:', e.message);
+}
 try { db.exec(`CREATE TABLE IF NOT EXISTS reports (id INTEGER PRIMARY KEY AUTOINCREMENT, reporter_id INTEGER NOT NULL REFERENCES users(id), reported_user_id INTEGER NOT NULL REFERENCES users(id), message_id INTEGER NOT NULL, message_body TEXT NOT NULL, channel_id INTEGER NOT NULL, room_id INTEGER NOT NULL, reason TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at INTEGER NOT NULL)`); } catch {}
 // Content reports: one queue for everything a user can report. The reporter is
 // always the signed-in user; target_user_id is whoever posted the thing.
@@ -648,10 +695,28 @@ try { db.exec(`
   CREATE TABLE IF NOT EXISTS mls_groups (
     group_id        TEXT PRIMARY KEY,
     epoch           INTEGER NOT NULL DEFAULT 0,
+    creator_id      INTEGER REFERENCES users(id),
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL
   );
 `); } catch {}
+try { db.exec(`ALTER TABLE mls_groups ADD COLUMN creator_id INTEGER REFERENCES users(id)`); } catch {}
+// Legacy groups predate creator tracking. Prefer the member the client marked
+// as creator, then the earliest active leaf; room-group resets are separately
+// authorized by MANAGE_ROOM, so this only affects DM recovery.
+try {
+  db.exec(`
+    UPDATE mls_groups
+    SET creator_id = (
+      SELECT m.user_id FROM mls_group_members m
+      WHERE m.group_id = mls_groups.group_id AND m.removed_at IS NULL
+      ORDER BY CASE WHEN m.role = 'creator' THEN 0 ELSE 1 END,
+               m.joined_at ASC, m.leaf_index ASC
+      LIMIT 1
+    )
+    WHERE creator_id IS NULL
+  `);
+} catch {}
 
 try { db.exec(`
   CREATE TABLE IF NOT EXISTS mls_group_members (
@@ -1211,10 +1276,15 @@ const { notify } = require('./notif-broadcaster');
 // "%echo_bot". Case-insensitive; the author never notifies themselves.
 function notifyMentions(body, actorId, postId = null) {
   const { parseMentions } = require('./markdown');
+  const { canView } = require('./network');
+  const parent = postId ? db.prepare(`SELECT user_id FROM posts WHERE id = ?`).get(postId) : null;
   for (const handle of parseMentions(body)) {
     const lookup = handle.charAt(0) === '%' ? handle : handle.slice(1);
     const u = db.prepare(`SELECT id FROM users WHERE username = ? COLLATE NOCASE`).get(lookup);
     if (!u || u.id === actorId) continue;
+    // A mention is not authorization to reveal the parent post. Do not store
+    // (or push) a notification whose link the recipient cannot open.
+    if (parent && !canView(Number(u.id), Number(parent.user_id))) continue;
     createNotification({ userId: u.id, type: 'mention', actorId, postId });
   }
 }
@@ -1234,9 +1304,11 @@ function getNotifications(userId, limit = 50, cursor) {
   let sql, params;
   if (cursor) {
     sql = `
-      SELECT n.*, u.username AS actor_username, u.display_name AS actor_name, u.avatar AS actor_avatar, u.bio AS actor_bio, u.created_at AS actor_created_at
+      SELECT n.*, p.user_id AS post_user_id,
+             u.username AS actor_username, u.display_name AS actor_name, u.avatar AS actor_avatar, u.bio AS actor_bio, u.created_at AS actor_created_at
       FROM notifications n
       JOIN users u ON u.id = n.actor_id
+      LEFT JOIN posts p ON p.id = n.post_id
       WHERE n.user_id = ? AND n.id < ?
       ORDER BY n.id DESC
       LIMIT ?
@@ -1244,23 +1316,31 @@ function getNotifications(userId, limit = 50, cursor) {
     params = [userId, cursor, limit];
   } else {
     sql = `
-      SELECT n.*, u.username AS actor_username, u.display_name AS actor_name, u.avatar AS actor_avatar, u.bio AS actor_bio, u.created_at AS actor_created_at
+      SELECT n.*, p.user_id AS post_user_id,
+             u.username AS actor_username, u.display_name AS actor_name, u.avatar AS actor_avatar, u.bio AS actor_bio, u.created_at AS actor_created_at
       FROM notifications n
       JOIN users u ON u.id = n.actor_id
+      LEFT JOIN posts p ON p.id = n.post_id
       WHERE n.user_id = ?
       ORDER BY n.id DESC
       LIMIT ?
     `;
     params = [userId, limit];
   }
-  return db.prepare(sql).all(...params);
+  const { canView } = require('./network');
+  return db.prepare(sql).all(...params)
+    .filter((n) => !n.post_user_id || canView(Number(userId), Number(n.post_user_id)));
 }
 
 function countUnreadNotifications(userId) {
-  const row = db.prepare(
-    `SELECT COUNT(*) AS n FROM notifications WHERE user_id = ? AND read = 0`
-  ).get(userId);
-  return row.n;
+  const rows = db.prepare(`
+    SELECT n.id, p.user_id AS post_user_id
+    FROM notifications n
+    LEFT JOIN posts p ON p.id = n.post_id
+    WHERE n.user_id = ? AND n.read = 0
+  `).all(userId);
+  const { canView } = require('./network');
+  return rows.filter((n) => !n.post_user_id || canView(Number(userId), Number(n.post_user_id))).length;
 }
 
 function markNotificationsRead(userId) {
@@ -1765,7 +1845,7 @@ function getMlsGroup(groupId) {
   };
 }
 
-function initMlsGroup(groupId, initialEpoch, members = [], commitData = null, welcomes = [], idempotencyKey = null) {
+function initMlsGroup(groupId, initialEpoch, members = [], commitData = null, welcomes = [], idempotencyKey = null, creatorId = null) {
   const now = Date.now();
   const gid = String(groupId).trim();
   const ep = Number(initialEpoch) || 0;
@@ -1800,9 +1880,9 @@ function initMlsGroup(groupId, initialEpoch, members = [], commitData = null, we
     const activeEp = commitProvided ? ep + 1 : ep;
 
     db.prepare(`
-      INSERT INTO mls_groups (group_id, epoch, created_at, updated_at)
-      VALUES (?, ?, ?, ?)
-    `).run(gid, activeEp, now, now);
+      INSERT INTO mls_groups (group_id, epoch, creator_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(gid, activeEp, creatorId == null ? null : Number(creatorId), now, now);
 
     if (Array.isArray(members) && members.length) {
       const insertMember = db.prepare(`
@@ -1978,8 +2058,14 @@ function commitMlsGroup(groupId, expectedEpoch, commitData, welcomes = [], propo
   }
 }
 
-function resetMlsGroup(groupId, expectedEpoch = null) {
+function resetMlsGroup(groupId, expectedEpoch) {
   const gid = String(groupId);
+  const expEp = Number(expectedEpoch);
+  if (expectedEpoch === null || expectedEpoch === undefined || !Number.isInteger(expEp) || expEp < 0) {
+    const err = new Error('expectedEpoch is required for an MLS reset');
+    err.code = 'EXPECTED_EPOCH_REQUIRED';
+    throw err;
+  }
   db.exec('BEGIN IMMEDIATE');
   try {
     const g = db.prepare(`SELECT epoch FROM mls_groups WHERE group_id = ?`).get(gid);
@@ -1988,8 +2074,8 @@ function resetMlsGroup(groupId, expectedEpoch = null) {
       err.code = 'GROUP_NOT_FOUND';
       throw err;
     }
-    if (expectedEpoch !== null && expectedEpoch !== undefined && g.epoch !== Number(expectedEpoch)) {
-      const err = new Error('Epoch conflict: expected ' + expectedEpoch + ' but server is at ' + g.epoch);
+    if (g.epoch !== expEp) {
+      const err = new Error('Epoch conflict: expected ' + expEp + ' but server is at ' + g.epoch);
       err.code = 'EPOCH_CONFLICT';
       err.server_epoch = g.epoch;
       throw err;
@@ -2510,6 +2596,9 @@ function deleteUserRows(userId) {
   // Unlink every file this account stored (avatars, stickers, API media, Drive).
   db.prepare(`SELECT root, path FROM user_files WHERE user_id = ?`).all(userId)
     .forEach((f) => { try { removeStoredFile(f.root, f.path); } catch (e) { /* best effort */ } });
+  // The Nextcloud credentials go last: removeStoredFile above needs them to
+  // delete the account's remote files.
+  db.prepare(`DELETE FROM user_nextcloud WHERE user_id = ?`).run(userId);
   db.prepare(`DELETE FROM media_attachments WHERE user_id = ?`).run(userId);
   db.prepare(`DELETE FROM edit_history WHERE edited_by = ?`).run(userId);
   db.prepare(`DELETE FROM push_subscriptions WHERE user_id = ?`).run(userId);
@@ -2672,8 +2761,8 @@ function createRoom(name, description, creatorId, isPublic = 1) {
   const now = Date.now();
   const res = db.prepare(`INSERT INTO rooms (name, description, creator_id, is_public, created_at) VALUES (?,?,?,?,?)`).run(name, description, creatorId, isPublic ? 1 : 0, now);
   const roomId = res.lastInsertRowid;
-  const founderRole = db.prepare(`INSERT INTO room_roles (room_id, name, color, permissions, is_founder, position, created_at) VALUES (?,?,?,?,?,?,?)`).run(roomId, 'Founder', '#ffd700', 127, 1, 100, now);
-  const memberRole = db.prepare(`INSERT INTO room_roles (room_id, name, color, permissions, is_founder, position, created_at) VALUES (?,?,?,?,?,?,?)`).run(roomId, 'Member', '#cccccc', 3, 0, 0, now);
+  const founderRole = db.prepare(`INSERT INTO room_roles (room_id, name, color, permissions, is_founder, is_default, position, created_at) VALUES (?,?,?,?,?,?,?,?)`).run(roomId, 'Founder', '#ffd700', 127, 1, 0, 100, now);
+  const memberRole = db.prepare(`INSERT INTO room_roles (room_id, name, color, permissions, is_founder, is_default, position, created_at) VALUES (?,?,?,?,?,?,?,?)`).run(roomId, 'Member', '#cccccc', 3, 0, 1, 0, now);
   db.prepare(`INSERT INTO room_members (room_id, user_id, role_id, joined_at) VALUES (?,?,?,?)`).run(roomId, creatorId, founderRole.lastInsertRowid, now);
   db.prepare(`INSERT INTO room_channels (room_id, name, created_at) VALUES (?,?,?)`).run(roomId, 'general', now);
   return roomId;
@@ -2731,8 +2820,9 @@ function updateRoomRole(id, name, color, permissions) {
 }
 function deleteRoomRole(id) {
   const role = getRoomRole(id);
-  if (role && role.is_founder) return false;
-  db.prepare(`UPDATE room_members SET role_id = (SELECT id FROM room_roles WHERE room_id = (SELECT room_id FROM room_roles WHERE id = ?) AND is_founder = 0 LIMIT 1) WHERE role_id = ?`).run(id, id);
+  if (!role || role.is_founder || role.is_default) return false;
+  const assigned = db.prepare(`SELECT 1 FROM room_members WHERE role_id = ? LIMIT 1`).get(id);
+  if (assigned) return false;
   db.prepare(`DELETE FROM room_roles WHERE id = ?`).run(id);
   return true;
 }
@@ -2792,7 +2882,7 @@ function pruneNotifications() {
     .run(now - 30 * 86400000, now - 90 * 86400000);
 }
 function joinDefaultRole(roomId) {
-  return db.prepare(`SELECT id FROM room_roles WHERE room_id = ? AND is_founder = 0 ORDER BY position DESC, id LIMIT 1`).get(roomId);
+  return db.prepare(`SELECT id FROM room_roles WHERE room_id = ? AND is_default = 1 LIMIT 1`).get(roomId);
 }
 function hasRoomPermission(roomId, userId, permBit) {
   const role = getUserRoomRole(roomId, userId);
@@ -2808,13 +2898,21 @@ function roomPermissionsFor(roomId, userId) {
 }
 
 // Can this member view a channel's contents? Mirrors the read-path filter:
-// a null/empty view_role_ids means open to all members; otherwise the member's
-// role must be listed. Founder role and admins always may.
+// room VIEW is required first, then a null/empty view_role_ids means open to
+// all viewers; otherwise the member's role must be listed. Founder and admins
+// always may.
+function canViewRoom(roomId, userId) {
+  const u = db.prepare(`SELECT is_admin FROM users WHERE id = ?`).get(userId);
+  if (u && u.is_admin) return true;
+  const role = getUserRoomRole(Number(roomId), Number(userId));
+  if (!role) return false;
+  return !!role.is_founder || (role.permissions & 1) === 1;
+}
+
 function canViewRoomChannel(channelId, userId) {
   const ch = getRoomChannel(channelId);
   if (!ch) return false;
-  const u = db.prepare(`SELECT is_admin FROM users WHERE id = ?`).get(userId);
-  if (u && u.is_admin) return true;
+  if (!canViewRoom(ch.room_id, userId)) return false;
   const role = getUserRoomRole(ch.room_id, userId);
   if (!role) return false;
   if (role.is_founder) return true;
@@ -2878,7 +2976,7 @@ function approveJoinRequest(requestId) {
   const req = db.prepare(`SELECT * FROM join_requests WHERE id = ?`).get(requestId);
   if (!req || req.status !== 'pending') return null;
   db.prepare(`UPDATE join_requests SET status = 'approved' WHERE id = ?`).run(requestId);
-  const defaultRole = db.prepare(`SELECT id FROM room_roles WHERE room_id = ? AND is_founder = 0 ORDER BY position DESC LIMIT 1`).get(req.room_id);
+  const defaultRole = db.prepare(`SELECT id FROM room_roles WHERE room_id = ? AND is_default = 1 LIMIT 1`).get(req.room_id);
   if (defaultRole) addRoomMember(req.room_id, req.user_id, defaultRole.id);
   return true;
 }
@@ -3073,7 +3171,7 @@ function rotateBotWebhookSecret(userId) {
 
 // Mentions-only feed: posts that produced a mention notification for the user.
 function getMentionsFeed(userId, limit = 40) {
-  return db.prepare(`
+  const rows = db.prepare(`
     SELECT p.*, u.username, u.display_name, u.avatar, u.bio AS user_bio, u.created_at AS user_created_at
     FROM notifications n
     JOIN posts p ON p.id = n.post_id
@@ -3082,6 +3180,10 @@ function getMentionsFeed(userId, limit = 40) {
     ORDER BY p.created_at DESC
     LIMIT ?
   `).all(userId, Math.min(Number(limit) || 40, 80));
+  // Notifications can outlive a relationship. Mention bodies are post content,
+  // so apply the same network visibility rule as every other post read.
+  const { canView } = require('./network');
+  return rows.filter((post) => canView(Number(userId), Number(post.user_id)));
 }
 
 function hashOAuthToken(token) {
@@ -3105,8 +3207,16 @@ function getOAuthTokenByRefresh(refreshToken) {
   return db.prepare(`SELECT * FROM oauth_tokens WHERE refresh_token = ?`).get(hashOAuthToken(refreshToken));
 }
 
+function findOAuthTokenForRevocation(token) {
+  const hash = hashOAuthToken(token);
+  return db.prepare(`SELECT * FROM oauth_tokens WHERE token = ? OR refresh_token = ? LIMIT 1`).get(hash, hash) || null;
+}
+
 function revokeOAuthToken(token) {
-  db.prepare(`UPDATE oauth_tokens SET revoked_at = ? WHERE token = ? AND revoked_at IS NULL`).run(Date.now(), hashOAuthToken(token));
+  const record = findOAuthTokenForRevocation(token);
+  if (!record) return null;
+  db.prepare(`UPDATE oauth_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`).run(Date.now(), record.id);
+  return record;
 }
 
 function revokeOAuthTokensForUser(userId, appId) {
@@ -3163,6 +3273,10 @@ function listPersonalAccessTokens(userId) {
   `).all(userId);
 }
 
+function getPersonalAccessTokenById(id, userId) {
+  return db.prepare(`SELECT * FROM personal_access_tokens WHERE id = ? AND user_id = ?`).get(id, userId) || null;
+}
+
 function deletePersonalAccessToken(id, userId) {
   const res = db.prepare(`DELETE FROM personal_access_tokens WHERE id = ? AND user_id = ?`).run(id, userId);
   return res.changes > 0;
@@ -3184,6 +3298,10 @@ function revokeSessionToken(tokenId, userId) {
     UPDATE oauth_tokens SET revoked_at = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL
   `).run(Date.now(), tokenId, userId);
   return res.changes > 0;
+}
+
+function getOAuthTokenForUserById(id, userId) {
+  return db.prepare(`SELECT * FROM oauth_tokens WHERE id = ? AND user_id = ?`).get(id, userId) || null;
 }
 
 // ---------- FoF Discovery ----------
@@ -3253,17 +3371,17 @@ function splitStoredPath(stored) {
   return null;
 }
 
-function createUserFile({ userId, kind, root, path: relPath, mime, size, sealed, name }) {
+function createUserFile({ userId, kind, root, path: relPath, mime, size, sealed, name, backend = 'local', remotePath = null }) {
   const existing = db.prepare(`SELECT id FROM user_files WHERE root = ? AND path = ?`).get(root, relPath);
   if (existing) {
-    db.prepare(`UPDATE user_files SET user_id = ?, kind = ?, mime = ?, size = ?, sealed = ?, name = ? WHERE id = ?`)
-      .run(userId, kind, mime || null, size, sealed ? 1 : 0, name || null, existing.id);
+    db.prepare(`UPDATE user_files SET user_id = ?, kind = ?, mime = ?, size = ?, sealed = ?, name = ?, backend = ?, remote_path = ? WHERE id = ?`)
+      .run(userId, kind, mime || null, size, sealed ? 1 : 0, name || null, backend, remotePath || null, existing.id);
     return existing.id;
   }
   return db.prepare(`
-    INSERT INTO user_files (user_id, kind, root, path, mime, size, sealed, name, created_at)
-    VALUES (?,?,?,?,?,?,?,?,?)
-  `).run(userId, kind, root, relPath, mime || null, size, sealed ? 1 : 0, name || null, Date.now()).lastInsertRowid;
+    INSERT INTO user_files (user_id, kind, root, path, mime, size, sealed, name, created_at, backend, remote_path)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)
+  `).run(userId, kind, root, relPath, mime || null, size, sealed ? 1 : 0, name || null, Date.now(), backend, remotePath || null).lastInsertRowid;
 }
 
 function getUserFiles(userId) {
@@ -3278,14 +3396,52 @@ function getUserFileUsage(userId) {
   return db.prepare(`SELECT COALESCE(SUM(size),0) AS n FROM user_files WHERE user_id = ?`).get(userId).n;
 }
 
+// Quota accounting only counts bytes this server actually stores.
+function getLocalUserFileUsage(userId) {
+  return db.prepare(`SELECT COALESCE(SUM(size),0) AS n FROM user_files WHERE user_id = ? AND backend = 'local'`).get(userId).n;
+}
+
 function getAllUserFileUsage() {
   return db.prepare(
-    `SELECT user_id, SUM(size) AS bytes, COUNT(*) AS files FROM user_files GROUP BY user_id ORDER BY bytes DESC`
+    `SELECT user_id, SUM(size) AS bytes, COUNT(*) AS files FROM user_files WHERE backend = 'local' GROUP BY user_id ORDER BY bytes DESC`
   ).all();
 }
 
 function getTotalUserFileUsage() {
-  return db.prepare(`SELECT COALESCE(SUM(size),0) AS bytes, COUNT(*) AS files FROM user_files`).get();
+  return db.prepare(`SELECT COALESCE(SUM(size),0) AS bytes, COUNT(*) AS files FROM user_files WHERE backend = 'local'`).get();
+}
+
+// ---------- Nextcloud backend ----------
+function getUserNextcloud(userId) {
+  return db.prepare(`SELECT * FROM user_nextcloud WHERE user_id = ?`).get(userId) || null;
+}
+
+// The backend that new uploads should use. A paused connection is ignored.
+function getActiveNextcloud(userId) {
+  return db.prepare(`SELECT * FROM user_nextcloud WHERE user_id = ? AND enabled = 1`).get(userId) || null;
+}
+
+function setUserNextcloud(userId, { baseUrl, username, appPassword }) {
+  const now = Date.now();
+  db.prepare(`
+    INSERT INTO user_nextcloud (user_id, base_url, username, app_password, created_at, verified_at, enabled)
+    VALUES (?,?,?,?,?,?,1)
+    ON CONFLICT(user_id) DO UPDATE SET
+      base_url = excluded.base_url,
+      username = excluded.username,
+      app_password = excluded.app_password,
+      verified_at = excluded.verified_at,
+      enabled = 1
+  `).run(userId, baseUrl, username, appPassword, now, now);
+}
+
+function setUserNextcloudEnabled(userId, enabled) {
+  return db.prepare(`UPDATE user_nextcloud SET enabled = ? WHERE user_id = ?`)
+    .run(enabled ? 1 : 0, userId).changes;
+}
+
+function deleteUserNextcloud(userId) {
+  return db.prepare(`DELETE FROM user_nextcloud WHERE user_id = ?`).run(userId).changes;
 }
 
 function deleteUserFile(id) {
@@ -3312,9 +3468,21 @@ function clearUserFontByPath(storedPath) {
   return db.prepare(`UPDATE users SET custom_font = '' WHERE custom_font = ?`).run(storedPath).changes;
 }
 
-// Drop a file's accounting row and unlink it. Tolerates either half missing.
+// Drop a file's accounting row and the bytes behind it. Tolerates either half
+// missing. Files in a user's Nextcloud are deleted there, best-effort — the
+// remote copy is theirs and a transient outage must not block cleanup locally.
 function removeStoredFile(root, relPath) {
   const row = deleteUserFileByPath(root, relPath);
+  if (row && row.backend === 'nextcloud' && row.remote_path) {
+    const cfg = getUserNextcloud(row.user_id);
+    if (cfg) {
+      try {
+        require('./nextcloud').deleteFile(cfg, row.remote_path)
+          .catch((err) => console.error('[Drive] Nextcloud delete failed:', err.message));
+      } catch (err) { /* best effort */ }
+    }
+    return row;
+  }
   const full = fileDiskPath(root, relPath);
   if (full) { try { fs.unlinkSync(full); } catch (e) { /* already gone */ } }
   return row;
@@ -3727,9 +3895,9 @@ module.exports = {
   // stickers
   addSticker, getMyStickers, deleteSticker, getStickerById,
   // personal access tokens
-  createPersonalAccessToken, getPersonalAccessTokenByHash, touchPersonalAccessToken, listPersonalAccessTokens, deletePersonalAccessToken,
+  createPersonalAccessToken, getPersonalAccessTokenByHash, getPersonalAccessTokenById, touchPersonalAccessToken, listPersonalAccessTokens, deletePersonalAccessToken,
   // active sessions
-  listActiveSessionsForUser, revokeSessionToken,
+  listActiveSessionsForUser, revokeSessionToken, getOAuthTokenForUserById,
   // discovery
   getSuggestedFoafUsers,
   // avatar
@@ -3756,7 +3924,7 @@ module.exports = {
   getRoomMemberCount: countRoomMembers,
   createRoomRole, getRoomRole, getRoomRoles, updateRoomRole, deleteRoomRole, transferFounder,
   createRoomChannel, getRoomChannel, getRoomChannels, updateRoomChannel, deleteRoomChannel,
-  getRoomMessages, sendRoomMessage, deleteRoomMessage, joinDefaultRole, hasRoomPermission, roomPermissionsFor, canViewRoomChannel,
+  getRoomMessages, sendRoomMessage, deleteRoomMessage, joinDefaultRole, hasRoomPermission, roomPermissionsFor, canViewRoom, canViewRoomChannel,
   publishRoomGroupSession, getRoomGroupSession, isRoomGroupSessionUsable, pruneSupersededRoomGroupSessions, saveRoomSessionKeys, ensureRoomSessionRecipient, getPendingRoomSessionKeys, getPendingRoomSessionKeyForUserAndSession, getRoomSessionKeyById, markRoomSessionKeyDelivered, getRoomSessionRecipients, getRoomSessionEmptyKeyRecipients,
   // reports
   createReport, getPendingReports, getReport, resolveReport, dismissReport,
@@ -3772,15 +3940,16 @@ module.exports = {
   // OAuth codes
   createOAuthCode, getOAuthCode, markOAuthCodeUsed,
   // OAuth tokens
-  createOAuthToken, getOAuthToken, getOAuthTokenByRefresh,
+  createOAuthToken, getOAuthToken, getOAuthTokenByRefresh, findOAuthTokenForRevocation,
   revokeOAuthToken, revokeOAuthTokensForUser, revokeAllOAuthTokensForUser,
   rotateRefreshToken, migrateOAuthTokenHashes, hashOAuthToken,
   // media
   createMediaAttachment, getMediaAttachment, getMediaAttachmentsByUser, updateMediaAttachmentDimensions, getUserMediaUsage,
   // drive / user files
   FILE_ROOTS, fileDiskPath, splitStoredPath, createUserFile, getUserFiles, getUserFileById, getUserFileUsage,
-  getAllUserFileUsage, getTotalUserFileUsage, deleteUserFile, deleteUserFileByPath, removeStoredFile,
+  getLocalUserFileUsage, getAllUserFileUsage, getTotalUserFileUsage, deleteUserFile, deleteUserFileByPath, removeStoredFile,
   getUserFileByPath, countPostsUsingMedia, setUserFont, clearUserFontByPath,
+  getUserNextcloud, getActiveNextcloud, setUserNextcloud, setUserNextcloudEnabled, deleteUserNextcloud,
   // content reports
   createContentReport, getPendingContentReports, countPendingContentReports, resolveContentReport,
   getContentReport, getCommentById, getRoomMessageById, REPORT_TARGET_TYPES,

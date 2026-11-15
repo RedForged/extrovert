@@ -73,6 +73,8 @@ async function main() {
     ['/inbox', 'inbox'],
     ['/settings', 'settings'],
     ['/settings/bots', 'settings bots'],
+    ['/settings/drive', 'settings drive storage'],
+    ['/drive', 'drive'],
     ['/u/alice', 'own profile'],
     ['/u/alice/edit', 'profile edit'],
     ['/u/alice/followers', 'followers list'],

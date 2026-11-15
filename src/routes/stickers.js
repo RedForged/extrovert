@@ -6,7 +6,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const multer = require('multer');
 const sharp = require('sharp');
-const { addSticker, getMyStickers, createUserFile, splitStoredPath, removeStoredFile, getUserFileByPath } = require('../db');
+const { addSticker, deleteSticker, getMyStickers, createUserFile, splitStoredPath, removeStoredFile, getUserFileByPath } = require('../db');
 const drive = require('../drive');
 
 const router = express.Router();
@@ -39,20 +39,26 @@ router.get('/mine', (req, res) => {
   res.json(getMyStickers(res.locals.currentUser.id));
 });
 
-router.post('/upload', (req, res) => {
+router.post('/upload', (req, res, next) => {
   if (!res.locals.currentUser) return res.status(401).send('Not logged in');
+  next();
+}, drive.quotaGuard({ maxBytes: 500 * 1024 }), (req, res) => {
   // Multipart bodies bypass the global CSRF middleware, and the token is a
   // form field inside the multipart body, so validation must happen AFTER
   // multer parses the request (upload.single below populates req.body).
   upload.single('sticker')(req, res, async (err) => {
     if (err) {
+      drive.discardUpload(req);
       if (err.code === 'LIMIT_FILE_SIZE') return res.status(400).send('Sticker must be under 500 KB.');
       return res.status(400).send('Invalid file.');
     }
-    if (!req.file) return res.status(400).send('No file uploaded.');
+    if (!req.file) {
+      drive.releaseUploadReservation(req);
+      return res.status(400).send('No file uploaded.');
+    }
     const token = (req.body && req.body._csrf) || req.get('X-CSRF-Token');
     if (!token || token !== req.session.csrfToken) {
-      try { fs.unlink(req.file.path, () => {}); } catch {}
+      drive.discardUpload(req);
       return res.status(403).send('CSRF validation failed');
     }
     // Auto-compress if over 250 KB and not a GIF.
@@ -73,24 +79,35 @@ router.post('/upload', (req, res) => {
       } catch (err) {
         // Compression blew up mid-flight: drop the temp original rather than
         // leaving stale oversize files behind.
-        try { fs.unlink(fullPath, () => {}); } catch {}
+        drive.discardUpload(req);
         return res.status(400).send('Invalid file.');
       }
     }
 
     const filePath = '/uploads/stickers/' + req.file.filename;
+    const size = fs.statSync(fullPath).size;
     // Stickers count against the Drive like every other stored file.
-    const space = drive.quotaState(res.locals.currentUser.id);
-    if (space.used + req.file.size > space.quota) {
-      try { fs.unlinkSync(path.join(STICKER_DIR, req.file.filename)); } catch (e) {}
-      return res.status(413).send('Not enough Drive space for a new sticker — you have ' + drive.fmt(space.remaining) + ' left.');
+    const fit = drive.uploadFits(req, size, res.locals.currentUser.id);
+    if (!fit.ok) {
+      drive.discardUpload(req);
+      return res.status(413).send('Not enough Drive space for a new sticker — you have ' + drive.fmt(fit.state ? fit.state.remaining : 0) + ' left.');
     }
-    addSticker(res.locals.currentUser.id, filePath);
-    createUserFile({
-      userId: res.locals.currentUser.id, kind: 'sticker', root: 'uploads',
-      path: 'stickers/' + req.file.filename, mime: req.file.mimetype || null,
-      size: fs.statSync(path.join(STICKER_DIR, req.file.filename)).size, name: req.file.originalname || null,
-    });
+    let stickerId;
+    try {
+      stickerId = addSticker(res.locals.currentUser.id, filePath);
+      createUserFile({
+        userId: res.locals.currentUser.id, kind: 'sticker', root: 'uploads',
+        path: 'stickers/' + req.file.filename, mime: req.file.mimetype || null,
+        size, name: req.file.originalname || null,
+      });
+    } catch (err) {
+      if (stickerId != null) deleteSticker(stickerId, res.locals.currentUser.id);
+      try { removeStoredFile('uploads', 'stickers/' + req.file.filename); } catch {}
+      drive.discardUpload(req);
+      console.error('sticker upload: registration failed', err);
+      return res.status(500).send('Could not save the uploaded sticker.');
+    }
+    drive.releaseUploadReservation(req);
     res.redirect('/stickers/manage');
   });
 });

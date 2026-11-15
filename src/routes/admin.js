@@ -4,6 +4,7 @@ const express = require('express');
 const { getAllUsers, getUserById, removeReferralBadge, banUser, unbanUser, deleteUser, getAllRooms, deleteRoom, getPendingReports, getReport, resolveReport, dismissReport, promoteUser, getAnnouncement, setAnnouncement, clearAnnouncement, getSecurityReports, markSecurityReportHandled, getSetting, revokeAllOAuthTokensForUser, auditLog, getDriveQuotaBytes, setDriveQuotaBytes, getTotalUserFileUsage, getAllUserFileUsage, DRIVE_QUOTA_DEFAULT_BYTES, getPendingContentReports, countPendingContentReports, getContentReport, resolveContentReport, deletePost, deleteComment, deleteRoomMessage, getPostById, getCommentById, splitStoredPath, removeStoredFile } = require('../db');
 const { destroySessionsForUser } = require('../session-store');
 const { fmt } = require('../drive');
+const { closeUserSockets } = require('../webrtc-signaling');
 
 const router = express.Router();
 
@@ -34,6 +35,7 @@ router.post('/ban/:id', requireAdmin, (req, res) => {
   banUser(target.id);
   try { destroySessionsForUser(target.id); } catch (err) { console.error('ban: session teardown failed', err); }
   revokeAllOAuthTokensForUser(target.id);
+  closeUserSockets(target.id);
   auditLog('user_banned', req.session.userId, target.username);
   res.redirect('/admin');
 });
@@ -50,6 +52,7 @@ router.post('/delete/:id', requireAdmin, (req, res) => {
   if (!target) return res.status(404).send('User not found');
   if (target.is_admin) return res.status(403).send('Cannot delete another admin.');
   deleteUser(target.id);
+  closeUserSockets(target.id);
   res.redirect('/admin');
 });
 
@@ -86,6 +89,7 @@ router.post('/reports/:id/ban', requireAdmin, (req, res) => {
   banUser(target.id);
   try { destroySessionsForUser(target.id); } catch (err) { console.error('ban: session teardown failed', err); }
   revokeAllOAuthTokensForUser(target.id);
+  closeUserSockets(target.id);
   auditLog('user_banned', req.session.userId, target.username);
   resolveContentReport(report.id, 'actioned');
   res.redirect('/admin/reports');

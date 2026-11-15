@@ -68,6 +68,13 @@ const bobAppId = db.createOAuthApp({
   ownerId: bobId,
 });
 
+const rootReadonlyToken = crypto.randomBytes(32).toString('hex');
+db.createOAuthToken(rootReadonlyToken, null, aliceAppId, rootId, 'read', Date.now() + 86400000);
+const rootAdminToken = crypto.randomBytes(32).toString('hex');
+db.createOAuthToken(rootAdminToken, null, aliceAppId, rootId, 'admin', Date.now() + 86400000);
+const malloryAdminToken = crypto.randomBytes(32).toString('hex');
+db.createOAuthToken(malloryAdminToken, null, aliceAppId, malloryId, 'admin', Date.now() + 86400000);
+
 const aliceToken = crypto.randomBytes(32).toString('hex');
 db.createOAuthToken(aliceToken, null, aliceAppId, aliceId, 'read write follow notifications media.write profile read:direct write:direct', Date.now() + 86400000);
 const malloryToken = crypto.randomBytes(32).toString('hex');
@@ -131,6 +138,7 @@ async function reqForm(url, opts = {}) {
   if (opts.token) headers['Authorization'] = 'Bearer ' + opts.token;
   if (opts.jar) headers['Cookie'] = jarHeader(opts.jar);
   if (opts.csrf) headers['X-CSRF-Token'] = opts.csrf;
+  if (opts.idempotencyKey) headers['Idempotency-Key'] = opts.idempotencyKey;
   const resp = await fetch(baseUrl + url, { method: 'POST', headers, body: opts.form, redirect: 'manual' });
   if (opts.jar) absorbCookies(opts.jar, resp);
   return resp;
@@ -309,6 +317,29 @@ describe('OWASP ASVS v4.0 (automatable subset)', () => {
   describe('V4 Access Control', () => {
     it('4.1.1 — admin functions deny by default', async () => {
       assert.strictEqual((await req('/admin', { jar: aliceSession })).status, 403);
+    });
+    it('4.1.1 — admin API requires the admin scope', async () => {
+      const mutations = [
+        ['POST', `/api/v1/admin/users/${bobId}/ban`],
+        ['POST', `/api/v1/admin/users/${bobId}/unban`],
+        ['DELETE', `/api/v1/admin/users/${bobId}`],
+        ['POST', `/api/v1/admin/users/${bobId}/make_admin`],
+        ['POST', `/api/v1/admin/users/${bobId}/remove_admin`],
+        ['POST', '/api/v1/admin/reports/999999/resolve'],
+        ['POST', '/api/v1/admin/reports/999999/dismiss'],
+        ['POST', '/api/v1/admin/announcement'],
+        ['DELETE', '/api/v1/admin/announcement'],
+      ];
+      for (const [method, url] of mutations) {
+        const denied = await req(url, { method, token: rootReadonlyToken, body: {} });
+        assert.strictEqual(denied.status, 403, `${method} ${url} rejects read-only admin token`);
+        assert.strictEqual((await json(denied)).error, 'insufficient_scope');
+      }
+      assert.strictEqual(db.getUserById(bobId).banned, 0, 'denied requests changed no state');
+
+      assert.strictEqual((await req('/api/v1/admin/users', { token: rootReadonlyToken })).status, 403);
+      assert.strictEqual((await req('/api/v1/admin/users', { token: rootAdminToken })).status, 200);
+      assert.strictEqual((await req('/api/v1/admin/users', { token: malloryAdminToken })).status, 403, 'admin scope does not confer admin role');
     });
     it('4.1.2 — access control enforced server-side (ownership)', async () => {
       const resp = await req(`/api/v1/statuses/${bobPostId}`, { method: 'DELETE', token: aliceToken });
@@ -520,6 +551,27 @@ describe('OWASP ASVS v4.0 (automatable subset)', () => {
       assert.strictEqual(r2.headers.get('x-idempotency-replayed'), 'true', 'replay detected');
       assert.strictEqual((await json(r1)).data.id, (await json(r2)).data.id, 'same resource returned');
     });
+    it('11.1.5 — multipart idempotency replay happens before file staging', async () => {
+      const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+      const key = 'asvs-multipart-idem-' + crypto.randomBytes(8).toString('hex');
+      const firstForm = new FormData();
+      firstForm.append('type', 'photo');
+      firstForm.append('body', 'multipart idempotent');
+      firstForm.append('media', new Blob([png], { type: 'image/png' }), 'idem-first.png');
+      const before = db.getUserFiles(aliceId).length;
+      const first = await reqForm('/api/v1/statuses', { token: aliceToken, idempotencyKey: key, form: firstForm });
+      assert.strictEqual(first.status, 201, 'first multipart request accepted');
+      assert.strictEqual(db.getUserFiles(aliceId).length, before + 1, 'first upload registered exactly once');
+
+      const replayForm = new FormData();
+      replayForm.append('type', 'photo');
+      replayForm.append('body', 'multipart idempotent');
+      replayForm.append('media', new Blob([png], { type: 'image/png' }), 'idem-replay.png');
+      const replay = await reqForm('/api/v1/statuses', { token: aliceToken, idempotencyKey: key, form: replayForm });
+      assert.strictEqual(replay.status, 201, 'cached response replayed');
+      assert.strictEqual(replay.headers.get('x-idempotency-replayed'), 'true');
+      assert.strictEqual(db.getUserFiles(aliceId).length, before + 1, 'replay staged or registered no second file');
+    });
   });
 
   // ====================================================== V12 Files/Uploads ====
@@ -547,6 +599,26 @@ describe('OWASP ASVS v4.0 (automatable subset)', () => {
       assert.ok(/fileSize:\s*(\d+|MAX_REQUEST_BYTES)/.test(driveSrc), 'Drive uploads have a per-request ceiling');
       assert.ok(/fileSize:\s*\d+/.test(apiSrc), 'API upload has a size limit');
       assert.ok(/getDriveQuotaBytes/.test(driveSrc), 'uploads are bounded by the per-user Drive quota');
+    });
+    it('12.1.3 — unauthenticated multipart requests do not touch disk', async () => {
+      const driveDir = path.join(__dirname, '..', 'data', 'drive');
+      const avatarDir = path.join(__dirname, '..', 'uploads', 'avatars');
+      const before = [driveDir, avatarDir].filter(fs.existsSync).flatMap((dir) => [...walk(dir)]);
+      const payload = Buffer.alloc(256 * 1024, 0x41);
+
+      const postForm = new FormData();
+      postForm.append('type', 'photo');
+      postForm.append('media', new Blob([payload], { type: 'image/png' }), 'anonymous.png');
+      const postResp = await reqForm('/posts', { form: postForm });
+      assert.strictEqual(postResp.status, 401, 'anonymous post upload rejected before parsing');
+
+      const avatarForm = new FormData();
+      avatarForm.append('avatar', new Blob([payload], { type: 'image/png' }), 'anonymous-avatar.png');
+      const avatarResp = await reqForm('/u/alice/avatar', { form: avatarForm });
+      assert.ok([302, 401].includes(avatarResp.status), 'anonymous avatar upload rejected before parsing');
+
+      const after = [driveDir, avatarDir].filter(fs.existsSync).flatMap((dir) => [...walk(dir)]);
+      assert.deepStrictEqual(after, before, 'no staged files remain after rejected anonymous uploads');
     });
     it('12.2.1 / 12.6.1 — downloads served with nosniff, inline disposition, server-generated names', async () => {
       const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');

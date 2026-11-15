@@ -59,6 +59,10 @@ The **Storage** section shows how much of your Drive you're using (`used of quot
 as the Drive page, and links to it. Everything you upload counts: chat attachments, post media,
 stickers and avatars. See [Drive](/docs/using/drive).
 
+**Connect a Nextcloud** points your Drive at an instance you control. New uploads are written there
+over WebDAV and the Drive size limit no longer applies; see [Drive → Your own
+Nextcloud](/docs/using/drive#your-own-nextcloud).
+
 ## What's *not* in settings
 
 Profile editing (display name, bio, custom HTML/CSS, avatar) lives in the profile editor at `/u/<username>/edit` — see [Profiles](profiles.md). Invite links are created and copied from the account sheet.

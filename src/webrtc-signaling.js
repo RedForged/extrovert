@@ -3,7 +3,7 @@
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 const path = require('node:path');
-const { getUserById, getUserByUsername, areMutualFollowers, getRoomChannel, isRoomMember, getRoomsForUser, getOAuthToken, getPersonalAccessTokenByHash, hashOAuthToken, createNotification, getPendingRoomSessionKeyForUserAndSession, countAvailablePrekeys, canViewRoomChannel } = require('./db');
+const { getUserById, getUserByUsername, areMutualFollowers, getRoomChannel, isRoomMember, getRoomsForUser, getOAuthToken, getPersonalAccessTokenByHash, hashOAuthToken, createNotification, getPendingRoomSessionKeyForUserAndSession, countAvailablePrekeys, canViewRoom, canViewRoomChannel } = require('./db');
 const { sendCallPush, sendMissedCallPush } = require('./push');
 const { canView } = require('./network');
 
@@ -23,6 +23,7 @@ const dmClients = new Map(); // userId -> Set<{ ws, username, displayName }>
 const pushClients = new Map(); // userId -> Set<ws>
 const voiceChannels = new Map();
 const topicSubscriptions = new Map(); // topic -> Set<{ ws, userId }>
+const allSockets = new Set();
 const recentGatewayEvents = [];
 let globalSeq = 1;
 
@@ -62,14 +63,14 @@ function cleanupClientSubscriptions(ws) {
 function performAutoSubscribe(ws, user) {
   if (!ws || !user) return;
   ws.autoSubscribe = true;
-  subscribeClient(ws, user.id, 'timeline:home');
+  if (ws.readAllowed !== false) subscribeClient(ws, user.id, 'timeline:home');
   subscribeClient(ws, user.id, 'notifications');
   subscribeClient(ws, user.id, 'presence');
   try {
     const userRooms = getRoomsForUser(user.id);
     if (Array.isArray(userRooms)) {
       for (const r of userRooms) {
-        subscribeClient(ws, user.id, 'room:' + r.id);
+        if (canViewRoom(r.id, user.id)) subscribeClient(ws, user.id, 'room:' + r.id);
       }
     }
   } catch {}
@@ -141,6 +142,7 @@ function broadcastGatewayEvent(topic, eventName, data) {
   if (!subscribers) return;
 
   const isRoomTopic = topic.startsWith('room:');
+  const roomId = isRoomTopic ? Number(topic.slice(5)) : null;
   const channelId = data && data.channel_id ? Number(data.channel_id) : null;
   const isRoomMsg = isRoomTopic && eventName === 'message_create' && data && data.group_session_id;
 
@@ -153,6 +155,7 @@ function broadcastGatewayEvent(topic, eventName, data) {
     // gate delivery — the topic is room-level, the ACL is channel-level).
     if (isRoomTopic) {
       if (item.ws.dmAllowed === false) continue;
+      if (!roomId || !canViewRoom(roomId, Number(item.userId))) continue;
       if (channelId && !canViewRoomChannel(channelId, Number(item.userId))) continue;
     }
     try {
@@ -202,6 +205,7 @@ function broadcastTimelineEvent(topic, eventName, data, authorId) {
   const out = JSON.stringify({ seq: frame.seq, type: frame.type, topic: frame.topic, event: frame.event, data: frame.data });
   for (const item of subscribers) {
     if (!item.ws || item.ws.readyState !== 1) continue;
+    if (item.ws.readAllowed === false) continue;
     if (item.userId == null || !canView(Number(item.userId), frame._authorId)) continue;
     try { item.ws.send(out); } catch {}
   }
@@ -215,7 +219,10 @@ function broadcastTimelineEvent(topic, eventName, data, authorId) {
 const PENDING_TTL = 120000;
 const pendingCalls = new Map();
 // calleeUserId -> { callerId, callerUsername, callerDisplayName, cancelToken,
-//                   createdAt, expiresAt, timer }
+//                   callId, createdAt, expiresAt, timer }
+// Explicit 1:1 call sessions bind every lifecycle frame to one pair of users.
+// The room voice path remains channel-bound via join_channel/leave_channel.
+const activeCalls = new Map();
 
 let sessionDb;
 try {
@@ -272,13 +279,30 @@ function lookupTokenAuth(token) {
   const tokenRecord = getOAuthToken(trimmed);
   if (tokenRecord && (!tokenRecord.expires_at || tokenRecord.expires_at > Date.now())) {
     const user = getUserById(tokenRecord.user_id);
-    if (user && !user.banned) return { user, scopes: String(tokenRecord.scopes || '') };
+    if (user && !user.banned) {
+      return {
+        user,
+        scopes: String(tokenRecord.scopes || ''),
+        identity: {
+          type: 'token',
+          hash: hashOAuthToken(trimmed),
+          tokenId: tokenRecord.id,
+          appId: tokenRecord.app_id,
+        },
+      };
+    }
   }
   const patHash = hashOAuthToken(trimmed);
   const pat = getPersonalAccessTokenByHash(patHash);
   if (pat && (!pat.expires_at || pat.expires_at > Date.now())) {
     const user = getUserById(pat.user_id);
-    if (user && !user.banned) return { user, scopes: String(pat.scopes || '') };
+    if (user && !user.banned) {
+      return {
+        user,
+        scopes: String(pat.scopes || ''),
+        identity: { type: 'token', hash: pat.token_hash, tokenId: pat.id, appId: null },
+      };
+    }
   }
   return null;
 }
@@ -298,7 +322,7 @@ function lookupUserFromRequest(req) {
         const session = getSession(sid);
         if (session && session.userId) {
           const user = getUserById(session.userId);
-          if (user && !user.banned) return { user, scopes: null };
+          if (user && !user.banned) return { user, scopes: null, identity: { type: 'session', sid } };
         }
       }
     }
@@ -324,6 +348,53 @@ function lookupUserFromRequest(req) {
 // user credential and satisfies everything.
 function hasScope(scopes, scope) {
   return scopes === null || String(scopes).split(/\s+/).includes(scope);
+}
+
+function closeSocketsMatching(predicate) {
+  let closed = 0;
+  for (const ws of allSockets) {
+    if (!ws.authIdentity || !predicate(ws)) continue;
+    try {
+      ws.close(4001, 'credential_revoked');
+      closed++;
+    } catch {}
+  }
+  return closed;
+}
+
+function closeSessionSockets(sessionId, userId = null) {
+  const sid = String(sessionId || '');
+  if (!sid) return 0;
+  return closeSocketsMatching((ws) => ws.authIdentity.type === 'session'
+    && ws.authIdentity.sid === sid
+    && (userId == null || Number(ws.userId) === Number(userId)));
+}
+
+function closeTokenSockets(tokenHash) {
+  const hash = String(tokenHash || '');
+  if (!hash) return 0;
+  return closeSocketsMatching((ws) => ws.authIdentity.type === 'token' && ws.authIdentity.hash === hash);
+}
+
+function closeTokenSocketsForApp(userId, appId) {
+  const uid = userId == null ? null : Number(userId);
+  const aid = Number(appId);
+  if (!aid) return 0;
+  return closeSocketsMatching((ws) => ws.authIdentity.type === 'token'
+    && Number(ws.authIdentity.appId) === aid
+    && (uid == null || Number(ws.userId) === uid));
+}
+
+function closeTokenSocketsForUser(userId) {
+  const uid = Number(userId);
+  if (!uid) return 0;
+  return closeSocketsMatching((ws) => ws.authIdentity.type === 'token' && Number(ws.userId) === uid);
+}
+
+function closeUserSockets(userId) {
+  const uid = Number(userId);
+  if (!uid) return 0;
+  return closeSocketsMatching((ws) => Number(ws.userId) === uid);
 }
 
 function isMutualFollowerOnline(aId, bId) {
@@ -425,14 +496,118 @@ function routeToChannelMember(msg, user, forwardType) {
   }
 }
 
+function refreshUserInCall(userId) {
+  const uid = Number(userId);
+  const client = clients.get(uid);
+  if (!client) return;
+  let inCall = false;
+  for (const call of activeCalls.values()) {
+    if (call.callerId === uid || call.calleeId === uid) { inCall = true; break; }
+  }
+  if (!inCall) {
+    for (const p of pendingCalls.values()) {
+      if (p.callerId === uid) { inCall = true; break; }
+    }
+  }
+  if (!inCall) {
+    for (const members of voiceChannels.values()) {
+      if (members.has(uid)) { inCall = true; break; }
+    }
+  }
+  client.inCall = inCall;
+}
+
+function findDirectCallForUser(userId) {
+  const uid = Number(userId);
+  for (const call of activeCalls.values()) {
+    if (call.callerId === uid || call.calleeId === uid) return call;
+  }
+  return null;
+}
+
+function createDirectCall(caller, callee, callerWs) {
+  const call = {
+    id: crypto.randomUUID(),
+    callerId: caller.id,
+    calleeId: callee.id,
+    callerUsername: caller.username,
+    calleeUsername: callee.username,
+    callerWs,
+    calleeWs: null,
+    state: 'available',
+    createdAt: Date.now(),
+  };
+  activeCalls.set(call.id, call);
+  return call;
+}
+
+// Resolve a direct-call action to exactly one server-side session. New clients
+// send call_id on every frame. For older clients, a missing id is accepted only
+// when exactly one call exists between the named pair.
+function resolveDirectCall(msg, user, role) {
+  const callId = typeof msg.call_id === 'string' ? msg.call_id : '';
+  if (callId) {
+    const call = activeCalls.get(callId);
+    if (!call) return null;
+    const isCaller = call.callerId === user.id;
+    const isCallee = call.calleeId === user.id;
+    if (role === 'caller' && !isCaller) return null;
+    if (role === 'callee' && !isCallee) return null;
+    if (role === 'participant' && !isCaller && !isCallee) return null;
+    const peer = isCaller ? call.calleeUsername : call.callerUsername;
+    if (msg.to && String(msg.to) !== peer) return null;
+    return call;
+  }
+
+  const peer = msg.to && getUserByUsername(msg.to);
+  if (!peer) return null;
+  const matches = [];
+  for (const call of activeCalls.values()) {
+    const isCaller = call.callerId === user.id && call.calleeId === peer.id;
+    const isCallee = call.calleeId === user.id && call.callerId === peer.id;
+    if ((role === 'caller' && isCaller) || (role === 'callee' && isCallee)
+        || (role === 'participant' && (isCaller || isCallee))) {
+      matches.push(call);
+    }
+  }
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function finishDirectCall(call, eventType, actorId) {
+  if (!call || !activeCalls.has(call.id)) return false;
+  const actor = getUserById(Number(actorId));
+  const otherId = Number(actorId) === call.callerId ? call.calleeId : call.callerId;
+  const other = clients.get(otherId);
+  if (other && eventType) {
+    try {
+      other.ws.send(JSON.stringify({
+        type: eventType,
+        from: actor ? actor.username : '',
+        call_id: call.id,
+      }));
+    } catch {}
+  }
+  activeCalls.delete(call.id);
+  for (const [calleeId, pending] of pendingCalls) {
+    if (pending.callId === call.id) {
+      pendingCalls.delete(calleeId);
+      clearTimeout(pending.timer);
+    }
+  }
+  refreshUserInCall(call.callerId);
+  refreshUserInCall(call.calleeId);
+  return true;
+}
+
 function cancelPendingCall(calleeId, reason) {
   const p = pendingCalls.get(calleeId);
   if (!p) return false;
   pendingCalls.delete(calleeId);
   clearTimeout(p.timer);
+  const active = p.callId ? activeCalls.get(p.callId) : null;
+  if (active) activeCalls.delete(active.id);
   const caller = clients.get(p.callerId);
   if (caller) {
-    caller.inCall = false;
     const callee = getUserById(calleeId);
     const calleeUsername = callee ? callee.username : '';
     try {
@@ -440,9 +615,12 @@ function cancelPendingCall(calleeId, reason) {
         type: reason === 'timeout' ? 'call_unanswered' : 'call_declined',
         from: calleeUsername,
         to: calleeUsername,
+        call_id: p.callId,
       }));
     } catch {}
   }
+  refreshUserInCall(p.callerId);
+  refreshUserInCall(calleeId);
   // The call was never answered: tell the callee's devices with a normal
   // (non-full-screen) missed-call push notification.
   if (reason === 'timeout') {
@@ -485,10 +663,19 @@ function initSignaling(wss) {
     let user = null;
     // null = session (full credential); a string = the token's granted scopes.
     let userScopes = null;
+    let authIdentity = null;
     {
       const a = lookupUserFromRequest(req);
-      if (a) { user = a.user; userScopes = a.scopes; }
+      if (a) {
+        user = a.user;
+        userScopes = a.scopes;
+        authIdentity = a.identity || null;
+        ws.authIdentity = authIdentity;
+        ws.userId = user.id;
+        ws.readAllowed = hasScope(userScopes, 'read');
+      }
     }
+    allSockets.add(ws);
     let registered = false;
     let clientData = null;
 
@@ -569,26 +756,31 @@ function initSignaling(wss) {
       // If this user just came back online and someone is waiting to call them
       // (offline call), ring them now and tell the caller to produce the offer.
       const pending = pendingCalls.get(user.id);
-      if (pending && clients.has(pending.callerId)) {
+      const pendingCall = pending && activeCalls.get(pending.callId);
+      if (pending && pendingCall && clients.has(pending.callerId)) {
         pendingCalls.delete(user.id);
         clearTimeout(pending.timer);
+        pendingCall.calleeWs = ws;
+        pendingCall.state = 'ringing';
         try {
           ws.send(JSON.stringify({
             type: 'incoming_call',
             from: pending.callerUsername,
             from_display: pending.callerDisplayName,
+            call_id: pendingCall.id,
           }));
         } catch {}
         const caller = clients.get(pending.callerId);
         if (caller) {
           try {
-            caller.ws.send(JSON.stringify({ type: 'callee_ringing', to: user.username }));
+            caller.ws.send(JSON.stringify({ type: 'callee_ringing', to: user.username, call_id: pendingCall.id }));
           } catch {}
         }
       } else if (pending) {
         // Caller is gone — drop the pending call silently.
         pendingCalls.delete(user.id);
         clearTimeout(pending.timer);
+        if (pendingCall) activeCalls.delete(pendingCall.id);
       }
     }
 
@@ -617,6 +809,10 @@ function initSignaling(wss) {
         if (auth) {
           user = auth.user;
           userScopes = auth.scopes;
+          authIdentity = auth.identity || null;
+          ws.authIdentity = authIdentity;
+          ws.userId = user.id;
+          ws.readAllowed = hasScope(userScopes, 'read');
           if (msg.auto_subscribe) ws.autoSubscribe = true;
           registerSignalingClient();
         }
@@ -684,9 +880,19 @@ function initSignaling(wss) {
           for (const ch of channels) {
             const topic = String(ch || '').trim();
             if (!topic) continue;
+            if (topic.startsWith('timeline:') && ws.readAllowed === false) {
+              try {
+                ws.send(JSON.stringify({
+                  type: 'error',
+                  error: 'insufficient_scope',
+                  error_description: 'This connection requires the read scope for timeline events.',
+                }));
+              } catch {}
+              continue;
+            }
             if (topic.startsWith('room:')) {
               const roomId = parseInt(topic.split(':')[1], 10);
-              if (roomId && !isRoomMember(roomId, user.id) && !user.is_admin) continue;
+              if (!roomId || !canViewRoom(roomId, user.id)) continue;
             }
             subscribeClient(ws, user.id, topic);
           }
@@ -727,10 +933,12 @@ function initSignaling(wss) {
             // Timeline frames carry the author id; replay only what this viewer
             // may see (the live path applies the same canView filter).
             && (!e._authorId || (user && canView(Number(user.id), e._authorId)))
+            && (!e.topic.startsWith('timeline:') || (user && ws.readAllowed !== false))
             // Room frames: replay must honor the same scope + channel-view
             // gate the live broadcast applies.
             && (!e.topic.startsWith('room:')
                 || (user && ws.dmAllowed !== false
+                    && canViewRoom(Number(e.topic.slice(5)), Number(user.id))
                     && (!(e.data && e.data.channel_id) || canViewRoomChannel(Number(e.data.channel_id), Number(user.id))))));
           for (const ev of missed) {
             try {
@@ -767,7 +975,7 @@ function initSignaling(wss) {
             } catch {}
             if (ch.startsWith('room:')) {
               const roomId = parseInt(ch.slice(5), 10);
-              if (roomId && (isRoomMember(roomId, user.id) || user.is_admin)) {
+              if (roomId && canViewRoom(roomId, user.id)) {
                 broadcastGatewayEvent(ch, 'typing', {
                   channel: ch,
                   user_id: user.id,
@@ -779,7 +987,8 @@ function initSignaling(wss) {
             }
           } else if (msg.scope === 'room' && msg.room_id) {
             const roomId = parseInt(msg.room_id, 10);
-            if (isRoomMember(roomId, user.id) || user.is_admin) {
+            if (canViewRoom(roomId, user.id)
+                && (!msg.channel_id || canViewRoomChannel(Number(msg.channel_id), user.id))) {
               broadcastGatewayEvent(`room:${roomId}`, 'typing', {
                 room_id: roomId,
                 channel_id: msg.channel_id,
@@ -816,20 +1025,30 @@ function initSignaling(wss) {
             try { ws.send(JSON.stringify({ type: 'user_offline', from: msg.to })); } catch {}
             break;
           }
-          const target = findUserByUsername(msg.to);
-          if (target) {
-            try {
-              ws.send(JSON.stringify(target.inCall
-                ? { type: 'user_busy', from: msg.to }
-                : { type: 'callee_available', to: msg.to }));
-            } catch {}
+          if (findDirectCallForUser(user.id) || clientData.inCall) {
+            try { ws.send(JSON.stringify({ type: 'user_busy', from: msg.to })); } catch {}
             break;
           }
-          if (pendingCalls.has(callee.id)) {
+          const target = findUserByUsername(msg.to);
+          if (pendingCalls.has(callee.id) || findDirectCallForUser(callee.id)) {
             console.log('  -> callee already has a pending call');
             try { ws.send(JSON.stringify({ type: 'user_busy', from: msg.to })); } catch {}
             break;
           }
+          if (target) {
+            const call = createDirectCall(user, callee, ws);
+            call.state = 'available';
+            clientData.inCall = true;
+            try {
+              ws.send(JSON.stringify(target.inCall
+                ? { type: 'user_busy', from: msg.to }
+                : { type: 'callee_available', to: msg.to, call_id: call.id }));
+            } catch {}
+            if (target.inCall) finishDirectCall(call, null, user.id);
+            break;
+          }
+          const call = createDirectCall(user, callee, ws);
+          call.state = 'pending';
           const cancelToken = crypto.randomUUID();
           const createdAt = Date.now();
           const expiresAt = createdAt + PENDING_TTL;
@@ -841,6 +1060,7 @@ function initSignaling(wss) {
             callerUsername: user.username,
             callerDisplayName: user.display_name,
             cancelToken,
+            callId: call.id,
             createdAt,
             expiresAt,
             timer,
@@ -858,11 +1078,12 @@ function initSignaling(wss) {
               from: user.username,
               from_display: user.display_name,
               cancel_token: cancelToken,
+              call_id: call.id,
             });
           } catch {}
           console.log('  -> callee offline, queued pending call');
           try {
-            ws.send(JSON.stringify({ type: 'calling_offline', to: msg.to, expires_at: expiresAt }));
+            ws.send(JSON.stringify({ type: 'calling_offline', to: msg.to, call_id: call.id, expires_at: expiresAt }));
           } catch {}
           break;
         }
@@ -871,8 +1092,13 @@ function initSignaling(wss) {
         // reconnects). Clears the pending call and frees the caller.
         case 'call_cancel': {
           if (msg.channel_id) break;
-          cancelOutgoingPending(user.id, 'declined');
-          clientData.inCall = false;
+          const call = resolveDirectCall(msg, user, 'caller');
+          if (call) {
+            finishDirectCall(call, call.calleeWs ? 'call_ended' : null, user.id);
+          } else {
+            cancelOutgoingPending(user.id, 'declined');
+          }
+          refreshUserInCall(user.id);
           break;
         }
 
@@ -903,24 +1129,22 @@ function initSignaling(wss) {
               }
             }
           } else {
-            const target = findUserByUsername(msg.to);
-            if (!target) {
-              console.log('  -> target not found (offline?)');
-              try { ws.send(JSON.stringify({ type: 'user_offline', from: msg.to })); } catch {}
+            const call = resolveDirectCall(msg, user, 'caller');
+            if (!call) break;
+            const target = clients.get(call.calleeId);
+            if (!target || target.username !== call.calleeUsername) {
+              try { ws.send(JSON.stringify({ type: 'user_offline', from: call.calleeUsername })); } catch {}
+              finishDirectCall(call, null, user.id);
               break;
             }
-            if (!areMutualFollowers(user.id, target.userId)) {
-              console.log('  -> call_offer blocked: not mutual followers');
-              try { ws.send(JSON.stringify({ type: 'error', error: 'not_allowed' })); } catch {}
+            if (target.inCall && call.state !== 'ringing') {
+              finishDirectCall(call, null, user.id);
+              try { ws.send(JSON.stringify({ type: 'user_busy', from: call.calleeUsername })); } catch {}
               break;
             }
-            if (target.inCall) {
-              console.log('  -> target busy');
-              try {
-                ws.send(JSON.stringify({ type: 'user_busy', from: msg.to }));
-              } catch {}
-              break;
-            }
+            call.state = 'ringing';
+            call.callerWs = ws;
+            call.calleeWs = target.ws;
             console.log('  -> forwarding incoming_call to', target.username);
             try {
               target.ws.send(JSON.stringify({
@@ -928,9 +1152,11 @@ function initSignaling(wss) {
                 from: user.username,
                 from_display: user.display_name,
                 sdp: msg.sdp,
+                call_id: call.id,
               }));
             } catch {}
-            clientData.inCall = true;
+            refreshUserInCall(user.id);
+            refreshUserInCall(call.calleeId);
           }
           break;
 
@@ -939,11 +1165,12 @@ function initSignaling(wss) {
           if (msg.channel_id) {
             routeToChannelMember(msg, user, 'call_answered');
           } else {
-            const target = findUserByUsername(msg.to);
-            if (!target || !areMutualFollowers(user.id, target.userId)) {
-              console.log('  -> call_answer blocked: target offline or not mutual followers');
-              break;
-            }
+            const call = resolveDirectCall(msg, user, 'callee');
+            if (!call) break;
+            const target = clients.get(call.callerId);
+            if (!target || target.username !== call.callerUsername) break;
+            call.state = 'connected';
+            call.calleeWs = ws;
             console.log('  -> forwarding call_answered to', target.username);
             try {
               target.ws.send(JSON.stringify({
@@ -951,9 +1178,11 @@ function initSignaling(wss) {
                 from: user.username,
                 from_display: user.display_name,
                 sdp: msg.sdp,
+                call_id: call.id,
               }));
             } catch {}
-            clientData.inCall = true;
+            refreshUserInCall(user.id);
+            refreshUserInCall(call.callerId);
           }
           break;
 
@@ -962,17 +1191,19 @@ function initSignaling(wss) {
           if (msg.channel_id) {
             routeToChannelMember(msg, user, 'ice_candidate');
           } else {
-            const target = findUserByUsername(msg.to);
-            if (!target || !areMutualFollowers(user.id, target.userId)) break;
-            if (target) {
-              try {
-                target.ws.send(JSON.stringify({
-                  type: 'ice_candidate',
-                  from: user.username,
-                  candidate: msg.candidate,
-                }));
-              } catch {}
-            }
+            const call = resolveDirectCall(msg, user, 'participant');
+            if (!call) break;
+            const otherId = call.callerId === user.id ? call.calleeId : call.callerId;
+            const target = clients.get(otherId);
+            if (!target) break;
+            try {
+              target.ws.send(JSON.stringify({
+                type: 'ice_candidate',
+                from: user.username,
+                candidate: msg.candidate,
+                call_id: call.id,
+              }));
+            } catch {}
           }
           break;
 
@@ -981,18 +1212,9 @@ function initSignaling(wss) {
           if (msg.channel_id) {
             routeToChannelMember(msg, user, 'call_ended');
           } else {
-            const target = findUserByUsername(msg.to);
-            if (!target || !areMutualFollowers(user.id, target.userId)) break;
-            if (target) {
-              console.log('  -> forwarding call_ended to', target.username);
-              try {
-                target.ws.send(JSON.stringify({
-                  type: 'call_ended',
-                  from: user.username,
-                }));
-              } catch {}
-              clientData.inCall = false;
-            }
+            const call = resolveDirectCall(msg, user, 'participant');
+            if (!call) break;
+            finishDirectCall(call, 'call_ended', user.id);
           }
           break;
 
@@ -1001,17 +1223,9 @@ function initSignaling(wss) {
           if (msg.channel_id) {
             routeToChannelMember(msg, user, 'call_declined');
           } else {
-            const target = findUserByUsername(msg.to);
-            if (!target || !areMutualFollowers(user.id, target.userId)) break;
-            if (target) {
-              try {
-                target.ws.send(JSON.stringify({
-                  type: 'call_declined',
-                  from: user.username,
-                }));
-              } catch {}
-              clientData.inCall = false;
-            }
+            const call = resolveDirectCall(msg, user, 'participant');
+            if (!call) break;
+            finishDirectCall(call, 'call_declined', user.id);
           }
           break;
 
@@ -1082,10 +1296,18 @@ function initSignaling(wss) {
     });
 
     ws.on('close', () => {
+      allSockets.delete(ws);
       cleanupClientSubscriptions(ws);
       if (!user) return;
+      // End only calls bound to this exact signaling socket. An unrelated tab
+      // disconnecting must not tear down another tab's call.
+      for (const call of [...activeCalls.values()]) {
+        if (call.callerWs === ws || call.calleeWs === ws) {
+          finishDirectCall(call, 'call_ended', user.id);
+        }
+      }
       removeFromVoiceChannels(user.id);
-      cancelOutgoingPending(user.id, 'declined');
+      refreshUserInCall(user.id);
       const dmSet = dmClients.get(user.id);
       if (dmSet) {
         for (const c of dmSet) {
@@ -1101,15 +1323,6 @@ function initSignaling(wss) {
       const c = clients.get(user.id);
       if (c && c.ws === ws) {
         clients.delete(user.id);
-        for (const [otherId, other] of clients) {
-          if (other.inCall) {
-            try {
-              other.ws.send(JSON.stringify({
-                type: 'call_ended', from: user.username,
-              }));
-            } catch {}
-          }
-        }
         broadcastPresence(user.id, 'user_offline');
       }
     });
@@ -1251,4 +1464,9 @@ module.exports = {
   removeFromVoiceChannels,
   getGatewayLatestSeq,
   updateUserRoomSubscriptions,
+  closeSessionSockets,
+  closeTokenSockets,
+  closeTokenSocketsForApp,
+  closeTokenSocketsForUser,
+  closeUserSockets,
 };

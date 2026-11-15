@@ -55,7 +55,9 @@ The nav badge for admins counts open security reports together with moderation r
 
 Every user has one storage pool — their **Drive** — covering chat attachments, post media, avatars,
 stickers and API media. There is no per-file limit; uploads are refused once the user's space is
-used up.
+used up. A user who connected their own Nextcloud (**Settings → Storage**) stores new Drive uploads
+there instead; those files are not on this server, do not count against the quota, and are not shown
+in the totals here.
 
 - Set the **quota per user** in megabytes and save. It applies to the next upload immediately, with
   no restart.

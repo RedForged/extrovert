@@ -119,7 +119,7 @@ All of these are configurable through the `EXTV_*_RATE_LIMIT` variables listed b
 | Comment body | 1,000 chars |
 | DM ciphertext | 65,536 chars |
 | Room message ciphertext | 20,000 chars |
-| Upload request ceiling | 512 MB per request (a denial-of-service guard — the Drive quota is the real limit) |
+| Upload request ceiling | 512 MB per request (a denial-of-service guard — the Drive quota is the real limit). Does not apply to uploads stored in a user's own Nextcloud. |
 | Avatar upload | 10 MB per file |
 | Sticker upload | 500 KB per file |
 | API pagination limit | 40 items per page (default 20) |
@@ -140,6 +140,23 @@ remaining space.
 Accounts already over the quota keep their files but cannot upload until they delete something.
 Usage lives in the `user_files` table; files uploaded before this feature existed were registered by a
 one-time backfill (`drive_backfill_v1` in `app_meta`) that stats what is already on disk.
+
+### Nextcloud storage (per user)
+
+Each user can optionally connect their own Nextcloud as the Drive backend
+(**Settings → Storage**). New uploads are written to an `Extrovert` folder over WebDAV, and the
+per-user Drive quota stops applying to those files. This is per user — it is not an instance-wide
+storage setting.
+
+| | |
+|---|---|
+| `EXTV_NEXTCLOUD_BLOCK_PRIVATE` | `1` refuses storage hosts that resolve to a private/loopback address. Off by default, because a self-hosted Nextcloud on a LAN is the normal case. Turn it on if users must not make the server reach internal networks. |
+| `EXTV_NEXTCLOUD_TIMEOUT_MS` | Connection timeout for WebDAV control requests (default `15000`). Uploads and downloads stream without a total timeout. |
+
+The credentials are a Nextcloud **app password**, not the account password. They are stored in the
+`user_nextcloud` table; treat a database dump as sensitive (an app password can be revoked from
+Nextcloud at any time). Uploads are staged to `data/drive`, pushed to Nextcloud, then removed
+locally, so a large upload temporarily needs that much free local disk.
 
 ### Font sanitizer (`ots-sanitize`)
 
