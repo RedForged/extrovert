@@ -7,12 +7,13 @@ per-file limit: a single file may use as much of your remaining space as it need
 ## Your own Nextcloud
 
 You can point your Drive at a Nextcloud you control instead of this server's disk. Open
-**Settings → Storage → Connect a Nextcloud** and enter:
+**Settings → Storage → Connect a Nextcloud**, enter the **URL** of your instance (e.g.
+`https://cloud.example.com`), and approve Extrovert in the Nextcloud page that opens.
 
-- the **URL** of your instance (e.g. `https://cloud.example.com`),
-- your **username**, and
-- an **app password** — create one in Nextcloud under *Settings → Security → Devices & sessions*.
-  Never use your login password; an app password can be revoked on its own.
+This is Nextcloud's browser login flow — the same one its desktop and mobile apps use. You sign in
+to Nextcloud itself (2FA/SSO included) and Nextcloud issues Extrovert a dedicated app password.
+**Your Nextcloud password is never sent to or stored by Extrovert.** You can revoke that access at
+any time under *Settings → Security → Devices & sessions* in Nextcloud.
 
 New uploads are written to an `Extrovert` folder in your Nextcloud. Because those bytes are not
 stored here, **the Drive size limit no longer applies** — your Nextcloud's own quota is the only

@@ -153,8 +153,9 @@ storage setting.
 | `EXTV_NEXTCLOUD_BLOCK_PRIVATE` | `1` refuses storage hosts that resolve to a private/loopback address. Off by default, because a self-hosted Nextcloud on a LAN is the normal case. Turn it on if users must not make the server reach internal networks. |
 | `EXTV_NEXTCLOUD_TIMEOUT_MS` | Connection timeout for WebDAV control requests (default `15000`). Uploads and downloads stream without a total timeout. |
 
-The credentials are a Nextcloud **app password**, not the account password. They are stored in the
-`user_nextcloud` table; treat a database dump as sensitive (an app password can be revoked from
+Credentials come from Nextcloud's **Login Flow v2**: the user approves access in Nextcloud, which
+issues a dedicated app password. Extrovert never handles the account password. The app password is
+stored in the `user_nextcloud` table; treat a database dump as sensitive (it can be revoked from
 Nextcloud at any time). Uploads are staged to `data/drive`, pushed to Nextcloud, then removed
 locally, so a large upload temporarily needs that much free local disk.
 

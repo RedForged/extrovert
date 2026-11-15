@@ -634,6 +634,25 @@ router.post('/bots/:id/delete', (req, res) => {
 });
 
 // ---------- Drive storage backend (per-user Nextcloud) ----------
+// Pending Nextcloud Login Flow v2 sessions. In-memory is consistent with the
+// rest of this single-process app; each entry is bound to one user and expires.
+const DRIVE_FLOW_TTL_MS = 10 * 60 * 1000;
+const pendingDriveFlows = new Map();
+
+function purgeDriveFlows() {
+  const now = Date.now();
+  for (const [id, flow] of pendingDriveFlows) {
+    if (now - flow.createdAt > DRIVE_FLOW_TTL_MS) pendingDriveFlows.delete(id);
+  }
+}
+
+function getDriveFlow(user, id) {
+  purgeDriveFlows();
+  const flow = pendingDriveFlows.get(String(id));
+  if (!flow || flow.userId !== user.id) return null;
+  return flow;
+}
+
 function driveSettingsState(user, extra = {}) {
   const connection = db.getUserNextcloud(user.id);
   return Object.assign({
@@ -653,46 +672,111 @@ function driveSettingsState(user, extra = {}) {
 router.get('/drive', (req, res) => {
   const user = res.locals.currentUser;
   if (!user) return res.redirect('/login');
-  res.render('settings-drive', driveSettingsState(user, { notice: req.query.notice || null }));
+  res.render('settings-drive', driveSettingsState(user, {
+    notice: req.query.notice || null,
+    error: req.query.error || null,
+  }));
 });
 
-router.post('/drive', async (req, res) => {
+// Step 1: ask Nextcloud for a browser approval link (Login Flow v2).
+router.post('/drive/connect', async (req, res) => {
   const user = res.locals.currentUser;
   if (!user) return res.redirect('/login');
-  const existing = db.getUserNextcloud(user.id);
   const fail = (msg) => res.render('settings-drive', driveSettingsState(user, { error: msg }));
 
   const normalized = nextcloud.normalizeBaseUrl(req.body.base_url);
   if (!normalized.ok) return fail(normalized.error);
 
-  const username = String(req.body.username || '').trim();
-  if (!username || username.length > 255) {
-    return fail('Enter the Nextcloud username that owns the app password.');
-  }
-  // An empty password field keeps the stored one, like the SMTP password in the
-  // admin panel: editing the URL should not force a re-type.
-  const supplied = String(req.body.app_password || '');
-  const appPassword = supplied || (existing ? existing.app_password : '');
-  if (!appPassword) {
-    return fail('Enter a Nextcloud app password (Settings → Security → Devices & sessions in Nextcloud).');
-  }
-  if (appPassword.length > 512) return fail('That app password is too long.');
+  const flow = await nextcloud.startLoginFlow(normalized.baseUrl);
+  if (!flow.ok) return fail(flow.error);
 
-  const cfg = { base_url: normalized.baseUrl, username, app_password: appPassword };
+  purgeDriveFlows();
+  const id = crypto.randomUUID();
+  pendingDriveFlows.set(id, {
+    id,
+    userId: user.id,
+    baseUrl: normalized.baseUrl,
+    loginUrl: flow.loginUrl,
+    pollEndpoint: flow.pollEndpoint,
+    pollToken: flow.pollToken,
+    createdAt: Date.now(),
+    lastPollAt: 0,
+  });
+  res.render('settings-drive-connect', {
+    flowId: id,
+    loginUrl: flow.loginUrl,
+    baseUrl: normalized.baseUrl,
+    error: null,
+  });
+});
+
+// Re-open the waiting page (e.g. after the no-JS "check" form).
+router.get('/drive/connect/:flowId', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.redirect('/login');
+  const flow = getDriveFlow(user, req.params.flowId);
+  if (!flow) {
+    return res.redirect('/settings/drive?error=' + encodeURIComponent('That login request expired. Start again.'));
+  }
+  res.render('settings-drive-connect', {
+    flowId: flow.id,
+    loginUrl: flow.loginUrl,
+    baseUrl: flow.baseUrl,
+    error: req.query.error || null,
+  });
+});
+
+// Step 2: poll Nextcloud until the user approves, then store the app password
+// it issued. The browser tab runs this in the background; the route is also a
+// plain form target so it works without JavaScript.
+router.post('/drive/connect/:flowId/poll', async (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.redirect('/login');
+  const wantsJson = req.xhr || String(req.get('accept') || '').includes('json');
+  const fail = (message, status = 400) => {
+    if (wantsJson) return res.status(status).json({ status: 'error', message });
+    return res.redirect('/settings/drive?error=' + encodeURIComponent(message));
+  };
+
+  const flow = getDriveFlow(user, req.params.flowId);
+  if (!flow) return fail('That login request expired. Start again.', 410);
+
+  // Don't hammer the Nextcloud: one upstream poll per second per flow.
+  const now = Date.now();
+  if (flow.lastPollAt && now - flow.lastPollAt < 1000) {
+    return wantsJson
+      ? res.json({ status: 'pending' })
+      : res.redirect('/settings/drive/connect/' + encodeURIComponent(flow.id));
+  }
+  flow.lastPollAt = now;
+
+  const result = await nextcloud.pollLoginFlow(flow);
+  if (result.status === 'pending') {
+    return wantsJson
+      ? res.json({ status: 'pending' })
+      : res.redirect('/settings/drive/connect/' + encodeURIComponent(flow.id));
+  }
+  pendingDriveFlows.delete(flow.id);
+  if (result.status !== 'connected') {
+    return fail(result.message || 'Nextcloud did not approve the login.', 502);
+  }
+
+  const cfg = { base_url: result.baseUrl, username: result.username, app_password: result.appPassword };
   const check = await nextcloud.probe(cfg);
-  if (!check.ok) return fail(check.error);
+  if (!check.ok) return fail(check.error, 502);
   try {
     await nextcloud.ensureDir(cfg);
   } catch (err) {
-    return fail('Connected, but the "' + nextcloud.FOLDER + '" folder could not be created: ' + nextcloud.errorMessage(err) + '.');
+    return fail('Connected, but the "' + nextcloud.FOLDER + '" folder could not be created: ' + nextcloud.errorMessage(err) + '.', 502);
   }
 
-  db.setUserNextcloud(user.id, { baseUrl: normalized.baseUrl, username, appPassword });
+  db.setUserNextcloud(user.id, { baseUrl: result.baseUrl, username: result.username, appPassword: result.appPassword });
   nextcloud.resetDirCache();
-  db.auditLog('drive_backend_connected', user.id, normalized.baseUrl);
-  res.render('settings-drive', driveSettingsState(db.getUserById(user.id), {
-    notice: 'Connected. New Drive uploads now go to your Nextcloud, and the Drive size limit no longer applies.',
-  }));
+  db.auditLog('drive_backend_connected', user.id, result.baseUrl);
+
+  const message = 'Connected. New Drive uploads now go to your Nextcloud, and the Drive size limit no longer applies.';
+  if (wantsJson) return res.json({ status: 'connected', message });
+  res.redirect('/settings/drive?notice=' + encodeURIComponent(message));
 });
 
 router.post('/drive/pause', (req, res) => {

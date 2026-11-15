@@ -63,10 +63,7 @@ function authHeader(cfg) {
 async function request(cfg, method, url, opts = {}) {
   // Defence-in-depth for the opt-in private-network ban: refuse literal
   // private targets on every request, not just during the connection probe.
-  if (process.env.EXTV_NEXTCLOUD_BLOCK_PRIVATE === '1') {
-    const { isPrivateHostname } = require('./push');
-    if (isPrivateHostname(new URL(url).hostname)) throw new Error('private storage host refused');
-  }
+  assertHostAllowed(url);
   const init = {
     method,
     headers: Object.assign({ Authorization: authHeader(cfg) }, opts.headers || {}),
@@ -78,6 +75,111 @@ async function request(cfg, method, url, opts = {}) {
   const t = Number(opts.timeout) || 0;
   if (t > 0) init.signal = AbortSignal.timeout(t);
   return fetch(url, init);
+}
+
+function assertHostAllowed(url) {
+  if (process.env.EXTV_NEXTCLOUD_BLOCK_PRIVATE !== '1') return;
+  const { isPrivateHostname } = require('./push');
+  if (isPrivateHostname(new URL(url).hostname)) throw new Error('private storage host refused');
+}
+
+function sameOrigin(a, b) {
+  try { return new URL(a).origin === new URL(b).origin; } catch (e) { return false; }
+}
+
+// Unauthenticated request used by the browser login flow. Never attaches the
+// Basic credentials and never follows a redirect to another host silently.
+async function publicRequest(method, url, opts = {}) {
+  assertHostAllowed(url);
+  const init = {
+    method,
+    headers: Object.assign({ Accept: 'application/json' }, opts.headers || {}),
+    body: opts.body,
+    redirect: 'manual',
+  };
+  const t = Number(opts.timeout) || 0;
+  if (t > 0) init.signal = AbortSignal.timeout(t);
+  return fetch(url, init);
+}
+
+// Nextcloud Login Flow v2 — the browser approval the official desktop and
+// mobile apps use. The user authenticates on their own Nextcloud (including
+// 2FA/SSO) and Nextcloud issues a dedicated, revocable app password. Extrovert
+// never sees the account password and never stores one.
+//   startLoginFlow -> { loginUrl, pollEndpoint, pollToken }
+//   pollLoginFlow  -> { status: 'pending' | 'connected' | 'error', ... }
+async function startLoginFlow(baseUrl) {
+  const allowed = await hostAllowed(baseUrl);
+  if (!allowed.ok) return allowed;
+  try {
+    const res = await publicRequest('POST', baseUrl + '/index.php/login/v2', {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: '',
+      timeout: timeoutMs(),
+    });
+    let data = null;
+    try { data = await res.json(); } catch (e) { data = null; }
+    if (!res.ok || !data) {
+      if (res.status === 404) {
+        return { ok: false, error: 'That Nextcloud does not offer the browser login flow (HTTP 404). It may be too old or the endpoint is disabled.' };
+      }
+      return { ok: false, error: 'Nextcloud could not start the login flow (HTTP ' + res.status + ').' };
+    }
+    const loginUrl = String(data.login || '');
+    const pollEndpoint = String(data.poll && data.poll.endpoint || '');
+    const pollToken = String(data.poll && data.poll.token || '');
+    if (!loginUrl || !pollEndpoint || !pollToken) {
+      return { ok: false, error: 'Nextcloud returned an incomplete login-flow response.' };
+    }
+    // A compromised or misconfigured server must not make us poll or send the
+    // user somewhere else (SSRF / open redirect).
+    if (!sameOrigin(loginUrl, baseUrl) || !sameOrigin(pollEndpoint, baseUrl)) {
+      return { ok: false, error: 'Nextcloud returned a login flow for a different host; refusing it.' };
+    }
+    return { ok: true, loginUrl, pollEndpoint, pollToken };
+  } catch (err) {
+    return { ok: false, error: 'Could not reach that Nextcloud: ' + errorMessage(err) + '.' };
+  }
+}
+
+async function pollLoginFlow(flow) {
+  try {
+    assertHostAllowed(flow.pollEndpoint);
+  } catch (err) {
+    return { status: 'error', message: err.message };
+  }
+  if (!sameOrigin(flow.pollEndpoint, flow.baseUrl)) {
+    return { status: 'error', message: 'The login-flow endpoint changed hosts; refusing it.' };
+  }
+  try {
+    const res = await publicRequest('POST', flow.pollEndpoint, {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ token: flow.pollToken }).toString(),
+      timeout: timeoutMs(),
+    });
+    // 404 means "the user has not approved yet" in login flow v2.
+    if (res.status === 404) return { status: 'pending' };
+    let data = null;
+    try { data = await res.json(); } catch (e) { data = null; }
+    if (!res.ok || !data) {
+      return { status: 'error', message: 'Nextcloud answered HTTP ' + res.status + ' while checking the login.' };
+    }
+    const username = String(data.loginName || '').trim();
+    const appPassword = String(data.appPassword || '');
+    if (!username || !appPassword) {
+      return { status: 'error', message: 'Nextcloud did not return an app password.' };
+    }
+    // Prefer the canonical server URL, but only if it is the same host we
+    // started the flow with.
+    let canonical = flow.baseUrl;
+    if (data.server) {
+      const norm = normalizeBaseUrl(data.server);
+      if (norm.ok && sameOrigin(norm.baseUrl, flow.baseUrl)) canonical = norm.baseUrl;
+    }
+    return { status: 'connected', baseUrl: canonical, username, appPassword };
+  } catch (err) {
+    return { status: 'error', message: 'Could not reach that Nextcloud: ' + errorMessage(err) + '.' };
+  }
 }
 
 // Operators who want to forbid server-side requests to private networks can set
@@ -121,7 +223,7 @@ async function probe(cfg) {
     });
     let error = null;
     if (res.status === 401) {
-      error = 'Nextcloud rejected those credentials — use an app password, not your login password.';
+      error = 'Nextcloud rejected the stored credential. Reconnect in Settings → Drive.';
     } else if (res.status === 404) {
       error = 'That URL does not look like a Nextcloud instance.';
     } else if (res.status < 200 || res.status > 299) {
@@ -197,6 +299,8 @@ module.exports = {
   normalizeBaseUrl,
   remotePathFor,
   resetDirCache,
+  startLoginFlow,
+  pollLoginFlow,
   probe,
   ensureDir,
   uploadFile,

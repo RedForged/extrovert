@@ -18,6 +18,8 @@ process.env.EXTV_DRIVE_QUOTA_BYTES = '1024'; // tiny: remote uploads must bypass
 const REMOTE = new Map(); // WebDAV path -> Buffer
 let mkcolCount = 0;
 let lastAuth = null;
+let loginApproved = false;
+let badFlowOrigin = false;
 
 const dav = http.createServer((req, res) => {
   const chunks = [];
@@ -26,6 +28,23 @@ const dav = http.createServer((req, res) => {
     lastAuth = req.headers.authorization || null;
     const body = Buffer.concat(chunks);
     const p = req.url;
+    const origin = 'http://' + (req.headers.host || '127.0.0.1');
+    // Nextcloud Login Flow v2 endpoints (unauthenticated).
+    if (req.method === 'POST' && p === '/index.php/login/v2') {
+      const flowOrigin = badFlowOrigin ? 'http://evil.invalid' : origin;
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json');
+      return res.end(JSON.stringify({
+        poll: { token: 'poll-token', endpoint: flowOrigin + '/login/v2/poll' },
+        login: flowOrigin + '/login/flow',
+      }));
+    }
+    if (req.method === 'POST' && p === '/login/v2/poll') {
+      if (!loginApproved) { res.statusCode = 404; return res.end(); }
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json');
+      return res.end(JSON.stringify({ server: origin, loginName: 'alice', appPassword: 'app-pass-123' }));
+    }
     if (req.method === 'PROPFIND') {
       res.statusCode = 207;
       return res.end('<?xml version="1.0"?><d:multistatus xmlns:d="DAV:"/>');
@@ -100,23 +119,59 @@ async function main() {
   const csrf = ((await page.text()).match(/name="_csrf" value="([^"]+)"/) || [])[1] || '';
   ok(!!csrf, 'got CSRF token');
 
-  // Connect through the real settings route (probe + MKCOL).
-  const connectForm = new URLSearchParams({
+  // Connect through the real Login Flow v2: start, poll pending, approve, poll.
+  const startForm = new URLSearchParams({
     _csrf: csrf,
     base_url: `http://127.0.0.1:${davPort}/`,
-    username: 'alice',
-    app_password: 'app-pass-123',
   });
-  const connect = await req('/settings/drive', {
+
+  // A server must not be able to point the flow (or the user) at another host.
+  badFlowOrigin = true;
+  const badStart = await req('/settings/drive/connect', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: connectForm.toString(),
+    body: startForm.toString(),
   });
-  const connectText = await connect.text();
-  ok(connect.status === 200 && connectText.includes('Connected'), 'settings connects to Nextcloud');
-  ok(connectText.includes('no longer applies'), 'page says the size limit no longer applies');
+  const badText = await badStart.text();
+  ok(badStart.status === 200 && /different host/i.test(badText), 'cross-origin login flow is refused');
+  ok(db.getUserNextcloud(aliceId) === null, 'refused flow stored nothing');
+  badFlowOrigin = false;
+
+  const start = await req('/settings/drive/connect', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: startForm.toString(),
+  });
+  const startText = await start.text();
+  ok(start.status === 200 && startText.includes('Approve access in Nextcloud'), 'login flow page rendered');
+  const flowId = (startText.match(/\/settings\/drive\/connect\/([^/"]+)\/poll/) || [])[1] || '';
+  ok(!!flowId, 'login flow id issued');
+  ok(!startText.includes('name="app_password"'), 'no password field is offered');
+
+  const pollHeaders = {
+    'Content-Type': 'application/x-www-form-urlencoded',
+    Accept: 'application/json',
+    'X-CSRF-Token': csrf,
+    'X-Requested-With': 'XMLHttpRequest',
+  };
+  const poll = () => req(`/settings/drive/connect/${flowId}/poll`, {
+    method: 'POST',
+    headers: pollHeaders,
+    body: `_csrf=${encodeURIComponent(csrf)}`,
+  });
+
+  const pending = await poll();
+  ok((await pending.json()).status === 'pending', 'poll reports pending before approval');
+
+  loginApproved = true;
+  await new Promise((r) => setTimeout(r, 1100)); // per-flow poll throttle
+  const done = await poll();
+  const doneJson = await done.json();
+  ok(done.status === 200 && doneJson.status === 'connected', 'approval completes the connection');
+
   const row = db.getUserNextcloud(aliceId);
   ok(!!row && row.base_url === `http://127.0.0.1:${davPort}`, 'connection stored');
+  ok(row && row.username === 'alice' && row.app_password === 'app-pass-123', 'Nextcloud-issued credential stored');
   ok(lastAuth && lastAuth.startsWith('Basic '), 'WebDAV used Basic auth');
   ok(mkcolCount === 1, 'Extrovert folder created');
 

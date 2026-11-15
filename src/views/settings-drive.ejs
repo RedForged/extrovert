@@ -51,27 +51,22 @@
       <hr>
     <% } %>
 
-    <h4 style="margin-top:<%= connection ? '16px' : '0' %>"><%= connection ? 'Change connection' : 'Connect a Nextcloud' %></h4>
-    <form method="post" action="/settings/drive">
+    <h4 style="margin-top:<%= connection ? '16px' : '0' %>"><%= connection ? 'Reconnect with Nextcloud' : 'Connect a Nextcloud' %></h4>
+    <form method="post" action="/settings/drive/connect">
       <input type="hidden" name="_csrf" value="<%= csrfToken %>">
       <label for="nc-url">Nextcloud URL</label>
       <input type="url" id="nc-url" name="base_url" required maxlength="500"
              value="<%= connection ? connection.baseUrl : '' %>"
              placeholder="https://cloud.example.com">
-      <label for="nc-user">Username</label>
-      <input type="text" id="nc-user" name="username" required maxlength="255" autocomplete="username"
-             value="<%= connection ? connection.username : '' %>">
-      <label for="nc-pass">App password</label>
-      <input type="password" id="nc-pass" name="app_password" maxlength="512" autocomplete="new-password"
-             <%= connection ? '' : 'required' %>
-             placeholder="<%= connection ? 'stored — leave blank to keep' : '' %>">
-      <small class="muted" style="display:block;margin-top:6px;font-size:var(--fs-xs)">
-        In Nextcloud open <strong>Settings → Security → Devices &amp; sessions</strong> and create an app password.
-        Do not use your login password. You can revoke it there at any time.
-      </small>
-      <button class="btn full" style="margin-top:14px"><%= connection ? 'Save connection' : 'Connect' %></button>
+      <button class="btn full" style="margin-top:14px"><%= connection ? 'Continue to Nextcloud' : 'Connect with Nextcloud' %></button>
     </form>
     <p class="muted" style="font-size:var(--fs-xs);margin:12px 0 0">
+      You approve access on your own Nextcloud, so Extrovert never sees your Nextcloud password.
+      Nextcloud issues a dedicated app password for Extrovert — the same browser flow the official
+      desktop and mobile apps use — which you can revoke under
+      <strong>Settings → Security → Devices &amp; sessions</strong> at any time.
+    </p>
+    <p class="muted" style="font-size:var(--fs-xs);margin:8px 0 0">
       Uploads are written to an <code>Extrovert</code> folder in your Nextcloud. Files still pass through
       this server during upload and are served through the same Drive links, which fetch them from your
       Nextcloud on demand.

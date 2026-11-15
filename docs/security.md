@@ -90,13 +90,14 @@ quota. What keeps them from becoming an attack surface:
 - **Sealed chat attachments are client-encrypted** (AES-256-GCM); the server stores opaque blobs with no
   name, type or extension, and the key only exists inside the E2EE message.
 - **Optional Nextcloud backend is a server-side fetch target.** A user can point their Drive at their
-  own Nextcloud (WebDAV with an app password). Uploads are staged locally, pushed to that instance, and
+  own Nextcloud (WebDAV). Access is granted through Nextcloud's Login Flow v2: the user authenticates
+  on their own server and Nextcloud issues a dedicated, revocable app password — the account password
+  never reaches this server. Uploads are staged locally, pushed to that instance, and
   the staged copy is removed; reads are proxied through `/drive/f/<name>` from the user's instance. This
   means an authenticated user can make the server issue requests to a host they choose. The default is
   to allow it (self-hosted/LAN Nextcloud is the point); set `EXTV_NEXTCLOUD_BLOCK_PRIVATE=1` to refuse
   private, loopback, link-local and unresolvable targets if that SSRF surface is not acceptable. The
-  app password is stored in the database and never rendered back; users should issue a dedicated,
-  revocable app password rather than their login password.
+  app password is stored in the database and never rendered back.
 
 Residual risk worth knowing: a deliberately malformed font is still parsed by the *visitor's* font
 engine, so a font-parser bug in their browser is the one thing this feature cannot defend against — but
