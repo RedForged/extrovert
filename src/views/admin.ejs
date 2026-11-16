@@ -114,6 +114,22 @@
             <p class="admin-empty">No admin activity logged yet.</p>
           <% } %>
         </section>
+
+        <section class="card admin-panel">
+          <div class="admin-panel-head">
+            <h2>Site announcement</h2>
+            <a class="admin-panel-link" href="/admin/announcement"><%= announcement ? 'Edit' : 'Publish' %></a>
+          </div>
+          <% if (announcement) { %>
+            <p class="admin-announcement-body"><%= announcement.body %></p>
+            <small class="muted">
+              <% if (announcement.author_display_name || announcement.author_username) { %>by <%= announcement.author_display_name || announcement.author_username %> · <% } %>
+              updated <%= locals.relTime(announcement.updated_at) %>
+            </small>
+          <% } else { %>
+            <p class="admin-empty">No announcement is pinned to the top bar.</p>
+          <% } %>
+        </section>
       </div>
 
       <div class="admin-stack">
@@ -197,22 +213,6 @@
         </section>
       </div>
     </div>
-
-    <section class="card admin-panel">
-      <div class="admin-panel-head">
-        <h2>Site announcement</h2>
-        <a class="admin-panel-link" href="/admin/announcement"><%= announcement ? 'Edit' : 'Publish' %></a>
-      </div>
-      <% if (announcement) { %>
-        <p class="admin-announcement-body"><%= announcement.body %></p>
-        <small class="muted">
-          <% if (announcement.author_display_name || announcement.author_username) { %>by <%= announcement.author_display_name || announcement.author_username %> · <% } %>
-          updated <%= locals.relTime(announcement.updated_at) %>
-        </small>
-      <% } else { %>
-        <p class="admin-empty">No announcement is pinned to the top bar.</p>
-      <% } %>
-    </section>
   </div>
 </div>
 <%- include('partials/footer') %>
