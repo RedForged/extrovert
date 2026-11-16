@@ -91,9 +91,12 @@ async function main() {
     ['/stickers', 'stickers'],
     ['/security', 'security'],
     ['/admin', 'admin dashboard'],
+    ['/admin/users', 'admin users'],
+    ['/admin/rooms', 'admin rooms'],
     ['/admin/reports', 'admin reports'],
     ['/admin/security-reports', 'admin security reports'],
     ['/admin/announcement', 'admin announcement'],
+    ['/admin/storage', 'admin storage'],
     ['/this-does-not-exist', '404 page'],
   ];
 

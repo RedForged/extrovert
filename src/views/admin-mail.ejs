@@ -1,10 +1,14 @@
-<%- include('partials/header') %>
-  <div class="card" style="max-width:860px;margin:0 auto">
-    <div style="display:flex;align-items:center;gap:2em;margin-bottom:18px;flex-wrap:wrap">
-      <h2 style="margin:0">Admin · Mail &amp; email verification</h2>
-      <a class="btn ghost small" href="/admin" style="margin-left:auto"><%- include('partials/icon', { name: 'arrowLeft', size: 13 }) %> Back</a>
+<%- include('partials/header', { wrapClass: 'wrap-admin' }) %>
+<div class="admin-shell">
+  <%- include('partials/admin-sidebar', { active: 'mail' }) %>
+  <div class="admin-main">
+  <header class="admin-page-head">
+    <div>
+      <h1>Mail &amp; email verification</h1>
+      <p>Delivery, DKIM, DNS records and the verification policy.</p>
     </div>
-
+  </header>
+  <div class="card" style="max-width:860px">
     <% if (locals.saved) { %><div class="flash ok">Saved — the new settings apply immediately (no restart).</div><% } %>
     <% if (locals.error) { %><div class="flash err"><span class="flash-ico"><%- include('partials/icon', { name: 'alert', size: 18 }) %></span><span><%= error %></span></div><% } %>
     <% if (locals.lastMail) { %>
@@ -155,7 +159,7 @@
     </form>
   </div>
 
-  <div class="card" style="max-width:860px;margin:16px auto">
+  <div class="card" style="max-width:860px">
     <h2>DNS records to publish</h2>
     <% if (locals.records && records.isFallback) { %>
       <div class="flash err"><span class="flash-ico"><%- include('partials/icon', { name: 'alert', size: 18 }) %></span><span>
@@ -207,4 +211,6 @@
       STARTTLS <code><%= effective.starttls %></code> · DKIM <code><%= effective.dkim.enabled ? dkimDomain : 'off' %></code>
     </p>
   </div>
+  </div>
+</div>
 <%- include('partials/footer') %>

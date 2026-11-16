@@ -1,7 +1,7 @@
 'use strict';
 
 const express = require('express');
-const { getAllUsers, getUserById, removeReferralBadge, banUser, unbanUser, deleteUser, getAllRooms, deleteRoom, getPendingReports, getReport, resolveReport, dismissReport, promoteUser, getAnnouncement, setAnnouncement, clearAnnouncement, getSecurityReports, markSecurityReportHandled, getSetting, revokeAllOAuthTokensForUser, auditLog, getDriveQuotaBytes, setDriveQuotaBytes, getTotalUserFileUsage, getAllUserFileUsage, DRIVE_QUOTA_DEFAULT_BYTES, getPendingContentReports, countPendingContentReports, getContentReport, resolveContentReport, deletePost, deleteComment, deleteRoomMessage, getPostById, getCommentById, splitStoredPath, removeStoredFile } = require('../db');
+const { getAllUsers, getUserById, removeReferralBadge, banUser, unbanUser, deleteUser, getAllRooms, deleteRoom, promoteUser, getAnnouncement, setAnnouncement, clearAnnouncement, getSecurityReports, getPendingSecurityReports, markSecurityReportHandled, getSetting, revokeAllOAuthTokensForUser, auditLog, getDriveQuotaBytes, setDriveQuotaBytes, getTotalUserFileUsage, getAllUserFileUsage, DRIVE_QUOTA_DEFAULT_BYTES, getPendingContentReports, countPendingContentReports, getContentReport, resolveContentReport, deletePost, deleteComment, deleteRoomMessage, getPostById, getCommentById, splitStoredPath, removeStoredFile, countUsers, countUsersSince, countAdmins, countBannedUsers, countRooms, countRoomMembers, countPosts, countComments, getRecentUsers, getRecentRooms, getRecentAuditLog } = require('../db');
 const { destroySessionsForUser } = require('../session-store');
 const { fmt } = require('../drive');
 const { closeUserSockets } = require('../webrtc-signaling');
@@ -15,17 +15,86 @@ function requireAdmin(req, res, next) {
 }
 
 router.get('/', requireAdmin, (req, res) => {
-  const users = getAllUsers();
-  const rooms = getAllRooms();
-  const reports = getPendingContentReports();
-  res.render('admin', { users, rooms, reports });
+  const now = Date.now();
+  const usage = getAllUserFileUsage();
+  const quota = getDriveQuotaBytes();
+  const totalUsers = countUsers();
+  const storage = getTotalUserFileUsage();
+  let lastMail = null;
+  try {
+    const raw = getSetting('mail_last_result');
+    if (raw) lastMail = JSON.parse(raw);
+  } catch (e) { /* ignore a malformed record */ }
+
+  res.render('admin', {
+    totalUsers,
+    newUsers: countUsersSince(now - 7 * 86400000),
+    admins: countAdmins(),
+    totalRooms: countRooms(),
+    roomMembers: countRoomMembers(),
+    totalPosts: countPosts(),
+    totalComments: countComments(),
+    pendingReports: countPendingContentReports(),
+    openSecurity: getPendingSecurityReports().length,
+    overQuota: quota > 0 ? usage.filter((row) => row.bytes > quota).length : 0,
+    storage,
+    quota,
+    storagePercent: quota > 0 && totalUsers > 0
+      ? Math.min(100, Math.round((storage.bytes / (quota * totalUsers)) * 100))
+      : 0,
+    topStorage: usage.slice(0, 4).map((row) => {
+      const u = getUserById(row.user_id);
+      return { username: u ? u.username : '#' + row.user_id, bytes: row.bytes, files: row.files };
+    }),
+    lastMail,
+    recentUsers: getRecentUsers(5),
+    recentRooms: getRecentRooms(4),
+    recentAudit: getRecentAuditLog(8),
+    announcement: getAnnouncement(),
+    fmt,
+  });
+});
+
+// Admin: users
+router.get('/users', requireAdmin, (req, res) => {
+  const q = String(req.query.q || '').trim();
+  const allowed = ['all', 'members', 'admins', 'banned'];
+  const status = allowed.includes(String(req.query.status || 'all')) ? String(req.query.status || 'all') : 'all';
+  let users = getAllUsers();
+  if (q) {
+    const needle = q.toLowerCase();
+    users = users.filter((u) => u.username.toLowerCase().includes(needle)
+      || String(u.display_name || '').toLowerCase().includes(needle));
+  }
+  if (status === 'members') users = users.filter((u) => !u.is_admin && !u.banned);
+  else if (status === 'admins') users = users.filter((u) => u.is_admin);
+  else if (status === 'banned') users = users.filter((u) => u.banned);
+  users = users.slice().sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+  res.render('admin-users', { users, q, status, total: countUsers(), banned: countBannedUsers() });
+});
+
+// Admin: rooms
+router.get('/rooms', requireAdmin, (req, res) => {
+  const q = String(req.query.q || '').trim();
+  const allowed = ['all', 'public', 'private'];
+  const type = allowed.includes(String(req.query.type || 'all')) ? String(req.query.type || 'all') : 'all';
+  let rooms = getAllRooms();
+  if (q) {
+    const needle = q.toLowerCase();
+    rooms = rooms.filter((r) => String(r.name || '').toLowerCase().includes(needle)
+      || String(r.creator_username || '').toLowerCase().includes(needle));
+  }
+  if (type === 'public') rooms = rooms.filter((r) => r.is_public);
+  else if (type === 'private') rooms = rooms.filter((r) => !r.is_public);
+  res.render('admin-rooms', { rooms, q, type, total: countRooms() });
 });
 
 router.post('/remove-referral/:id', requireAdmin, (req, res) => {
   const target = getUserById(Number(req.params.id));
   if (!target) return res.status(404).send('User not found');
   removeReferralBadge(target.id);
-  res.redirect('/admin');
+  auditLog('referral_badge_removed', req.session.userId, target.username);
+  res.redirect('/admin/users');
 });
 
 router.post('/ban/:id', requireAdmin, (req, res) => {
@@ -37,14 +106,15 @@ router.post('/ban/:id', requireAdmin, (req, res) => {
   revokeAllOAuthTokensForUser(target.id);
   closeUserSockets(target.id);
   auditLog('user_banned', req.session.userId, target.username);
-  res.redirect('/admin');
+  res.redirect('/admin/users');
 });
 
 router.post('/unban/:id', requireAdmin, (req, res) => {
   const target = getUserById(Number(req.params.id));
   if (!target) return res.status(404).send('User not found');
   unbanUser(target.id);
-  res.redirect('/admin');
+  auditLog('user_unbanned', req.session.userId, target.username);
+  res.redirect('/admin/users');
 });
 
 router.post('/delete/:id', requireAdmin, (req, res) => {
@@ -53,7 +123,8 @@ router.post('/delete/:id', requireAdmin, (req, res) => {
   if (target.is_admin) return res.status(403).send('Cannot delete another admin.');
   deleteUser(target.id);
   closeUserSockets(target.id);
-  res.redirect('/admin');
+  auditLog('user_deleted', req.session.userId, target.username);
+  res.redirect('/admin/users');
 });
 
 router.post('/make-admin/:id', requireAdmin, (req, res) => {
@@ -62,7 +133,8 @@ router.post('/make-admin/:id', requireAdmin, (req, res) => {
   if (target.is_admin) return res.status(400).send('Already an admin');
   if (target.banned) return res.status(400).send('Cannot promote banned user');
   promoteUser(target.id);
-  res.redirect('/admin');
+  auditLog('user_promoted', req.session.userId, target.username);
+  res.redirect('/admin/users');
 });
 
 // Admin: delete any room
@@ -70,7 +142,8 @@ router.post('/rooms/:id/delete', requireAdmin, (req, res) => {
   const room = getAllRooms().find(r => r.id === Number(req.params.id));
   if (!room) return res.status(404).send('Room not found');
   deleteRoom(room.id);
-  res.redirect('/admin#rooms');
+  auditLog('room_deleted', req.session.userId, room.name);
+  res.redirect('/admin/rooms');
 });
 
 // Admin: reports
@@ -131,6 +204,7 @@ router.post('/reports/:id/dismiss', requireAdmin, (req, res) => {
   if (!report) return res.status(404).send('Report not found');
   if (report.status !== 'pending') return res.status(400).send('Report already resolved');
   resolveContentReport(report.id, 'dismissed');
+  auditLog('report_dismissed', req.session.userId, `${report.target_type} ${report.target_id}`);
   res.redirect('/admin/reports');
 });
 
@@ -143,6 +217,7 @@ router.get('/security-reports', requireAdmin, (req, res) => {
 router.post('/security-reports/:id/handle', requireAdmin, (req, res) => {
   const ok = markSecurityReportHandled(Number(req.params.id), res.locals.currentUser.id);
   if (!ok) return res.status(404).send('Report not found or already handled.');
+  auditLog('security_report_handled', req.session.userId, 'report ' + Number(req.params.id));
   res.redirect('/admin/security-reports');
 });
 
@@ -164,12 +239,12 @@ router.post('/announcement', requireAdmin, (req, res) => {
     });
   }
   setAnnouncement(body, user.id);
-  res.redirect('/admin');
+  res.redirect('/admin/announcement');
 });
 
 router.post('/announcement/clear', requireAdmin, (req, res) => {
   clearAnnouncement();
-  res.redirect('/admin');
+  res.redirect('/admin/announcement');
 });
 
 // ---------- Mail / email-verification admin panel ----------

@@ -1,0 +1,70 @@
+<%
+  const qs = function (next) {
+    const params = [];
+    if (q) params.push('q=' + encodeURIComponent(q));
+    if (next && next !== 'all') params.push('type=' + encodeURIComponent(next));
+    return '/admin/rooms' + (params.length ? '?' + params.join('&') : '');
+  };
+%>
+<%- include('partials/header', { wrapClass: 'wrap-admin' }) %>
+<div class="admin-shell">
+  <%- include('partials/admin-sidebar', { active: 'rooms' }) %>
+  <div class="admin-main">
+    <header class="admin-page-head">
+      <div>
+        <h1>Rooms</h1>
+        <p><%= total %> room<%= total === 1 ? '' : 's' %> · <%= rooms.length %> shown</p>
+      </div>
+      <form method="get" action="/admin/rooms" class="admin-search" role="search">
+        <input type="search" name="q" value="<%= q %>" placeholder="Search room or creator" aria-label="Search rooms">
+        <% if (type !== 'all') { %><input type="hidden" name="type" value="<%= type %>"><% } %>
+        <button class="btn ghost small">Search</button>
+      </form>
+    </header>
+
+    <nav class="admin-filter-tabs" aria-label="Filter rooms">
+      <a class="<%= type === 'all' ? 'active' : '' %>" href="<%= qs('all') %>">All</a>
+      <a class="<%= type === 'public' ? 'active' : '' %>" href="<%= qs('public') %>">Public</a>
+      <a class="<%= type === 'private' ? 'active' : '' %>" href="<%= qs('private') %>">Private</a>
+    </nav>
+
+    <section class="card admin-panel admin-table-card">
+      <% if (rooms.length) { %>
+        <div class="admin-table-wrap">
+          <table class="admin-table">
+            <thead>
+              <tr><th>Room</th><th>Creator</th><th>Members</th><th>Type</th><th>Created</th><th aria-label="Actions"></th></tr>
+            </thead>
+            <tbody>
+              <% rooms.forEach(function(r) { %>
+                <tr>
+                  <td>
+                    <a href="/rooms/<%= r.id %>"><%= r.name %></a>
+                    <small class="muted"><%= String(r.description || '').slice(0, 80) %></small>
+                  </td>
+                  <td><span class="muted"><%= r.creator_username ? '@' + r.creator_username : '—' %></span></td>
+                  <td><%= r.member_count %></td>
+                  <td><span class="admin-status"><%= r.is_public ? 'Public' : 'Private' %></span></td>
+                  <td><span class="muted"><%= locals.relTime(r.created_at) %></span></td>
+                  <td class="actions">
+                    <form method="post" action="/admin/rooms/<%= r.id %>/delete">
+                      <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                      <button class="btn ghost danger small"><%- include('partials/icon', { name: 'trash', size: 13 }) %> Delete</button>
+                    </form>
+                  </td>
+                </tr>
+              <% }); %>
+            </tbody>
+          </table>
+        </div>
+      <% } else { %>
+        <div class="empty-state">
+          <h4>No rooms match</h4>
+          <p>Try a different search or filter.</p>
+        </div>
+      <% } %>
+    </section>
+  </div>
+</div>
+<script src="/static/admin.js?v=2"></script>
+<%- include('partials/footer') %>

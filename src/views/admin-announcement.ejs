@@ -1,13 +1,14 @@
-<%- include('partials/header') %>
-  <div class="card ann-admin-card" style="max-width:620px;margin:0 auto">
-    <div class="ann-admin-head">
-      <span class="ann-admin-icon"><%- include('partials/icon', { name: 'megaphone', size: 22 }) %></span>
-      <div>
-        <h2>Server announcement</h2>
-        <p class="muted">A single announcement shown to every signed-in user in the top bar. Setting a new one replaces the current.</p>
-      </div>
+<%- include('partials/header', { wrapClass: 'wrap-admin' }) %>
+<div class="admin-shell">
+  <%- include('partials/admin-sidebar', { active: 'announcement' }) %>
+  <div class="admin-main">
+  <header class="admin-page-head">
+    <div>
+      <h1>Announcement</h1>
+      <p>A single announcement shown to every signed-in user in the top bar. Setting a new one replaces the current.</p>
     </div>
-
+  </header>
+  <div class="card ann-admin-card" style="max-width:720px">
     <% if (locals.error) { %>
       <div class="ann-admin-error"><%- include('partials/icon', { name: 'alert', size: 16 }) %> <%= error %></div>
     <% } %>
@@ -43,5 +44,7 @@
       </div>
     <% } %>
   </div>
+  </div>
+</div>
 <script src="/static/announcement-admin.js?v=1"></script>
 <%- include('partials/footer') %>

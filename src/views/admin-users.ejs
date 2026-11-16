@@ -1,0 +1,108 @@
+<%
+  const qs = function (next) {
+    const params = [];
+    if (q) params.push('q=' + encodeURIComponent(q));
+    if (next && next !== 'all') params.push('status=' + encodeURIComponent(next));
+    return '/admin/users' + (params.length ? '?' + params.join('&') : '');
+  };
+%>
+<%- include('partials/header', { wrapClass: 'wrap-admin' }) %>
+<div class="admin-shell">
+  <%- include('partials/admin-sidebar', { active: 'users' }) %>
+  <div class="admin-main">
+    <header class="admin-page-head">
+      <div>
+        <h1>Users</h1>
+        <p><%= total %> account<%= total === 1 ? '' : 's' %><%= banned ? ' · ' + banned + ' banned' : '' %> · <%= users.length %> shown</p>
+      </div>
+      <form method="get" action="/admin/users" class="admin-search" role="search">
+        <input type="search" name="q" value="<%= q %>" placeholder="Search name or @username" aria-label="Search users">
+        <% if (status !== 'all') { %><input type="hidden" name="status" value="<%= status %>"><% } %>
+        <button class="btn ghost small">Search</button>
+      </form>
+    </header>
+
+    <nav class="admin-filter-tabs" aria-label="Filter users">
+      <a class="<%= status === 'all' ? 'active' : '' %>" href="<%= qs('all') %>">All</a>
+      <a class="<%= status === 'members' ? 'active' : '' %>" href="<%= qs('members') %>">Members</a>
+      <a class="<%= status === 'admins' ? 'active' : '' %>" href="<%= qs('admins') %>">Admins</a>
+      <a class="<%= status === 'banned' ? 'active' : '' %>" href="<%= qs('banned') %>">Banned</a>
+    </nav>
+
+    <section class="card admin-panel admin-table-card">
+      <% if (users.length) { %>
+        <div class="admin-table-wrap">
+          <table class="admin-table">
+            <thead>
+              <tr><th>User</th><th>Joined</th><th>Referred</th><th>Status</th><th aria-label="Actions"></th></tr>
+            </thead>
+            <tbody>
+              <% users.forEach(function(u) { %>
+                <tr>
+                  <td>
+                    <span class="admin-user-cell">
+                      <span class="admin-avatar">
+                        <% if (u.avatar) { %><img src="<%= u.avatar %>" alt=""><% } else { %><%= String(u.display_name || u.username || '?').slice(0, 1).toUpperCase() %><% } %>
+                      </span>
+                      <span>
+                        <a href="/u/<%= encodeURIComponent(u.username) %>"><%= u.display_name || u.username %></a>
+                        <small class="muted">@<%= u.username %></small>
+                      </span>
+                    </span>
+                  </td>
+                  <td><span class="muted"><%= locals.relTime(u.created_at) %></span></td>
+                  <td>
+                    <%= u.referral_count %>
+                    <% if (u.referral_count > 0) { %><%- include('partials/icon', { name: 'starFilled', size: 12, cls: 'flash-ico' }) %><% } %>
+                  </td>
+                  <td>
+                    <% if (u.banned) { %><span class="admin-status banned">Banned</span>
+                    <% } else if (u.is_admin) { %><span class="admin-status admin">Admin</span>
+                    <% } else { %><span class="admin-status">Active</span><% } %>
+                  </td>
+                  <td class="actions">
+                    <details class="admin-menu">
+                      <summary class="btn ghost small" aria-label="Manage @<%= u.username %>"><%- include('partials/icon', { name: 'more', size: 14 }) %> Manage</summary>
+                      <div class="admin-menu-pop">
+                        <a href="/u/<%= encodeURIComponent(u.username) %>"><%- include('partials/icon', { name: 'user', size: 14 }) %> View profile</a>
+                        <% if (!u.is_admin) { %>
+                          <form method="post" action="/admin/make-admin/<%= u.id %>">
+                            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                            <button type="submit"><%- include('partials/icon', { name: 'shield', size: 14 }) %> Make admin</button>
+                          </form>
+                          <form method="post" action="/admin/<%= u.banned ? 'unban' : 'ban' %>/<%= u.id %>">
+                            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                            <button type="submit"><%- include('partials/icon', { name: u.banned ? 'check' : 'lock', size: 14 }) %> <%= u.banned ? 'Unban' : 'Ban' %></button>
+                          </form>
+                          <form method="post" action="/admin/delete/<%= u.id %>">
+                            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                            <button type="submit" class="danger"><%- include('partials/icon', { name: 'trash', size: 14 }) %> Delete</button>
+                          </form>
+                        <% } else { %>
+                          <span class="admin-menu-note">Admin accounts are protected.</span>
+                        <% } %>
+                        <% if (u.referral_count > 0) { %>
+                          <form method="post" action="/admin/remove-referral/<%= u.id %>">
+                            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                            <button type="submit"><%- include('partials/icon', { name: 'starFilled', size: 14 }) %> Remove referral boost</button>
+                          </form>
+                        <% } %>
+                      </div>
+                    </details>
+                  </td>
+                </tr>
+              <% }); %>
+            </tbody>
+          </table>
+        </div>
+      <% } else { %>
+        <div class="empty-state">
+          <h4>No users match</h4>
+          <p>Try a different search or filter.</p>
+        </div>
+      <% } %>
+    </section>
+  </div>
+</div>
+<script src="/static/admin.js?v=2"></script>
+<%- include('partials/footer') %>

@@ -1,48 +1,60 @@
-<%- include('partials/header') %>
-  <div class="card" style="max-width:820px;margin:0 auto;display:flex;justify-content:space-between;align-items:center">
-    <h2 style="margin:0">Reports</h2>
-    <a class="btn ghost small" href="/admin"><%- include('partials/icon', { name: 'arrowLeft', size: 14 }) %> Back to admin</a>
+<%- include('partials/header', { wrapClass: 'wrap-admin' }) %>
+<div class="admin-shell">
+  <%- include('partials/admin-sidebar', { active: 'reports' }) %>
+  <div class="admin-main">
+    <header class="admin-page-head">
+      <div>
+        <h1>Content reports</h1>
+        <p><%= reports.length %> pending report<%= reports.length === 1 ? '' : 's' %> across posts, comments, rooms and accounts.</p>
+      </div>
+    </header>
+
+    <% if (!reports.length) { %>
+      <div class="card empty-state">
+        <div class="empty-art"><%- include('partials/rings', { size: 48, animate: true }) %></div>
+        <h4>No pending reports</h4>
+        <p>The moderation queue is clear.</p>
+      </div>
+    <% } %>
+    <% reports.forEach(function(r) { %>
+      <div class="card admin-panel admin-report-card">
+        <div class="admin-report-head">
+          <div class="admin-report-title">
+            <strong><%= r.target_type.replace('_', ' ').replace(/^./, function(c) { return c.toUpperCase(); }) %></strong><%= r.target_id ? ' #' + r.target_id : '' %>
+            <% if (r.context) { %> <span class="muted"><%= r.context %></span><% } %>
+            <% if (r.reported_username) { %> · <strong>Reported:</strong> <a href="/u/<%= encodeURIComponent(r.reported_username) %>"><%= r.reported_name || r.reported_username %></a> @<%= r.reported_username %><% } %>
+            · <strong>By:</strong> <%= r.reporter_name %> @<%= r.reporter_username %>
+          </div>
+          <small class="muted"><%= new Date(r.created_at).toLocaleString() %></small>
+        </div>
+        <% if (r.snapshot) { %>
+          <div class="admin-report-snapshot">
+            <em>"<%= r.snapshot %>"</em>
+            <% if (r.target_type === 'room_message' || r.target_type === 'dm_message') { %><div class="muted admin-report-note">Reporter's copy — encrypted end to end, so the server has no plaintext.</div><% } %>
+          </div>
+        <% } %>
+        <div class="admin-report-reason"><strong>Reason:</strong> <%= r.reason %></div>
+        <div class="admin-report-actions">
+          <% if (r.reported_username) { %>
+            <form method="post" action="/admin/reports/<%= r.id %>/ban">
+              <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+              <button class="btn danger small"><%- include('partials/icon', { name: 'trash', size: 13 }) %> Ban <%= r.reported_name || r.reported_username %></button>
+            </form>
+          <% } %>
+          <% if (['post','comment','room_message'].indexOf(r.target_type) > -1) { %>
+            <form method="post" action="/admin/reports/<%= r.id %>/delete">
+              <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+              <button class="btn ghost danger small"><%- include('partials/icon', { name: 'trash', size: 13 }) %> Remove content</button>
+            </form>
+          <% } %>
+          <form method="post" action="/admin/reports/<%= r.id %>/dismiss">
+            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+            <button class="btn ghost small">Dismiss</button>
+          </form>
+        </div>
+      </div>
+    <% }) %>
   </div>
-  <% if (!reports.length) { %>
-    <div class="card empty-state" style="max-width:820px;margin:0 auto"><div class="empty-art"><%- include('partials/rings', { size: 48, animate: true }) %></div><p>No pending reports.</p></div>
-  <% } %>
-  <% reports.forEach(function(r) { %>
-    <div class="card" style="max-width:820px;margin:12px auto;border-left:3px solid var(--danger)">
-      <div style="display:flex;justify-content:space-between;align-items:start;gap:12px;flex-wrap:wrap">
-        <div style="font-size:var(--fs-sm)">
-          <strong><%= r.target_type.replace('_', ' ').replace(/^./, function(c) { return c.toUpperCase(); }) %></strong><%= r.target_id ? ' #' + r.target_id : '' %>
-          <% if (r.context) { %> <span class="muted"><%= r.context %></span><% } %>
-          <% if (r.reported_username) { %> · <strong>Reported:</strong> <a href="/u/<%= encodeURIComponent(r.reported_username) %>"><%= r.reported_name || r.reported_username %></a> @<%= r.reported_username %><% } %>
-          · <strong>By:</strong> <%= r.reporter_name %> @<%= r.reporter_username %>
-        </div>
-        <small class="muted"><%= new Date(r.created_at).toLocaleString() %></small>
-      </div>
-      <% if (r.snapshot) { %>
-        <div style="margin:10px 0;padding:10px 12px;background:var(--surface-2);border:1px solid var(--border-soft);border-radius:var(--radius-lg)">
-          <em>"<%= r.snapshot %>"</em>
-          <% if (r.target_type === 'room_message' || r.target_type === 'dm_message') { %><div class="muted" style="font-size:0.75rem;margin-top:6px">Reporter's copy — encrypted end to end, so the server has no plaintext.</div><% } %>
-        </div>
-      <% } %>
-      <div style="margin-bottom:10px;font-size:var(--fs-sm)"><strong>Reason:</strong> <%= r.reason %></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <% if (r.reported_username) { %>
-          <form method="post" action="/admin/reports/<%= r.id %>/ban">
-            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-            <button class="btn danger small"><%- include('partials/icon', { name: 'trash', size: 13 }) %> Ban <%= r.reported_name || r.reported_username %></button>
-          </form>
-        <% } %>
-        <% if (['post','comment','room_message'].indexOf(r.target_type) > -1) { %>
-          <form method="post" action="/admin/reports/<%= r.id %>/delete">
-            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-            <button class="btn ghost danger small"><%- include('partials/icon', { name: 'trash', size: 13 }) %> Remove content</button>
-          </form>
-        <% } %>
-        <form method="post" action="/admin/reports/<%= r.id %>/dismiss">
-          <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-          <button class="btn ghost small">Dismiss</button>
-        </form>
-      </div>
-    </div>
-  <% }) %>
-<script src="/static/admin.js?v=1"></script>
+</div>
+<script src="/static/admin.js?v=2"></script>
 <%- include('partials/footer') %>

@@ -9,6 +9,8 @@ document.addEventListener('submit', function (e) {
   else if (/\/make-admin\/\d+$/.test(form.action)) msg = 'Promote this user to admin?';
   else if (/\/rooms\/\d+\/delete$/.test(form.action)) msg = 'Delete this room permanently?';
   else if (/\/reports\/\d+\/ban$/.test(form.action)) msg = 'Ban the author of this message?';
+  else if (/\/reports\/\d+\/delete$/.test(form.action)) msg = 'Remove the reported content?';
   else if (/\/reports\/\d+\/dismiss$/.test(form.action)) msg = 'Dismiss this report?';
+  else if (/\/security-reports\/\d+\/handle$/.test(form.action)) msg = 'Mark this security report as handled?';
   if (msg && !confirm(msg)) e.preventDefault();
 });

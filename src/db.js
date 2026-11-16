@@ -2677,7 +2677,7 @@ function unbanUser(userId) {
 }
 
 function getAllUsers() {
-  return db.prepare(`SELECT id, username, display_name, referral_code, created_at, is_admin, banned, (SELECT COUNT(*) FROM users WHERE referred_by = users.id) AS referral_count FROM users ORDER BY created_at ASC`).all();
+  return db.prepare(`SELECT id, username, display_name, avatar, referral_code, created_at, is_admin, banned, (SELECT COUNT(*) FROM users WHERE referred_by = users.id) AS referral_count FROM users ORDER BY created_at ASC`).all();
 }
 
 function promoteUser(userId) {
@@ -2967,6 +2967,54 @@ function markSecurityReportHandled(id, adminId) {
 // ---------- admin rooms ----------
 function getAllRooms() {
   return db.prepare(`SELECT r.*, (SELECT COUNT(*) FROM room_members WHERE room_id = r.id) AS member_count, u.username AS creator_username FROM rooms r LEFT JOIN users u ON u.id = r.creator_id ORDER BY r.created_at DESC`).all();
+}
+
+// ---------- admin dashboard ----------
+function countUsers() {
+  return db.prepare(`SELECT COUNT(*) AS n FROM users`).get().n;
+}
+function countUsersSince(ts) {
+  return db.prepare(`SELECT COUNT(*) AS n FROM users WHERE created_at >= ?`).get(Number(ts) || 0).n;
+}
+function countAdmins() {
+  return db.prepare(`SELECT COUNT(*) AS n FROM users WHERE is_admin = 1`).get().n;
+}
+function countBannedUsers() {
+  return db.prepare(`SELECT COUNT(*) AS n FROM users WHERE banned = 1`).get().n;
+}
+function countRooms() {
+  return db.prepare(`SELECT COUNT(*) AS n FROM rooms`).get().n;
+}
+function countRoomMembers() {
+  return db.prepare(`SELECT COUNT(*) AS n FROM room_members`).get().n;
+}
+function countPosts() {
+  return db.prepare(`SELECT COUNT(*) AS n FROM posts`).get().n;
+}
+function countComments() {
+  return db.prepare(`SELECT COUNT(*) AS n FROM comments`).get().n;
+}
+function dashLimit(limit, fallback) {
+  const n = Number(limit);
+  return Number.isFinite(n) && n > 0 ? Math.min(50, Math.floor(n)) : fallback;
+}
+function getRecentUsers(limit = 5) {
+  return db.prepare(`SELECT id, username, display_name, avatar, created_at, is_admin, banned FROM users ORDER BY created_at DESC LIMIT ?`).all(dashLimit(limit, 5));
+}
+function getRecentRooms(limit = 5) {
+  return db.prepare(`SELECT r.*, (SELECT COUNT(*) FROM room_members WHERE room_id = r.id) AS member_count, u.username AS creator_username FROM rooms r LEFT JOIN users u ON u.id = r.creator_id ORDER BY r.created_at DESC LIMIT ?`).all(dashLimit(limit, 5));
+}
+function getRecentAuditLog(limit = 10) {
+  return db.prepare(`
+    SELECT a.id, a.action, a.actor_id, a.details, a.ip, a.created_at, u.username, u.display_name
+    FROM audit_log a LEFT JOIN users u ON u.id = a.actor_id
+    WHERE a.action IN (
+      'user_banned', 'user_unbanned', 'user_promoted', 'user_deleted',
+      'room_deleted', 'referral_badge_removed', 'report_content_removed',
+      'report_dismissed', 'security_report_handled'
+    )
+    ORDER BY a.created_at DESC LIMIT ?
+  `).all(dashLimit(limit, 10));
 }
 
 // ---------- join requests ----------
@@ -3899,6 +3947,8 @@ module.exports = {
   registerUserDevice, getUserDevices, getUserDevice, getSenderCurve, touchUserDevice, deleteUserDevice, addDevicePrekeys, countAvailableDevicePrekeys, claimDevicePrekey, peekDevicePrekey, getAllDeviceBundlesForUser, claimAllDevicePrekeysForUser, setUserHistoryBackup, getUserHistoryBackup,
   // admin
   adminExists, getAllUsers, promoteUser, promoteUserIfNoAdmin, demoteUser, removeReferralBadge, banUser, unbanUser,
+  countUsers, countUsersSince, countAdmins, countBannedUsers, countRooms, countRoomMembers, countPosts, countComments,
+  getRecentUsers, getRecentRooms, getRecentAuditLog,
   // referrals
   setReferralCode, getUserByReferralCode, getReferralCount, getReferralCode, getReferrerIp,
   // stickers

@@ -24,6 +24,7 @@
     <% } %>
 
     <form method="post" action="/drive/upload" enctype="multipart/form-data" id="driveUpload"
+          data-backend="<%= usage.backend %>"
           <% if (!usage.unlimited) { %>data-remaining="<%= usage.remaining %>"<% } %> style="margin-top:18px">
       <input type="hidden" name="_csrf" value="<%= csrfToken %>">
       <label for="drive-file">Upload a file</label>
@@ -32,7 +33,17 @@
         <% if (usage.unlimited) { %>No size limit — the file is uploaded to your Nextcloud.<% } else { %>No per-file limit — the only limit is your remaining space (<%= fmt(usage.remaining) %>).<% } %>
       </small>
       <p class="drive-warn" id="driveWarn" hidden></p>
-      <button class="btn" style="margin-top:12px"><%- include('partials/icon', { name: 'plus', size: 15 }) %> Upload</button>
+      <button class="btn" id="driveUploadBtn" style="margin-top:12px"><%- include('partials/icon', { name: 'plus', size: 15 }) %> Upload</button>
+      <div class="upload-progress" id="driveUploadProgress" hidden>
+        <div class="upload-progress-head">
+          <span class="upload-progress-name" id="driveUploadName"></span>
+          <span class="upload-progress-pct" id="driveUploadPct">0%</span>
+        </div>
+        <div class="usage-bar upload-bar" id="driveUploadBar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <span id="driveUploadFill" style="width:0%"></span>
+        </div>
+        <p class="upload-progress-status" id="driveUploadStatus" role="status" aria-live="polite"></p>
+      </div>
     </form>
   </div>
 
@@ -72,5 +83,5 @@
       <% }); %>
     </div>
   <% } %>
-  <script src="/static/drive.js?v=1"></script>
+  <script src="/static/drive.js?v=2"></script>
 <%- include('partials/footer') %>

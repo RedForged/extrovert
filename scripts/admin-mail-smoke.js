@@ -50,7 +50,7 @@ const app = require('../src/server');
   const g = await fetch(base + '/admin/mail', { headers: { cookie: sessCookie } });
   const html = await g.text();
   assert.strictEqual(g.status, 200, 'admin/mail GET 200');
-  assert(html.includes('Admin · Mail'), 'panel heading');
+  assert(html.includes('Mail &amp; email verification'), 'panel heading');
 
   // DNS card: with a real public host the records must use that domain and be
   // quoted TXT snippets (Namecheap-style); with an internal host a fallback

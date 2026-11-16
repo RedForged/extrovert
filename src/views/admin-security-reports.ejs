@@ -1,17 +1,23 @@
-<%- include('partials/header') %>
-  <div style="max-width:820px;margin:0 auto">
-    <h2>Admin · Security reports (<%= reports.filter(r => r.status === 'open').length %> open)</h2>
-    <p class="muted" style="margin-top:-6px">Private responsible-disclosure submissions from the public <a href="/security">/security</a> page. Never shown publicly.</p>
+<%- include('partials/header', { wrapClass: 'wrap-admin' }) %>
+<div class="admin-shell">
+  <%- include('partials/admin-sidebar', { active: 'security' }) %>
+  <div class="admin-main">
+    <header class="admin-page-head">
+      <div>
+        <h1>Security reports</h1>
+        <p><%= reports.filter(function(r) { return r.status === 'open'; }).length %> open · private responsible-disclosure submissions from the public <a href="/security">/security</a> page.</p>
+      </div>
+    </header>
 
     <% if (reports.length === 0) { %>
-      <div class="card empty-state" style="max-width:820px;margin:16px auto"><p>No security reports.</p></div>
+      <div class="card empty-state"><p>No security reports.</p></div>
     <% } else { %>
       <% reports.forEach(function(r) { %>
-        <div class="card" style="margin-bottom:12px">
-          <div style="display:flex;justify-content:space-between;align-items:start;gap:12px">
-            <div style="flex:1">
-              <strong style="font-size:var(--fs-lg)"><%= r.summary %></strong>
-              <span class="badge <%= r.status === 'open' ? '' : '' %>" style="margin-left:8px"><%= r.status %></span>
+        <div class="card admin-panel">
+          <div class="admin-report-head">
+            <div class="admin-report-title">
+              <strong><%= r.summary %></strong>
+              <span class="admin-status<%= r.status === 'open' ? ' banned' : '' %>" style="margin-left:8px"><%= r.status %></span>
             </div>
             <% if (r.status === 'open') { %>
               <form method="post" action="/admin/security-reports/<%= r.id %>/handle">
@@ -20,15 +26,16 @@
               </form>
             <% } %>
           </div>
-          <div class="muted" style="font-size:0.8rem;margin:4px 0 8px">
+          <div class="muted admin-report-meta">
             <%= new Date(r.created_at).toLocaleString() %>
             <% if (r.reporter_name) { %> · <%= r.reporter_name %><% } %>
             <% if (r.reporter_contact) { %> · <%= r.reporter_contact %><% } %>
             <% if (r.handled_by_username) { %> · handled by <%= r.handled_by_username %><% } %>
           </div>
-          <pre style="white-space:pre-wrap;font-size:0.9rem;background:var(--surface-3);padding:12px;border-radius:var(--radius);margin:0"><%= r.details %></pre>
+          <pre class="admin-report-details"><%= r.details %></pre>
         </div>
       <% }); %>
     <% } %>
   </div>
+</div>
 <%- include('partials/footer') %>

@@ -1,0 +1,28 @@
+<%
+  const _active = (typeof active !== 'undefined' && active) ? active : '';
+  const _reports = locals.pendingReports || 0;
+  const _security = locals.securityReports || 0;
+  const _link = function (key) { return 'admin-nav-link' + (_active === key ? ' active' : ''); };
+%>
+<aside class="admin-sidebar">
+  <div class="admin-sidebar-head">
+    <span class="admin-sidebar-icon"><%- include('icon', { name: 'shield', size: 19 }) %></span>
+    <div>
+      <strong>Admin</strong>
+      <small>Control panel</small>
+    </div>
+  </div>
+  <nav class="admin-nav" aria-label="Admin sections">
+    <a class="<%= _link('overview') %>" href="/admin"><%- include('icon', { name: 'shield', size: 17 }) %> Overview</a>
+    <a class="<%= _link('users') %>" href="/admin/users"><%- include('icon', { name: 'users', size: 17 }) %> Users</a>
+    <a class="<%= _link('rooms') %>" href="/admin/rooms"><%- include('icon', { name: 'rooms', size: 17 }) %> Rooms</a>
+    <a class="<%= _link('reports') %>" href="/admin/reports"><%- include('icon', { name: 'flag', size: 17 }) %> Reports<% if (_reports > 0) { %><span class="admin-nav-count"><%= _reports %></span><% } %></a>
+    <a class="<%= _link('security') %>" href="/admin/security-reports"><%- include('icon', { name: 'lock', size: 17 }) %> Security<% if (_security > 0) { %><span class="admin-nav-count"><%= _security %></span><% } %></a>
+    <a class="<%= _link('announcement') %>" href="/admin/announcement"><%- include('icon', { name: 'megaphone', size: 17 }) %> Announcement</a>
+    <a class="<%= _link('mail') %>" href="/admin/mail"><%- include('icon', { name: 'key', size: 17 }) %> Mail</a>
+    <a class="<%= _link('storage') %>" href="/admin/storage"><%- include('icon', { name: 'cloud', size: 17 }) %> Storage</a>
+  </nav>
+  <div class="admin-sidebar-foot">
+    <a href="/"><%- include('icon', { name: 'arrowLeft', size: 15 }) %> Back to site</a>
+  </div>
+</aside>

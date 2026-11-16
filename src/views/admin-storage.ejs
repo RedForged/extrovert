@@ -1,10 +1,14 @@
-<%- include('partials/header') %>
-  <div class="card" style="max-width:860px;margin:0 auto">
-    <div style="display:flex;align-items:center;gap:2em;margin-bottom:18px;flex-wrap:wrap">
-      <h2 style="margin:0">Admin · Storage</h2>
-      <a class="btn ghost small" href="/admin" style="margin-left:auto"><%- include('partials/icon', { name: 'arrowLeft', size: 13 }) %> Back</a>
+<%- include('partials/header', { wrapClass: 'wrap-admin' }) %>
+<div class="admin-shell">
+  <%- include('partials/admin-sidebar', { active: 'storage' }) %>
+  <div class="admin-main">
+  <header class="admin-page-head">
+    <div>
+      <h1>Storage</h1>
+      <p>Drive quota and per-account usage on this server.</p>
     </div>
-
+  </header>
+  <div class="card" style="max-width:860px">
     <% if (locals.saved) { %><div class="flash ok">Saved — applies to every upload immediately (no restart).</div><% } %>
     <% if (locals.error) { %><div class="flash err"><span class="flash-ico"><%- include('partials/icon', { name: 'alert', size: 18 }) %></span><span><%= error %></span></div><% } %>
 
@@ -30,7 +34,7 @@
     </form>
   </div>
 
-  <div class="card" style="max-width:860px;margin:16px auto">
+  <div class="card" style="max-width:860px">
     <h2 style="margin-top:0">Current usage</h2>
     <p class="muted" style="font-size:0.85rem;margin:-4px 0 12px">
       <strong><%= fmt(total.bytes) %></strong> stored across <%= total.files %> file<%= total.files === 1 ? '' : 's' %>
@@ -50,4 +54,6 @@
       </div>
     <% } %>
   </div>
+  </div>
+</div>
 <%- include('partials/footer') %>

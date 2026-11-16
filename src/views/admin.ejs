@@ -1,120 +1,218 @@
-<%- include('partials/header') %>
-  <div class="card" style="max-width:820px;margin:0 auto">
-    <div style="display:flex;align-items:center;gap:2em;margin-bottom:18px;flex-wrap:wrap">
-      <h2 style="margin:0">Admin · Users</h2>
-      <span style="margin-left:auto;display:flex;gap:8px">
-        <a class="btn small" href="/admin/mail">
-          <%- include('partials/icon', { name: 'key', size: 14 }) %>
-          Mail &amp; verification
-        </a>
-        <a class="btn small" href="/admin/announcement">
-          <%- include('partials/icon', { name: 'megaphone', size: 14 }) %>
-          Announcement
-        </a>
-        <a class="btn small" href="/admin/storage">
-          <%- include('partials/icon', { name: 'image', size: 14 }) %>
-          Storage
-        </a>
-      </span>
+<%
+  const auditLabels = {
+    user_banned: 'Banned a user',
+    user_unbanned: 'Unbanned a user',
+    user_promoted: 'Promoted an admin',
+    user_deleted: 'Deleted a user',
+    room_deleted: 'Deleted a room',
+    referral_badge_removed: 'Removed a referral boost',
+    report_content_removed: 'Removed reported content',
+    report_dismissed: 'Dismissed a report',
+    security_report_handled: 'Handled a security report',
+    profile_updated: 'Updated a profile',
+    post_deleted: 'Deleted a post',
+    room_message_deleted: 'Deleted a room message'
+  };
+  const openReports = pendingReports + openSecurity;
+  const attention = [];
+  if (pendingReports > 0) attention.push({ href: '/admin/reports', icon: 'flag', label: 'Pending content reports', count: pendingReports });
+  if (openSecurity > 0) attention.push({ href: '/admin/security-reports', icon: 'lock', label: 'Open security reports', count: openSecurity });
+  if (overQuota > 0) attention.push({ href: '/admin/storage', icon: 'cloud', label: 'Users over their Drive quota', count: overQuota });
+  if (lastMail && !lastMail.delivered) attention.push({ href: '/admin/mail', icon: 'key', label: 'Last verification email was not delivered', count: 1 });
+%>
+<%- include('partials/header', { wrapClass: 'wrap-admin' }) %>
+<div class="admin-shell">
+  <%- include('partials/admin-sidebar', { active: 'overview' }) %>
+  <div class="admin-main">
+    <header class="admin-page-head">
+      <div>
+        <h1>Overview</h1>
+        <p>Instance health, moderation and storage at a glance.</p>
+      </div>
+      <a class="btn ghost small" href="/"><%- include('partials/icon', { name: 'arrowLeft', size: 14 }) %> View site</a>
+    </header>
+
+    <section class="admin-stats" aria-label="Site totals">
+      <div class="admin-stat">
+        <span class="admin-stat-icon"><%- include('partials/icon', { name: 'users', size: 18 }) %></span>
+        <div>
+          <div class="admin-stat-value"><%= totalUsers %></div>
+          <div class="admin-stat-label">Users</div>
+          <div class="admin-stat-sub">+<%= newUsers %> this week · <%= admins %> admin<%= admins === 1 ? '' : 's' %></div>
+        </div>
+      </div>
+      <div class="admin-stat">
+        <span class="admin-stat-icon"><%- include('partials/icon', { name: 'rooms', size: 18 }) %></span>
+        <div>
+          <div class="admin-stat-value"><%= totalRooms %></div>
+          <div class="admin-stat-label">Rooms</div>
+          <div class="admin-stat-sub"><%= roomMembers %> membership<%= roomMembers === 1 ? '' : 's' %></div>
+        </div>
+      </div>
+      <div class="admin-stat">
+        <span class="admin-stat-icon"><%- include('partials/icon', { name: 'doc', size: 18 }) %></span>
+        <div>
+          <div class="admin-stat-value"><%= totalPosts %></div>
+          <div class="admin-stat-label">Posts</div>
+          <div class="admin-stat-sub"><%= totalComments %> comment<%= totalComments === 1 ? '' : 's' %></div>
+        </div>
+      </div>
+      <div class="admin-stat">
+        <span class="admin-stat-icon"><%- include('partials/icon', { name: 'flag', size: 18 }) %></span>
+        <div>
+          <div class="admin-stat-value"><%= openReports %></div>
+          <div class="admin-stat-label">Open reports</div>
+          <div class="admin-stat-sub"><%= pendingReports %> content · <%= openSecurity %> security</div>
+        </div>
+      </div>
+    </section>
+
+    <div class="admin-grid">
+      <div class="admin-stack">
+        <section class="card admin-panel">
+          <div class="admin-panel-head">
+            <h2>Needs attention</h2>
+            <% if (pendingReports > 0) { %><a class="admin-panel-link" href="/admin/reports">Review queue</a>
+            <% } else if (openSecurity > 0) { %><a class="admin-panel-link" href="/admin/security-reports">Security inbox</a><% } %>
+          </div>
+          <div class="admin-attention">
+            <% if (!attention.length) { %>
+              <div class="admin-attention-item ok">
+                <span class="admin-attention-icon"><%- include('partials/icon', { name: 'check', size: 16 }) %></span>
+                <span>Nothing needs attention right now.</span>
+              </div>
+            <% } %>
+            <% attention.forEach(function(item) { %>
+              <a class="admin-attention-item" href="<%= item.href %>">
+                <span class="admin-attention-icon"><%- include('partials/icon', { name: item.icon, size: 16 }) %></span>
+                <span><%= item.label %></span>
+                <span class="admin-attention-count"><%= item.count %></span>
+              </a>
+            <% }); %>
+          </div>
+        </section>
+
+        <section class="card admin-panel">
+          <div class="admin-panel-head">
+            <h2>Recent moderation activity</h2>
+            <a class="admin-panel-link" href="/admin/reports">Reports</a>
+          </div>
+          <% if (recentAudit.length) { %>
+            <div class="admin-list">
+              <% recentAudit.forEach(function(a) { %>
+                <div class="admin-list-row">
+                  <span class="admin-list-icon"><%- include('partials/icon', { name: 'shield', size: 14 }) %></span>
+                  <div class="admin-list-main">
+                    <strong><%= auditLabels[a.action] || String(a.action || '').replace(/_/g, ' ') %></strong>
+                    <small><%= a.display_name || a.username || 'System' %><% if (a.details) { %> · <%= a.details %><% } %></small>
+                  </div>
+                  <span class="admin-list-time"><%= locals.relTime(a.created_at) %></span>
+                </div>
+              <% }); %>
+            </div>
+          <% } else { %>
+            <p class="admin-empty">No admin activity logged yet.</p>
+          <% } %>
+        </section>
+      </div>
+
+      <div class="admin-stack">
+        <section class="card admin-panel">
+          <div class="admin-panel-head">
+            <h2>Storage</h2>
+            <a class="admin-panel-link" href="/admin/storage">Manage</a>
+          </div>
+          <div class="admin-storage-total">
+            <strong><%= fmt(storage.bytes) %></strong>
+            <span class="muted">in <%= storage.files %> file<%= storage.files === 1 ? '' : 's' %></span>
+          </div>
+          <div class="usage-bar" role="progressbar" aria-valuenow="<%= storagePercent %>" aria-valuemin="0" aria-valuemax="100">
+            <span style="width:<%= storagePercent %>%"></span>
+          </div>
+          <p class="admin-panel-note"><%= storagePercent %>% of the aggregate per-user quota<%= quota ? ' (' + fmt(quota) + ' per user)' : '' %>.</p>
+          <% if (topStorage.length) { %>
+            <div class="admin-list">
+              <% topStorage.forEach(function(row) { %>
+                <div class="admin-list-row">
+                  <span class="admin-list-icon"><%- include('partials/icon', { name: 'cloud', size: 14 }) %></span>
+                  <div class="admin-list-main">
+                    <strong>@<%= row.username %></strong>
+                    <small><%= row.files %> file<%= row.files === 1 ? '' : 's' %></small>
+                  </div>
+                  <span class="admin-list-time"><%= fmt(row.bytes) %></span>
+                </div>
+              <% }); %>
+            </div>
+          <% } else { %>
+            <p class="admin-empty">No files stored on this server yet.</p>
+          <% } %>
+        </section>
+
+        <section class="card admin-panel">
+          <div class="admin-panel-head">
+            <h2>Recent signups</h2>
+            <a class="admin-panel-link" href="/admin/users">All users</a>
+          </div>
+          <% if (recentUsers.length) { %>
+            <div class="admin-list">
+              <% recentUsers.forEach(function(u) { %>
+                <div class="admin-list-row">
+                  <span class="admin-avatar">
+                    <% if (u.avatar) { %><img src="<%= u.avatar %>" alt=""><% } else { %><%= String(u.display_name || u.username || '?').slice(0, 1).toUpperCase() %><% } %>
+                  </span>
+                  <div class="admin-list-main">
+                    <strong><a href="/u/<%= encodeURIComponent(u.username) %>"><%= u.display_name || u.username %></a></strong>
+                    <small>@<%= u.username %><% if (u.is_admin) { %> · admin<% } else if (u.banned) { %> · banned<% } %></small>
+                  </div>
+                  <span class="admin-list-time"><%= locals.relTime(u.created_at) %></span>
+                </div>
+              <% }); %>
+            </div>
+          <% } else { %>
+            <p class="admin-empty">No accounts yet.</p>
+          <% } %>
+        </section>
+
+        <section class="card admin-panel">
+          <div class="admin-panel-head">
+            <h2>Recent rooms</h2>
+            <a class="admin-panel-link" href="/admin/rooms">All rooms</a>
+          </div>
+          <% if (recentRooms.length) { %>
+            <div class="admin-list">
+              <% recentRooms.forEach(function(r) { %>
+                <div class="admin-list-row">
+                  <span class="admin-list-icon"><%- include('partials/icon', { name: 'rooms', size: 14 }) %></span>
+                  <div class="admin-list-main">
+                    <strong><a href="/rooms/<%= r.id %>"><%= r.name %></a></strong>
+                    <small><%= r.is_public ? 'Public' : 'Private' %> · <%= r.member_count %> member<%= r.member_count === 1 ? '' : 's' %><% if (r.creator_username) { %> · @<%= r.creator_username %><% } %></small>
+                  </div>
+                  <span class="admin-list-time"><%= locals.relTime(r.created_at) %></span>
+                </div>
+              <% }); %>
+            </div>
+          <% } else { %>
+            <p class="admin-empty">No rooms yet.</p>
+          <% } %>
+        </section>
+      </div>
     </div>
-    <table class="admin-table">
-      <thead>
-        <tr><th>User</th><th>Referred</th><th>Status</th><th>Actions</th></tr>
-      </thead>
-      <tbody>
-        <% users.forEach(function(u) { %>
-          <tr>
-            <td>
-              <a href="/u/<%= encodeURIComponent(u.username) %>"><%= u.display_name %></a>
-              <small class="muted">@<%= u.username %></small>
-            </td>
-            <td><%= u.referral_count %><% if (u.referral_count > 0) { %> <%- include('partials/icon', { name: 'starFilled', size: 12, cls: 'flash-ico' }) %><% } %></td>
-            <td>
-              <% if (u.banned) { %><span style="color:var(--danger);font-weight:600">Banned</span><% } else if (u.is_admin) { %><span style="color:var(--accent);font-weight:600">Admin</span><% } else { %><span class="muted">Active</span><% } %>
-            </td>
-            <td class="actions">
-              <% if (!u.is_admin) { %>
-                <form method="post" action="/admin/make-admin/<%= u.id %>"><input type="hidden" name="_csrf" value="<%= csrfToken %>"><button class="btn ghost small" style="color:var(--accent)">Make admin</button></form>
-                <form method="post" action="/admin/delete/<%= u.id %>"><input type="hidden" name="_csrf" value="<%= csrfToken %>"><button class="btn ghost danger small">Delete</button></form>
-                <% if (u.banned) { %>
-                  <form method="post" action="/admin/unban/<%= u.id %>"><input type="hidden" name="_csrf" value="<%= csrfToken %>"><button class="btn ghost small">Unban</button></form>
-                <% } else { %>
-                  <form method="post" action="/admin/ban/<%= u.id %>"><input type="hidden" name="_csrf" value="<%= csrfToken %>"><button class="btn ghost small">Ban</button></form>
-                <% } %>
-              <% } %>
-              <% if (u.referral_count > 0) { %>
-                <form method="post" action="/admin/remove-referral/<%= u.id %>"><input type="hidden" name="_csrf" value="<%= csrfToken %>"><button class="btn ghost small"><%- include('partials/icon', { name: 'starFilled', size: 12 }) %> Remove referral boost</button></form>
-              <% } %>
-            </td>
-          </tr>
-        <% }) %>
-      </tbody>
-    </table>
-  </div>
 
-  <div class="card" style="max-width:820px;margin:16px auto" id="rooms">
-    <h2>Admin · Rooms</h2>
-    <% if (rooms.length) { %>
-      <table class="admin-table">
-        <thead><tr><th>Room</th><th>Creator</th><th>Members</th><th>Type</th><th>Actions</th></tr></thead>
-        <tbody>
-          <% rooms.forEach(function(r) { %>
-            <tr>
-              <td><a href="/rooms/<%= r.id %>"><%= r.name %></a><small class="muted"><%= r.description ? r.description.substring(0, 60) : '' %></small></td>
-              <td><%= r.creator_username || '—' %></td>
-              <td><%= r.member_count %></td>
-              <td><span class="muted"><%= r.is_public ? 'Public' : 'Private' %></span></td>
-              <td class="actions">
-                <form method="post" action="/admin/rooms/<%= r.id %>/delete"><input type="hidden" name="_csrf" value="<%= csrfToken %>"><button class="btn ghost danger small">Delete</button></form>
-              </td>
-            </tr>
-          <% }) %>
-        </tbody>
-      </table>
-    <% } else { %>
-      <p class="muted">No rooms.</p>
-    <% } %>
+    <section class="card admin-panel">
+      <div class="admin-panel-head">
+        <h2>Site announcement</h2>
+        <a class="admin-panel-link" href="/admin/announcement"><%= announcement ? 'Edit' : 'Publish' %></a>
+      </div>
+      <% if (announcement) { %>
+        <p class="admin-announcement-body"><%= announcement.body %></p>
+        <small class="muted">
+          <% if (announcement.author_display_name || announcement.author_username) { %>by <%= announcement.author_display_name || announcement.author_username %> · <% } %>
+          updated <%= locals.relTime(announcement.updated_at) %>
+        </small>
+      <% } else { %>
+        <p class="admin-empty">No announcement is pinned to the top bar.</p>
+      <% } %>
+    </section>
   </div>
-
-  <div class="card" style="max-width:820px;margin:16px auto">
-    <h2>Admin · Security reports</h2>
-    <p class="muted" style="margin:-4px 0 10px">Private responsible-disclosure submissions from the <a href="/security">/security</a> page.</p>
-    <% if ((locals.securityReports || 0) > 0) { %>
-      <a class="btn" href="/admin/security-reports"><%- include('partials/icon', { name: 'lock', size: 14 }) %> Review <%= securityReports %> open report<%= securityReports === 1 ? '' : 's' %></a>
-    <% } else { %>
-      <a class="btn ghost" href="/admin/security-reports"><%- include('partials/icon', { name: 'lock', size: 14 }) %> Security inbox</a>
-    <% } %>
-  </div>
-
-  <div class="card" style="max-width:820px;margin:16px auto" id="reports">
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
-      <h2 style="margin:0">Admin · Reports (<%= reports.length %>)</h2>
-      <a class="btn ghost small" href="/admin/reports">Open full queue</a>
-    </div>
-    <% if (reports.length) { %>
-      <table class="admin-table">
-        <thead><tr><th>Type</th><th>Reported</th><th>By</th><th>Reason</th><th>Actions</th></tr></thead>
-        <tbody>
-          <% reports.forEach(function(r) { %>
-            <% var typeLabel = r.target_type.replace('_', ' ').replace(/^./, function(c) { return c.toUpperCase(); }); %>
-            <% var removable = ['post','comment','room_message'].indexOf(r.target_type) > -1; %>
-            <tr>
-              <td style="white-space:nowrap"><%= typeLabel %><% if (r.context) { %> <span class="muted"><%= r.context %></span><% } %></td>
-              <td style="white-space:nowrap"><% if (r.reported_username) { %><a href="/u/<%= encodeURIComponent(r.reported_username) %>">@<%= r.reported_username %></a><% } else { %><span class="muted">—</span><% } %></td>
-              <td style="white-space:nowrap">@<%= r.reporter_username %></td>
-              <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><%= r.reason %></td>
-              <td class="actions">
-                <% if (r.reported_username) { %><form method="post" action="/admin/reports/<%= r.id %>/ban"><input type="hidden" name="_csrf" value="<%= csrfToken %>"><button class="btn ghost danger small">Ban</button></form><% } %>
-                <% if (removable) { %><form method="post" action="/admin/reports/<%= r.id %>/delete"><input type="hidden" name="_csrf" value="<%= csrfToken %>"><button class="btn ghost small">Remove</button></form><% } %>
-                <form method="post" action="/admin/reports/<%= r.id %>/dismiss"><input type="hidden" name="_csrf" value="<%= csrfToken %>"><button class="btn ghost small">Dismiss</button></form>
-              </td>
-            </tr>
-          <% }) %>
-        </tbody>
-      </table>
-    <% } else { %>
-      <p class="muted">No pending reports.</p>
-    <% } %>
-  </div>
-<script src="/static/admin.js?v=1"></script>
+</div>
 <%- include('partials/footer') %>
