@@ -469,12 +469,12 @@ document.addEventListener('DOMContentLoaded', function() {
       div.setAttribute('data-sender-id', m.user_id);
       div.setAttribute('data-ciphertext', m.ciphertext || '');
       div.setAttribute('data-group-session-id', m.group_session_id || '');
-      textSpan.textContent = '';
+      textSpan.textContent = '…';
     } else if (m.proto === 'mls') {
       div.setAttribute('data-proto', 'mls');
       div.setAttribute('data-sender-id', m.user_id);
       div.setAttribute('data-ciphertext', m.ciphertext || '');
-      textSpan.textContent = '';
+      textSpan.textContent = '…';
     } else {
       textSpan.textContent = m.body;
     }

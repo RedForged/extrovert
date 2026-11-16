@@ -13,6 +13,7 @@
 
   var RETRY_MS = 5000;
   var failedDecrypts = {};
+  var plaintextJobs = {};
   var lastAnnounce = 0;
 
   function init() {
@@ -48,7 +49,11 @@
     window.ExtrovertMLS.init().then(function () {
       ready = true;
       watchForMessages();
-      attemptMembership();
+      // Decrypt with whatever local state we have immediately. Waiting for
+      // group reconciliation to succeed before showing messages means a slow
+      // or failed reconcile hides the entire history. Reconcile after these
+      // finish so the two do not mutate the same group state at once.
+      decryptExistingMessages().then(attemptMembership);
     }).catch(function (err) {
       console.error('Room MLS initialization error:', err);
       setMembershipStatus('Could not initialize encryption: ' + ((err && err.message) || 'unknown error') + ' — retrying…');
@@ -175,6 +180,7 @@
   }
 
   function decryptExistingMessages() {
+    var pending = [];
     document.querySelectorAll('#room-messages .room-msg[data-proto="mls"]').forEach(function (el) {
       var msgId = el.getAttribute('data-msg-id');
       var senderId = el.getAttribute('data-sender-id');
@@ -185,43 +191,62 @@
       if (current && current !== '[unable to decrypt]' && current !== '…') return;
       if (!ciphertext) return;
 
-      if (!membershipReady) {
-        el.style.display = 'none';
-        return;
-      }
-      el.style.display = '';
-
       var mls = window.ExtrovertMLS;
       var cacheKey = mls && mls.roomCacheKey ? mls.roomCacheKey(msgId, ciphertext) : 'room:' + msgId;
       if (failedDecrypts[cacheKey]) {
         el.style.display = 'none';
         return;
       }
+      el.style.display = '';
 
-      function finish(plain, cacheIt) {
+      function finish(plain) {
         if (window.ExtrovertFiles && window.ExtrovertFiles.render) {
           window.ExtrovertFiles.render(textEl, plain);
         } else {
           textEl.textContent = plain;
         }
         textEl.classList.remove('e2ee-pending');
-        if (cacheIt && mls && mls.rememberPlaintext) mls.rememberPlaintext(cacheKey, plain);
       }
 
-      var recall = mls && mls.recallPlaintext
-        ? mls.recallPlaintext(cacheKey)
-        : Promise.resolve(null);
-
-      recall.then(function (cached) {
-        if (cached) return finish(cached, false);
-        decryptMessage(senderId, ciphertext).then(function (plain) {
-          finish(plain, true);
-        }).catch(function () {
-          failedDecrypts[cacheKey] = true;
-          el.style.display = 'none';
+      // Share one decrypt per message. Two elements (server-rendered and
+      // client-rendered) or an observer plus the membership callback can ask
+      // for the same message at once, and MLS plaintext is single-use.
+      var job = plaintextJobs[cacheKey];
+      if (!job) {
+        var recall = mls && mls.recallPlaintext
+          ? mls.recallPlaintext(cacheKey)
+          : Promise.resolve(null);
+        job = recall.then(function (cached) {
+          if (cached) return cached;
+          return decryptMessage(senderId, ciphertext).then(function (plain) {
+            if (mls && mls.rememberPlaintext) {
+              return Promise.resolve(mls.rememberPlaintext(cacheKey, plain)).catch(function () {}).then(function () {
+                return plain;
+              });
+            }
+            return plain;
+          });
         });
+        plaintextJobs[cacheKey] = job;
+        job.then(function () { delete plaintextJobs[cacheKey]; }, function () { delete plaintextJobs[cacheKey]; });
+      }
+
+      job.then(function (plain) {
+        finish(plain);
+      }).catch(function () {
+        // A failure before the device is in the group is not final — retry
+        // once reconciliation succeeds instead of hiding the history.
+        if (!membershipReady) {
+          textEl.textContent = '…';
+          textEl.classList.add('e2ee-pending');
+          return;
+        }
+        failedDecrypts[cacheKey] = true;
+        el.style.display = 'none';
       });
+      pending.push(job.then(function () {}, function () {}));
     });
+    return Promise.all(pending);
   }
 
   function encryptMessage(plaintext) {

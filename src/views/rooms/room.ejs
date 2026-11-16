@@ -114,7 +114,7 @@
   </div>
 </div>
   <div id="room-members" style="display:none" data-room-id="<%= room.id %>" data-user-id="<%= locals.currentUser.id %>" data-username="<%= locals.currentUser.username %>" data-members='<%= JSON.stringify(members.map(function(m){ return { id: m.user_id, username: m.username }; })) %>'></div>
-  <script src="/static/rooms.js?v=11"></script>
-  <script src="/static/room-e2ee.js?v=6"></script>
+  <script src="/static/rooms.js?v=12"></script>
+  <script src="/static/room-e2ee.js?v=7"></script>
   <script src="/static/webrtc-room.js?v=3"></script>
 <%- include('../partials/footer') %>
