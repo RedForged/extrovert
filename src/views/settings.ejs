@@ -8,17 +8,16 @@
   const connectionLabel = !nextcloud ? 'Not connected' : nextcloud.enabled ? 'Connected' : 'Paused';
 %>
 <%- include('partials/header', { wrapClass: 'wrap-settings' }) %>
+<header class="admin-page-head">
+  <div>
+    <h1>Settings</h1>
+    <p>Your account, security and connected services.</p>
+  </div>
+  <a class="btn ghost small" href="/u/<%= encodeURIComponent(currentUser.username) %>?edit=1"><%- include('partials/icon', { name: 'edit', size: 14 }) %> Edit profile</a>
+</header>
 <div class="admin-shell">
   <%- include('partials/settings-sidebar', { active: 'overview' }) %>
   <div class="admin-main">
-    <header class="admin-page-head">
-      <div>
-        <h1>Settings</h1>
-        <p>Your account, security and connected services.</p>
-      </div>
-      <a class="btn ghost small" href="/u/<%= encodeURIComponent(currentUser.username) %>?edit=1"><%- include('partials/icon', { name: 'edit', size: 14 }) %> Edit profile</a>
-    </header>
-
     <section class="admin-stats" aria-label="Account summary">
       <div class="admin-stat">
         <span class="admin-stat-icon"><%- include('partials/icon', { name: 'at', size: 18 }) %></span>

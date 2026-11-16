@@ -21,17 +21,16 @@
   if (lastMail && !lastMail.delivered) attention.push({ href: '/admin/mail', icon: 'key', label: 'Last verification email was not delivered', count: 1 });
 %>
 <%- include('partials/header', { wrapClass: 'wrap-admin' }) %>
+<header class="admin-page-head">
+  <div>
+    <h1>Overview</h1>
+    <p>Instance health, moderation and storage at a glance.</p>
+  </div>
+  <a class="btn ghost small" href="/"><%- include('partials/icon', { name: 'arrowLeft', size: 14 }) %> View site</a>
+</header>
 <div class="admin-shell">
   <%- include('partials/admin-sidebar', { active: 'overview' }) %>
   <div class="admin-main">
-    <header class="admin-page-head">
-      <div>
-        <h1>Overview</h1>
-        <p>Instance health, moderation and storage at a glance.</p>
-      </div>
-      <a class="btn ghost small" href="/"><%- include('partials/icon', { name: 'arrowLeft', size: 14 }) %> View site</a>
-    </header>
-
     <section class="admin-stats" aria-label="Site totals">
       <div class="admin-stat">
         <span class="admin-stat-icon"><%- include('partials/icon', { name: 'users', size: 18 }) %></span>
