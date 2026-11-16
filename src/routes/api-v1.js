@@ -810,7 +810,9 @@ router.get('/client/bootstrap', requireApiAuth('read'), (req, res) => {
     const defaultChan = channels.find(c => c.name === 'general') || channels[0];
     let latestMessages = [];
     if (defaultChan && directReadAllowed) {
-      const msgs = db.getRoomMessages(defaultChan.id) || [];
+      const membership = db.getRoomMember(r.id, userId);
+      const joinedAt = membership ? Number(membership.joined_at) : 0;
+      const msgs = db.getRoomMessages(defaultChan.id, null, joinedAt) || [];
       latestMessages = msgs.slice(-25).map(m => ({
         id: String(m.id),
         room_id: String(r.id),
@@ -3073,8 +3075,10 @@ router.get('/rooms/:id/channels/:cid/messages', requireApiAuth('read:direct'), (
   if (!db.canViewRoomChannel(channel.id, req.apiUser.id)) return errorResponse(res, 403, 'Forbidden', 'No view permission.');
 
   const cursor = req.query.cursor ? parseInt(req.query.cursor, 10) : null;
+  const membership = db.getRoomMember(room.id, req.apiUser.id);
+  const joinedAt = membership ? Number(membership.joined_at) : 0;
 
-  const messages = db.getRoomMessages(channel.id, cursor);
+  const messages = db.getRoomMessages(channel.id, cursor, joinedAt);
   const next = messages.length >= 50 ? String(messages[messages.length - 1].id) : null;
 
   responseEnvelope(res, {

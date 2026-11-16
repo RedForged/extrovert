@@ -5,7 +5,7 @@ const { sanitizeProfileHTML, sanitizeCSS } = require('../sanitize');
 
 const {
   createRoom, getRoom, getRoomsForUser, getAvailableRooms, updateRoom, deleteRoom,   deleteRoomMessage, editRoomMessage, getEditHistory,
-  isRoomMember, addRoomMember, removeRoomMember, getRoomMembers, getUserRoomRole, countRoomMembers,
+  isRoomMember, addRoomMember, removeRoomMember, getRoomMember, getRoomMembers, getUserRoomRole, countRoomMembers,
   createRoomRole, getRoomRole, getRoomRoles, updateRoomRole, deleteRoomRole, transferFounder,
   createRoomChannel, getRoomChannel, getRoomChannels, updateRoomChannel, deleteRoomChannel,
   getRoomMessages, sendRoomMessage, joinDefaultRole, hasRoomPermission, roomPermissionsFor, canViewRoom, canViewRoomChannel, getUserById, getUserByUsername, db,
@@ -99,12 +99,14 @@ router.get('/:id', readScope, (req, res) => {
   }
   const members = getRoomMembers(room.id);
   const roles = getRoomRoles(room.id);
+  const myMembership = getRoomMember(room.id, userId);
+  const joinedAt = myMembership ? Number(myMembership.joined_at) : 0;
 
   const firstChannel = channels[0];
   let messages = [];
   const directReadAllowed = res.locals.bearerScopes === undefined
     || String(res.locals.bearerScopes).split(/\s+/).includes('read:direct');
-  if (firstChannel && directReadAllowed) messages = getRoomMessages(firstChannel.id);
+  if (firstChannel && directReadAllowed) messages = getRoomMessages(firstChannel.id, null, joinedAt);
 
   const voiceChannelMembers = {};
   channels.forEach(ch => {
@@ -124,7 +126,31 @@ router.post('/:id/join', writeScope, (req, res) => {
   if (!room.is_public && !res.locals.currentUser.is_admin) return res.status(403).send('This room is private');
   const defaultRole = joinDefaultRole(room.id);
   if (defaultRole) addRoomMember(room.id, userId, defaultRole.id);
+  updateUserRoomSubscriptions(userId, room.id, 'join');
+  broadcastGatewayEvent('room:' + room.id, 'member_join', {
+    room_id: String(room.id),
+    user_id: String(userId),
+    username: res.locals.currentUser.username,
+    display_name: res.locals.currentUser.display_name,
+  });
   res.redirect('/rooms/' + room.id);
+});
+
+// Announce that this device has registered its MLS keys, so members currently
+// viewing the room can fold it into the encryption group.
+router.post('/:id/mls-ready', writeScope, (req, res) => {
+  if (!res.locals.currentUser) return res.status(401).json({ error: 'Not logged in' });
+  const room = getRoom(Number(req.params.id));
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+  const user = res.locals.currentUser;
+  if (!isRoomMember(room.id, user.id)) return res.status(403).json({ error: 'Not a member' });
+  broadcastGatewayEvent('room:' + room.id, 'member_join', {
+    room_id: String(room.id),
+    user_id: String(user.id),
+    username: user.username,
+    display_name: user.display_name,
+  });
+  res.json({ ok: true });
 });
 
 // Leave room
@@ -145,6 +171,11 @@ router.post('/:id/leave', writeScope, (req, res) => {
   // otherwise a left member keeps receiving the room's live events.
   updateUserRoomSubscriptions(userId, room.id, 'leave');
   removeFromVoiceChannels(userId);
+  broadcastGatewayEvent('room:' + room.id, 'member_leave', {
+    room_id: String(room.id),
+    user_id: String(userId),
+    username: res.locals.currentUser.username,
+  });
   res.redirect('/rooms');
 });
 
@@ -350,6 +381,11 @@ router.post('/:id/members/:uid/kick', writeScope, (req, res) => {
   // Revoke realtime access on the kicked member's live socket right away.
   updateUserRoomSubscriptions(targetUser.id, room.id, 'leave');
   removeFromVoiceChannels(targetUser.id);
+  broadcastGatewayEvent('room:' + room.id, 'member_leave', {
+    room_id: String(room.id),
+    user_id: String(targetUser.id),
+    username: targetUser.username,
+  });
   res.redirect('/rooms/' + room.id + '/members');
 });
 
@@ -382,7 +418,9 @@ router.get('/:id/channels/:cid/messages', readDirect, (req, res) => {
   if (!canViewRoomChannel(channel.id, res.locals.currentUser.id)) return res.json([]);
   const role = getUserRoomRole(room.id, res.locals.currentUser.id);
   const before = req.query.before ? Number(req.query.before) : null;
-  const messages = getRoomMessages(channel.id, before);
+  const myMembership = getRoomMember(room.id, res.locals.currentUser.id);
+  const joinedAt = myMembership ? Number(myMembership.joined_at) : 0;
+  const messages = getRoomMessages(channel.id, before, joinedAt);
   const roles = getRoomRoles(room.id);
   const members = getRoomMembers(room.id);
   const roleMap = {};
@@ -391,7 +429,13 @@ router.get('/:id/channels/:cid/messages', readDirect, (req, res) => {
     if (r) roleMap[m.user_id] = r.color;
   });
   const canDelete = !!(role && role.permissions & PERM.MANAGE_MESSAGES) || res.locals.currentUser.is_admin;
-  res.json({ messages, roles, roleMap, canDelete });
+  res.json({
+    messages,
+    roles,
+    roleMap,
+    canDelete,
+    members: members.map(m => ({ user_id: m.user_id, username: m.username, display_name: m.display_name, avatar: m.avatar, role_id: m.role_id })),
+  });
 });
 
 router.post('/:id/channels/:cid/send', writeDirect, (req, res) => {
@@ -430,6 +474,7 @@ router.post('/:id/channels/:cid/send', writeDirect, (req, res) => {
   }
   const ciphertext = ciphertextRaw || null;
   const user = res.locals.currentUser;
+  const clientMsgId = String(req.body.client_msg_id || '').trim().slice(0, 64) || null;
   const msgId = sendRoomMessage(channel.id, user.id, isSticker ? body : '', 'mls', ciphertext, null);
   broadcastGatewayEvent('room:' + room.id, 'message_create', {
     id: String(msgId),
@@ -440,9 +485,10 @@ router.post('/:id/channels/:cid/send', writeDirect, (req, res) => {
     proto: isSticker ? 'plain' : 'mls',
     body: isSticker ? body : '',
     ciphertext: isSticker ? null : ciphertext,
+    client_msg_id: clientMsgId,
     created_at: new Date().toISOString(),
   });
-  res.json({ id: msgId });
+  res.json({ id: msgId, client_msg_id: clientMsgId });
 });
 
 // Delete a message
@@ -560,6 +606,16 @@ router.post('/:id/requests/:rid/approve', writeScope, (req, res) => {
   const jreq = getJoinRequestById(Number(req.params.rid));
   if (!jreq || jreq.room_id !== room.id) return res.status(404).send('Request not found');
   approveJoinRequest(Number(req.params.rid));
+  const approvedUser = getUserById(jreq.user_id);
+  if (approvedUser) {
+    updateUserRoomSubscriptions(approvedUser.id, room.id, 'join');
+    broadcastGatewayEvent('room:' + room.id, 'member_join', {
+      room_id: String(room.id),
+      user_id: String(approvedUser.id),
+      username: approvedUser.username,
+      display_name: approvedUser.display_name,
+    });
+  }
   res.redirect('/rooms/' + room.id + '/members');
 });
 
@@ -588,6 +644,13 @@ router.post('/:id/invite', writeScope, (req, res) => {
   if (isRoomMember(room.id, target.id)) return res.status(400).send('Already a member');
   const defaultRole = joinDefaultRole(room.id);
   if (defaultRole) addRoomMember(room.id, target.id, defaultRole.id);
+  updateUserRoomSubscriptions(target.id, room.id, 'join');
+  broadcastGatewayEvent('room:' + room.id, 'member_join', {
+    room_id: String(room.id),
+    user_id: String(target.id),
+    username: target.username,
+    display_name: target.display_name,
+  });
   res.redirect('/rooms/' + room.id + '/members');
 });
 

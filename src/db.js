@@ -2799,6 +2799,9 @@ function addRoomMember(roomId, userId, roleId) {
 function removeRoomMember(roomId, userId) {
   db.prepare(`DELETE FROM room_members WHERE room_id = ? AND user_id = ?`).run(roomId, userId);
 }
+function getRoomMember(roomId, userId) {
+  return db.prepare(`SELECT room_id, user_id, role_id, joined_at FROM room_members WHERE room_id = ? AND user_id = ?`).get(roomId, userId) || null;
+}
 function getRoomMembers(roomId) {
   return db.prepare(`SELECT u.id AS user_id, u.username, u.display_name, u.avatar, m.role_id, m.joined_at FROM room_members m INNER JOIN users u ON u.id = m.user_id WHERE m.room_id = ? ORDER BY m.joined_at`).all(roomId);
 }
@@ -2845,11 +2848,17 @@ function deleteRoomChannel(id) {
   db.prepare(`DELETE FROM room_messages WHERE channel_id = ?`).run(id);
   db.prepare(`DELETE FROM room_channels WHERE id = ?`).run(id);
 }
-function getRoomMessages(channelId, beforeId) {
+function getRoomMessages(channelId, beforeId, sinceTs) {
+  const since = Number(sinceTs) || 0;
+  const sinceSql = since ? ' AND m.created_at >= ?' : '';
   if (beforeId) {
-    return db.prepare(`SELECT m.id, m.body, m.proto, m.ciphertext, m.group_session_id, m.created_at, m.edited_at, u.id AS user_id, u.username, u.display_name, u.avatar FROM room_messages m INNER JOIN users u ON u.id = m.user_id WHERE m.channel_id = ? AND m.id < ? ORDER BY m.id DESC LIMIT 50`).all(channelId, beforeId);
+    const params = [channelId, beforeId];
+    if (since) params.push(since);
+    return db.prepare(`SELECT m.id, m.body, m.proto, m.ciphertext, m.group_session_id, m.created_at, m.edited_at, u.id AS user_id, u.username, u.display_name, u.avatar FROM room_messages m INNER JOIN users u ON u.id = m.user_id WHERE m.channel_id = ? AND m.id < ?${sinceSql} ORDER BY m.id DESC LIMIT 50`).all(...params);
   }
-  return db.prepare(`SELECT m.id, m.body, m.proto, m.ciphertext, m.group_session_id, m.created_at, m.edited_at, u.id AS user_id, u.username, u.display_name, u.avatar FROM room_messages m INNER JOIN users u ON u.id = m.user_id WHERE m.channel_id = ? ORDER BY m.id DESC LIMIT 50`).all(channelId).reverse();
+  const params = [channelId];
+  if (since) params.push(since);
+  return db.prepare(`SELECT m.id, m.body, m.proto, m.ciphertext, m.group_session_id, m.created_at, m.edited_at, u.id AS user_id, u.username, u.display_name, u.avatar FROM room_messages m INNER JOIN users u ON u.id = m.user_id WHERE m.channel_id = ?${sinceSql} ORDER BY m.id DESC LIMIT 50`).all(...params).reverse();
 }
 function sendRoomMessage(channelId, userId, body, proto, ciphertext, groupSessionId) {
   const p = 'mls';
@@ -3920,7 +3929,7 @@ module.exports = {
   deleteAllTrustedDevices, pruneExpiredTrustedDevices,
   // rooms
   createRoom, getRoom, getRoomsForUser, getAvailableRooms, updateRoom, deleteRoom,
-  isRoomMember, addRoomMember, removeRoomMember, getRoomMembers, getUserRoomRole, countRoomMembers,
+  isRoomMember, addRoomMember, removeRoomMember, getRoomMember, getRoomMembers, getUserRoomRole, countRoomMembers,
   getRoomMemberCount: countRoomMembers,
   createRoomRole, getRoomRole, getRoomRoles, updateRoomRole, deleteRoomRole, transferFounder,
   createRoomChannel, getRoomChannel, getRoomChannels, updateRoomChannel, deleteRoomChannel,

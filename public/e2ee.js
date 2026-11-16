@@ -247,6 +247,15 @@
     time.className = 'muted';
     time.style.cssText = 'font-size:0.7rem;padding:0 4px';
     time.textContent = window.relTime ? window.relTime(msg.created_at || Date.now()) : new Date(msg.created_at || Date.now()).toLocaleString();
+    if (msg.id) {
+      var status = document.createElement('span');
+      status.className = 'msg-status sent';
+      status.title = 'Sent';
+      status.setAttribute('role', 'img');
+      status.setAttribute('aria-label', 'Sent');
+      if (window.DSHIcons) status.appendChild(window.DSHIcons.icon('checkDouble', 13));
+      time.appendChild(status);
+    }
     div.appendChild(time);
 
     if (msg.id) {
@@ -255,6 +264,75 @@
 
     container.appendChild(div);
     scrollChatBottom();
+  }
+
+  var pendingDms = [];
+
+  function takePendingDm(clientMsgId) {
+    for (var i = 0; i < pendingDms.length; i++) {
+      if (pendingDms[i].clientMsgId === clientMsgId) {
+        var p = pendingDms[i];
+        pendingDms.splice(i, 1);
+        return p;
+      }
+    }
+    return null;
+  }
+
+  function setDmStatus(el, state, title) {
+    if (!el) return;
+    var status = el.querySelector('.msg-status');
+    if (!status) return;
+    status.className = 'msg-status ' + state;
+    status.title = title || (state === 'sending' ? 'Sending…' : state === 'failed' ? 'Failed to send' : 'Sent');
+    status.setAttribute('role', 'img');
+    status.setAttribute('aria-label', status.title);
+    status.innerHTML = '';
+    if (window.DSHIcons) {
+      var name = state === 'sending' ? 'clock' : state === 'failed' ? 'alert' : 'checkDouble';
+      status.appendChild(window.DSHIcons.icon(name, 13));
+    }
+  }
+
+  function addPendingDm(plaintext, clientMsgId, fileName) {
+    var container = document.querySelector('.chat-messages');
+    if (!container) return null;
+
+    var div = document.createElement('div');
+    div.className = 'chat-msg own chat-msg-pending';
+    div.setAttribute('data-pending-id', clientMsgId);
+
+    var bubble = document.createElement('div');
+    bubble.className = 'chat-bubble';
+    if (plaintext && plaintext.indexOf('/uploads/stickers/') === 0) {
+      bubble.innerHTML = '<img src="' + esc(plaintext) + '" class="sticker-inline" style="max-width:120px;max-height:120px;vertical-align:middle" alt="sticker">';
+    } else {
+      bubble.textContent = plaintext;
+    }
+    if (fileName) {
+      var att = document.createElement('span');
+      att.className = 'chat-msg-attachment';
+      att.textContent = fileName;
+      bubble.appendChild(att);
+    }
+    div.appendChild(bubble);
+
+    var time = document.createElement('div');
+    time.className = 'muted';
+    time.style.cssText = 'font-size:0.7rem;padding:0 4px';
+    time.textContent = window.relTime ? window.relTime(Date.now()) : new Date().toLocaleString();
+    var status = document.createElement('span');
+    status.className = 'msg-status sending';
+    status.title = 'Sending…';
+    status.setAttribute('role', 'img');
+    status.setAttribute('aria-label', 'Sending…');
+    if (window.DSHIcons) status.appendChild(window.DSHIcons.icon('clock', 13));
+    time.appendChild(status);
+    div.appendChild(time);
+
+    container.appendChild(div);
+    scrollChatBottom();
+    return div;
   }
 
   var backupSyncOnce = null;
@@ -411,35 +489,59 @@
     sendForm.addEventListener('submit', function (e) {
       e.preventDefault();
       var plaintext = input.value.trim();
-      if (!plaintext) return;
+      var staged = stagedFile;
+      if (!plaintext && !staged) return;
 
-      input.disabled = true;
+      var clientMsgId = 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+      var pending = {
+        clientMsgId: clientMsgId,
+        el: addPendingDm(plaintext, clientMsgId, staged ? staged.name : ''),
+        outgoing: plaintext,
+      };
+      pendingDms.push(pending);
+
+      input.value = '';
+      clearStaged();
+      input.focus();
+
+      function settle() {
+        var idx = pendingDms.indexOf(pending);
+        if (idx >= 0) pendingDms.splice(idx, 1);
+        if (pending.el && pending.el.parentNode) pending.el.parentNode.removeChild(pending.el);
+      }
+
+      function fail(message) {
+        setDmStatus(pending.el, 'failed', message || 'Failed to send');
+        alert('Send error: ' + (message || 'Failed to send'));
+        input.focus();
+      }
 
       // Stickers bypass encryption
       if (plaintext.indexOf('/uploads/stickers/') === 0) {
-        var fd = new FormData();
-        fd.append('body', plaintext);
-        fd.append('_csrf', csrfToken());
+        var stickerBody = new URLSearchParams();
+        stickerBody.set('_csrf', csrfToken());
+        stickerBody.set('body', plaintext);
+        stickerBody.set('client_msg_id', clientMsgId);
 
         fetch(sendForm.getAttribute('action'), {
           method: 'POST',
-          headers: { 'X-Requested-With': 'XMLHttpRequest' },
-          body: fd,
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'X-Requested-With': 'XMLHttpRequest'
+          },
+          body: stickerBody.toString(),
         }).then(function (r) { return r.json(); }).then(function (data) {
-          if (data.message) {
-            addOwnMsg(plaintext, data.message, otherUsername);
-          }
-          input.value = '';
-          input.disabled = false;
+          if (data.error) return fail(data.message || data.error);
+          settle();
+          if (data.message) addOwnMsg(pending.outgoing, data.message, otherUsername);
           input.focus();
-        }).catch(function () { input.disabled = false; });
+        }).catch(function () { fail('Network error — the message was not sent.'); });
         return;
       }
 
       // Pure MLS encryption
       if (!window.ExtrovertMLS) {
-        alert('MLS encryption engine is not available. Please refresh the page.');
-        input.disabled = false;
+        fail('MLS encryption engine is not available. Please refresh the page.');
         return;
       }
 
@@ -447,11 +549,11 @@
       // encrypted message, so the server can neither read the file nor tell
       // which conversation it belongs to.
       var outgoing = plaintext;
-      var prep = stagedFile
-        ? uploadSealed(stagedFile).then(function (info) {
+      var prep = staged
+        ? uploadSealed(staged).then(function (info) {
             return window.ExtrovertFiles.envelope({
               u: info.url, k: info.key, i: info.iv, s: info.size,
-              n: stagedFile.name, m: stagedFile.type || 'application/octet-stream', t: plaintext,
+              n: staged.name, m: staged.type || 'application/octet-stream', t: plaintext,
             });
           })
         : Promise.resolve(plaintext);
@@ -461,12 +563,14 @@
         return prep;
       }).then(function (payload) {
         outgoing = payload;
+        pending.outgoing = payload;
         return window.ExtrovertMLS.encryptDmMessage(otherId, payload);
       }).then(function (res) {
         var usp = new URLSearchParams();
         usp.set('_csrf', csrfToken());
         usp.set('proto', 'mls');
         usp.set('body', res.body);
+        usp.set('client_msg_id', clientMsgId);
 
         return fetch(sendForm.getAttribute('action'), {
           method: 'POST',
@@ -483,23 +587,14 @@
           }
           return r.json();
         }).then(function (data) {
-          if (data.error) {
-            alert('Send error: ' + (data.message || data.error));
-            input.disabled = false;
-            return;
-          }
-          if (data.message) {
-            addOwnMsg(outgoing, data.message, otherUsername);
-          }
-          input.value = '';
-          clearStaged();
-          input.disabled = false;
+          if (data.error) return fail(data.message || data.error);
+          settle();
+          if (data.message) addOwnMsg(outgoing, data.message, otherUsername);
           input.focus();
         });
       }).catch(function (err) {
         console.error('MLS DM encrypt error:', err);
-        alert('Failed to encrypt message with MLS: ' + (err.message || err));
-        input.disabled = false;
+        fail('Failed to encrypt message with MLS: ' + (err.message || err));
       });
     });
 
@@ -636,6 +731,14 @@
 
         var container = document.querySelector('.chat-messages');
         if (!container) return;
+
+        if (data.client_msg_id) {
+          var sentPending = takePendingDm(data.client_msg_id);
+          if (sentPending) {
+            if (sentPending.el && sentPending.el.parentNode) sentPending.el.parentNode.removeChild(sentPending.el);
+            if (sentPending.outgoing) cacheMessage(String(msg.id), sentPending.outgoing, msg.body);
+          }
+        }
         if (container.querySelector('[data-msg-id="' + msg.id + '"]')) return;
 
         var myId = currentUserId();
@@ -655,6 +758,15 @@
         time.className = 'muted';
         time.style.cssText = 'font-size:0.7rem;padding:0 4px';
         time.textContent = window.relTime ? window.relTime(msg.created_at) : new Date(msg.created_at).toLocaleString();
+        if (isOwn && msg.id) {
+          var sentStatus = document.createElement('span');
+          sentStatus.className = 'msg-status sent';
+          sentStatus.title = 'Sent';
+          sentStatus.setAttribute('role', 'img');
+          sentStatus.setAttribute('aria-label', 'Sent');
+          if (window.DSHIcons) sentStatus.appendChild(window.DSHIcons.icon('checkDouble', 13));
+          time.appendChild(sentStatus);
+        }
         div.appendChild(time);
         if (isOwn && msg.id) appendMsgControls(time, msg.id, otherUsername);
         else if (msg.id) appendReportControl(time, msg.id);

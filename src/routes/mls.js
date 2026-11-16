@@ -385,6 +385,27 @@ router.get('/groups/:groupId/proposals', requireAuth, (req, res) => {
   res.json({ ok: true, proposals });
 });
 
+// Group existence probe. A device that holds no local state can use this to
+// discover an existing group without claiming KeyPackages or attempting a
+// destructive reset.
+router.get('/groups/:groupId', requireAuth, (req, res) => {
+  const user = res.locals.currentUser;
+  const groupId = req.params.groupId;
+
+  if (groupId.startsWith('dm:')) {
+    const parts = groupId.slice(3).split('_').map(Number);
+    if (!parts.includes(user.id)) return res.status(403).json({ error: 'Not authorized' });
+  } else if (groupId.startsWith('room:')) {
+    const roomId = parseInt(groupId.slice(5), 10);
+    if (!isRoomMember(roomId, user.id)) return res.status(403).json({ error: 'Not a room member' });
+  } else {
+    return res.status(400).json({ error: 'Invalid group id' });
+  }
+
+  const group = getMlsGroup(groupId);
+  res.json({ ok: true, exists: !!group, epoch: group ? Number(group.epoch) : null });
+});
+
 // 10. Atomic Group Initialization
 router.post('/groups/init', requireAuth, (req, res) => {
   const user = res.locals.currentUser;

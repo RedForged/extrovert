@@ -376,12 +376,14 @@ router.post('/:username/send', (req, res) => {
       } catch {}
     }
     const senderCurve = getSenderCurve(user.id, senderDeviceId, req.body.sender_curve);
+    const clientMsgId = String(req.body.client_msg_id || '').trim().slice(0, 64) || null;
     const dmPayload = {
       message: msg,
       sender_curve: senderCurve,
       from_username: user.username,
       from_display: user.display_name,
       to_username: other.username,
+      client_msg_id: clientMsgId,
     };
     if (senderDeviceId) dmPayload.sender_device_id = String(senderDeviceId);
     sendDmEvent(other.username, dmPayload);
@@ -389,7 +391,7 @@ router.post('/:username/send', (req, res) => {
       sendDmEvent(user.username, dmPayload);
     }
     if (req.xhr) {
-      return res.json({ message: msg });
+      return res.json({ message: msg, client_msg_id: clientMsgId });
     }
   }
   res.redirect('/chats/' + other.username);

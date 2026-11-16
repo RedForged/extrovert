@@ -52,6 +52,7 @@
            <div class="chat-bubble"><% if (m.body && m.body.startsWith('/uploads/stickers/')) { %><img src="<%= m.body %>" class="sticker-inline" style="max-width:120px;max-height:120px;vertical-align:middle" alt="sticker"><% } else { %><%= m.proto === 'mls' ? '…' : m.body %><% } %></div>
            <div class="muted" style="font-size:0.7rem;padding:0 4px">
              <%= locals.relTime(m.created_at) %>
+             <% if (m.from_id === currentUser.id) { %><span class="msg-status sent" title="Sent" role="img" aria-label="Sent"><%- include('partials/icon', { name: 'checkDouble', size: 13 }) %></span><% } %>
              <% if (m.edited_at) { %><span class="edited-indicator" title="<%= new Date(m.edited_at).toLocaleString() %>">· edited</span><% } %>
              <span class="comment-menu-container" style="margin-left:4px">
                <button class="comment-menu-btn" title="More actions" aria-label="More actions"><%- include('partials/icon', { name: 'more', size: 13 }) %></button>

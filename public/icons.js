@@ -13,6 +13,9 @@
     more: '<circle cx="5" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.6" fill="currentColor" stroke="none"/>',
     chevronDown: '<path d="M6 9.5 12 15.5l6-6"/>',
     check: '<path d="M4 12l5 5L20 6"/>',
+    checkDouble: '<path d="m2 12 5 5L17 6"/><path d="m9.5 14.5 2.5 2.5L22 6"/>',
+    clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+    alert: '<path d="M12 3l10 18H2L12 3Z"/><path d="M12 9v5M12 17h.01"/>',
     speaker: '<path d="M11 5 6.5 9H3v6h3.5L11 19V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 6a9 9 0 0 1 0 12"/>',
     phoneIncoming: '<path d="M5 4h4l2 5-3 2a12 12 0 0 0 5 5l2-3 5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2Z"/><path d="M16 3l-5 5"/><path d="M11 3v5h5"/>',
   };

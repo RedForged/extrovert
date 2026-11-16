@@ -14,6 +14,9 @@
  * 4. Leave-room: a pending Remove proposal must be committed by the next member
  *    activity (commitPendingProposals) so the leaver's leaf actually leaves the
  *    ratchet tree — RFC 9420 forbids committing one's own removal.
+ * 5. Room joins: existing members must fold a later joiner into the tree with an
+ *    Add + Welcome, and a device that was never added must wait for that Welcome
+ *    instead of attempting a destructive group reset.
  *
  * Membership changes are verified against a second real ts-mls client (Eve)
  * processing the exact commit bytes sent to the delivery service.
@@ -164,6 +167,7 @@ function makeRouter() {
     pendingProposals: [],
     claimable: {},
     backup: null,
+    groupExists: null,
   };
 
   state.setPendingProposals = (p) => { state.pendingProposals = p; };
@@ -199,6 +203,10 @@ function makeRouter() {
       return json({ ok: true, proposals: pending });
     }
     if (path.includes('/mls/groups/') && path.includes('/commits')) return json({ ok: true, commits: [] });
+    if (method === 'GET' && /\/mls\/groups\/[^/]+$/.test(path)) {
+      const exists = state.groupExists;
+      return json({ ok: true, exists: !!exists, epoch: exists ? exists.epoch : null });
+    }
     if (path.endsWith('/mls/groups/init') && method === 'POST') {
       state.inits.push(body);
       if (state.initResponses.length) return json(state.initResponses.shift());
@@ -661,6 +669,77 @@ async function scenarioRoomFreshInit() {
   console.log('   [OK] room group created, welcomes queued, plaintext cache round-trips');
 }
 
+async function scenarioRoomJoinMembership() {
+  console.log('8. Room joins: existing members add the joiner; an unadded device never resets the group...');
+
+  // --- Existing member builds the room group (user 1 + user 2) --------------
+  const idb = makeMockIndexedDB();
+  const rec = idb.seed('extrovert_crypto', 1, ['crypto', 'mls_keys', 'mls_groups', 'mls_msg_cache', 'mls_history']);
+  const router = makeRouter();
+
+  const devKey = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  rec.stores.get('crypto').set('deviceKey', devKey);
+  rec.stores.get('mls_keys').set('deviceId', 'devLocal');
+  rec.stores.get('mls_keys').set('credential', {
+    credentialType: 'basic',
+    identity: new TextEncoder().encode('user:1:dev:devLocal'),
+  });
+
+  router.claimable['2'] = [await wireKp(await genKp('user:2:dev:devB'), 'devB')];
+  router.claimable['3'] = [await wireKp(await genKp('user:3:dev:devC'), 'devC')];
+
+  const client = loadClient(idb, router);
+  await client.init();
+  await client.encryptRoomMessage(1, 'before join', [2]);
+
+  const commitsBefore = router.commits.length;
+  await client.reconcileRoomGroup(1, [1, 2, 3]);
+  const addCommit = router.commits[commitsBefore];
+  assert.ok(addCommit, 'reconcile must issue an Add commit for the late joiner');
+  assert.deepStrictEqual(addCommit.members_added.map((m) => m.device_id), ['devC']);
+  assert.strictEqual(addCommit.welcomes.length, 1, 'the late joiner needs one Welcome');
+  assert.ok(addCommit.welcomes[0].welcome_data, 'the Welcome must carry the group secrets');
+  console.log('   [OK] an existing member folds the joiner into the group with a Welcome');
+
+  // --- The joiner has no local state: it must wait, not reset --------------
+  const idbJoin = makeMockIndexedDB();
+  const recJoin = idbJoin.seed('extrovert_crypto', 1, ['crypto', 'mls_keys', 'mls_groups', 'mls_msg_cache', 'mls_history']);
+  const joinKey = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  recJoin.stores.get('crypto').set('deviceKey', joinKey);
+  recJoin.stores.get('mls_keys').set('deviceId', 'devJoin');
+  recJoin.stores.get('mls_keys').set('credential', {
+    credentialType: 'basic',
+    identity: new TextEncoder().encode('user:3:dev:devJoin'),
+  });
+
+  router.claimable['1'] = [await wireKp(await genKp('user:1:dev:devLocal'), 'devLocal')];
+  router.claimable['2'] = [await wireKp(await genKp('user:2:dev:devB'), 'devB')];
+  router.claimable['3'] = [await wireKp(await genKp('user:3:dev:devJoin'), 'devJoin')];
+
+  const initsBefore = router.inits.length;
+  const joiner = loadClient(idbJoin, router);
+  await joiner.init();
+
+  const requestsBefore = router.requests.length;
+  router.groupExists = { epoch: 2 };
+
+  let joinError = null;
+  try {
+    await joiner.ensureRoomGroup(1, [1, 2, 3]);
+  } catch (err) {
+    joinError = err;
+  }
+
+  assert.ok(joinError && joinError.code === 'ROOM_NOT_JOINED', 'unadded device must get ROOM_NOT_JOINED');
+  const joinInits = router.inits.slice(initsBefore);
+  assert.strictEqual(joinInits.length, 0, 'unadded device must not attempt to (re)initialize the room');
+  assert.ok(!joinInits.some((i) => i.reset_existing), 'room groups must never be auto-reset');
+  const joinRequests = router.requests.slice(requestsBefore);
+  assert.ok(!joinRequests.some((r) => /\/mls\/keypackages\/\d+$/.test(r.url.split('?')[0])),
+    'probing an existing room must not consume member KeyPackages');
+  console.log('   [OK] an unadded device waits for a Welcome instead of resetting or draining the room');
+}
+
 async function run() {
   console.log('=== Starting MLS Browser Client Regression Test Suite ===\n');
   const cs = mls.getCiphersuiteFromName('MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519');
@@ -673,6 +752,7 @@ async function run() {
   await scenarioPasswordBackupRestore();
   await scenarioCrossDeviceMessageSync();
   await scenarioRoomFreshInit();
+  await scenarioRoomJoinMembership();
 
   console.log('\n=== All MLS Browser Client Regression Assertions PASSED ===');
 }

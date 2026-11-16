@@ -6,6 +6,7 @@
   var ws = null;
   var reconnectTimeout = null;
   var reconnectAttempts = 0;
+  var pendingSubscriptions = [];
 
   var state = {
     callState: 'idle',
@@ -46,6 +47,18 @@
     return proto + '//' + window.location.host + '/ws';
   }
 
+  function sendSubscription(topic) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    send({ action: 'subscribe', channels: [topic] });
+  }
+
+  function subscribe(topic) {
+    var t = String(topic || '').trim();
+    if (!t) return;
+    if (pendingSubscriptions.indexOf(t) === -1) pendingSubscriptions.push(t);
+    sendSubscription(t);
+  }
+
   function connect() {
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
     var socket = null;
@@ -57,6 +70,7 @@
       reconnectAttempts = 0;
       console.log('WebRTC WS connected');
       send({ type: 'ping' });
+      for (var i = 0; i < pendingSubscriptions.length; i++) sendSubscription(pendingSubscriptions[i]);
       var params = new URLSearchParams(window.location.search);
       var callUser = params.get('call');
       if (callUser && state.callState === 'idle') {
@@ -560,6 +574,7 @@
     on: on,
     off: off,
     connect: connect,
+    subscribe: subscribe,
     startCall: startCall,
     answerCall: answerCall,
     declineCall: declineCall,

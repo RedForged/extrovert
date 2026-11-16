@@ -1213,6 +1213,15 @@ a.conv-row:hover { color: var(--primary); }
   border-radius: var(--radius-lg) var(--radius-lg) var(--radius-sm) var(--radius-lg);
   border-color: transparent;
 }
+.msg-status { display: inline-flex; align-items: center; margin-left: 4px; color: var(--text-muted); }
+.msg-status svg { display: block; }
+.msg-status.sending { opacity: 0.6; }
+.msg-status.failed { color: var(--danger); }
+.chat-msg.own .msg-status.sent { color: var(--primary); }
+.chat-msg.own .msg-status.failed { color: var(--danger); }
+.chat-msg-pending { opacity: 0.9; }
+.chat-msg-attachment { display: block; margin-top: 2px; font-size: var(--fs-xs); color: var(--text-muted); word-break: break-all; }
+.chat-msg.own .chat-msg-attachment { color: var(--on-primary); opacity: 0.8; }
 .chat-form { display: flex; gap: 8px; }
 .chat-form input { flex: 1; }
 .chat-form button {
@@ -1359,6 +1368,14 @@ a.conv-row:hover { color: var(--primary); }
 .room-msg-header { display: flex; align-items: baseline; gap: 6px; margin-bottom: 4px; }
 .room-msg-author { font-weight: 700; font-size: var(--fs-sm); }
 .room-msg-time { font-size: var(--fs-xs); color: var(--text-muted); }
+.room-msg-status { display: inline-flex; align-items: center; margin-left: 2px; color: var(--text-muted); }
+.room-msg-status svg { display: block; }
+.room-msg.self .room-msg-status { color: var(--on-primary); opacity: 0.75; }
+.room-msg.self .room-msg-status.sending { opacity: 0.55; }
+.room-msg.self .room-msg-status.failed { color: #ffd2d2; opacity: 1; }
+.room-msg-attachment { display: block; margin-top: 3px; font-size: var(--fs-xs); color: var(--text-muted); word-break: break-all; }
+.room-msg.self .room-msg-attachment { color: var(--on-primary); opacity: 0.8; }
+.room-msg-pending .room-msg-body-inner { opacity: 0.9; }
 .room-msg-body-inner { background: var(--surface-2); border-radius: var(--radius); padding: 7px 13px 9px; display: inline-block; max-width: 100%; border: 1px solid var(--border-soft); }
 .room-msg-text { font-size: var(--fs-sm); color: var(--text); word-wrap: break-word; }
 .room-msg-actions { display: flex; gap: 4px; margin-top: 4px; justify-content: flex-end; }

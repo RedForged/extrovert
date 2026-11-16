@@ -563,6 +563,12 @@
     });
   }
 
+  function fetchGroupInfo(gid) {
+    return csrfFetch('/mls/groups/' + encodeURIComponent(gid)).then(function (r) {
+      return r.json();
+    }).catch(function () { return null; });
+  }
+
   function claimKeyPackagesFor(uid, excludeDevice) {
     var url = '/mls/keypackages/' + encodeURIComponent(uid);
     if (excludeDevice) url += '?exclude_device=' + encodeURIComponent(excludeDevice);
@@ -573,12 +579,19 @@
     });
   }
 
+  function roomNotJoinedError(message) {
+    var err = new Error(message || 'This device has not been added to the room\'s encrypted conversation yet');
+    err.code = 'ROOM_NOT_JOINED';
+    return err;
+  }
+
   function resolveGroupConflict(gid, initBody, conflictEpoch, newState, missingMsg) {
     function pollOrThrow() {
       return pollAndProcessWelcomes().then(function () {
         return loadGroupState(gid);
       }).then(function (st) {
         if (st) return st;
+        if (gid.indexOf('room:') === 0) throw roomNotJoinedError(missingMsg);
         throw new Error(missingMsg);
       });
     }
@@ -587,6 +600,10 @@
       return loadGroupState(gid);
     }).then(function (st) {
       if (st) return st;
+      // A room group already exists on the server and this device is not in it.
+      // Resetting it would destroy every member's local state, so wait to be
+      // added by an existing member instead.
+      if (gid.indexOf('room:') === 0) throw roomNotJoinedError(missingMsg);
       // Local state is gone and no Welcome will arrive for this device: the
       // server-side group is unrecoverable. CAS-reset the dead group and
       // re-initialize with the same commit; peers converge via the Welcomes.
@@ -911,7 +928,8 @@
         }).then(function (joinedFromWelcome) {
           if (joinedFromWelcome) return joinedFromWelcome;
 
-          // Group not yet loaded locally — claim member KeyPackages and initialize
+          // Group not yet loaded locally — claim member KeyPackages and initialize.
+          var initialize = function () {
           var membersP;
           if (Array.isArray(memberUserIds) && memberUserIds.length) {
             membersP = Promise.resolve(memberUserIds);
@@ -1007,6 +1025,20 @@
               });
             });
           });
+          };
+
+          // A room group that already exists server-side means this device has
+          // not been added yet. Avoid consuming every member's KeyPackages (and
+          // never reset the group) just to rediscover that.
+          if (gid.indexOf('room:') === 0) {
+            return fetchGroupInfo(gid).then(function (info) {
+              if (info && info.exists) {
+                throw roomNotJoinedError('MLS room exists on server, but this device has not been added yet.');
+              }
+              return initialize();
+            });
+          }
+          return initialize();
         });
       });
     });
@@ -1078,6 +1110,7 @@
     var gid = getRoomGroupId(roomId);
 
     return ensureRoomGroup(roomId).then(function (groupState) {
+      if (findUserLeaves(groupState, String(targetUserId)).length) return groupState;
       return csrfFetch('/mls/keypackages/' + encodeURIComponent(targetUserId)).then(function (r) {
         return r.json();
       }).then(function (kpRes) {
@@ -1144,6 +1177,77 @@
           });
         });
       });
+    });
+  }
+
+  function normalizeUserIds(list) {
+    var ids = [];
+    (list || []).forEach(function (m) {
+      var uid = (typeof m === 'object' && m !== null) ? (m.id || m.user_id) : m;
+      uid = Number(uid);
+      if (uid && ids.indexOf(uid) === -1) ids.push(uid);
+    });
+    return ids;
+  }
+
+  function groupUserIds(groupState) {
+    var ids = {};
+    if (groupState && Array.isArray(groupState.ratchetTree)) {
+      for (var i = 0; i < groupState.ratchetTree.length; i += 2) {
+        var node = groupState.ratchetTree[i];
+        if (!node || node.nodeType !== 'leaf' || !node.leaf || !node.leaf.credential || !node.leaf.credential.identity) continue;
+        var ident = '';
+        try { ident = new TextDecoder().decode(node.leaf.credential.identity); } catch (err) { continue; }
+        var match = /^user:(\d+):dev:/.exec(ident);
+        if (match) ids[Number(match[1])] = true;
+      }
+    }
+    return ids;
+  }
+
+  var roomAddBackoff = {};
+  var ROOM_ADD_BACKOFF_MS = 60000;
+
+  // Room members who joined after the MLS group was created have no leaf in the
+  // tree. Existing members fold their KeyPackages into the group so they receive
+  // a Welcome and can decrypt/send from then on.
+  function reconcileRoomGroup(roomId, memberUserIds) {
+    return ensureRoomGroup(roomId, memberUserIds).then(function (groupState) {
+      if (!groupState) return groupState;
+      var myId = currentUserId();
+      var missing = normalizeUserIds(memberUserIds).filter(function (uid) {
+        return uid !== myId && !groupUserIds(groupState)[uid];
+      });
+      var chain = Promise.resolve(groupState);
+      missing.forEach(function (uid) {
+        chain = chain.then(function (state) {
+          if (groupUserIds(state)[uid]) return state;
+          var backoffKey = getRoomGroupId(roomId) + ':' + uid;
+          if (roomAddBackoff[backoffKey] && roomAddBackoff[backoffKey] > Date.now()) return state;
+          return addMemberToRoomGroup(roomId, uid).then(function (nextState) {
+            delete roomAddBackoff[backoffKey];
+            return nextState;
+          }).catch(function (err) {
+            roomAddBackoff[backoffKey] = Date.now() + ROOM_ADD_BACKOFF_MS;
+            console.warn('Could not add room member ' + uid + ' to the MLS group:', err && err.message);
+            return state;
+          });
+        });
+      });
+      return chain;
+    });
+  }
+
+  function pollRoomGroup(roomId) {
+    return pollAndProcessWelcomes().then(function () {
+      return loadGroupState(getRoomGroupId(roomId));
+    });
+  }
+
+  function clearRoomAddBackoff(roomId) {
+    var prefix = getRoomGroupId(roomId) + ':';
+    Object.keys(roomAddBackoff).forEach(function (key) {
+      if (key.indexOf(prefix) === 0) delete roomAddBackoff[key];
     });
   }
 
@@ -1246,7 +1350,7 @@
     var mls = root.MLS;
     var gid = getRoomGroupId(roomId);
 
-    return ensureRoomGroup(roomId, memberUserIds).then(function (groupState) {
+    return reconcileRoomGroup(roomId, memberUserIds).then(function (groupState) {
       if (!groupState) {
         throw new Error('Unable to resolve MLS conversation state for room');
       }
@@ -1693,6 +1797,9 @@
     getRoomGroupId: getRoomGroupId,
     checkRoomMlsSupport: checkRoomMlsSupport,
     ensureRoomGroup: ensureRoomGroup,
+    reconcileRoomGroup: reconcileRoomGroup,
+    pollRoomGroup: pollRoomGroup,
+    clearRoomAddBackoff: clearRoomAddBackoff,
     addMemberToRoomGroup: addMemberToRoomGroup,
     removeMemberFromRoomGroup: removeMemberFromRoomGroup,
     leaveRoomGroup: leaveRoomGroup,

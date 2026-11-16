@@ -9,13 +9,25 @@ document.addEventListener('DOMContentLoaded', function() {
 
   if (!msgArea || !sendForm || !channelList) return;
 
+  var selfUsername = metaContent('current-username');
+  var selfName = metaContent('current-user-name') || selfUsername;
+  var selfAvatar = metaContent('current-user-avatar');
+  var pendingSends = [];
+  var lastMaxByChannel = {};
+  var lastRender = null;
+
   loadMessages(msgArea.dataset.channelId);
 
   if (window.ExtrovertCall && window.ExtrovertCall.on) {
     if (window.ExtrovertCall.connect) window.ExtrovertCall.connect();
+    if (window.ExtrovertCall.subscribe) window.ExtrovertCall.subscribe('room:' + roomId());
     window.ExtrovertCall.on('gateway_event', function (ev) {
       try {
         if (!ev || ev.topic !== 'room:' + roomId()) return;
+        if (ev.event === 'message_create' && ev.data && ev.data.client_msg_id && ev.data.id) {
+          var sent = findPending(ev.data.client_msg_id);
+          if (sent) markPendingSent(sent, ev.data.id, ev.data.ciphertext || sent.ciphertext);
+        }
         if (ev.event !== 'message_create' && ev.event !== 'message_update' && ev.event !== 'message_delete') return;
         var cid = sendForm ? sendForm.dataset.channelId : msgArea.dataset.channelId;
         if (ev.data && ev.data.channel_id && String(ev.data.channel_id) !== String(cid)) return;
@@ -94,17 +106,45 @@ document.addEventListener('DOMContentLoaded', function() {
     if (!cid) return;
     var input = sendForm.querySelector('input[name="body"]');
     var body = input.value.trim();
-    if (!body && !roomStagedFile) return;
-    input.disabled = true;
-    var sentPlaintext = body;
+    var staged = roomStagedFile;
+    if (!body && !staged) return;
+
+    var clientMsgId = 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    var pending = {
+      clientMsgId: clientMsgId,
+      channelId: String(cid),
+      body: body,
+      fileName: staged ? staged.name : '',
+      plaintext: body,
+      ciphertext: null,
+      status: 'sending',
+      baselineId: lastMaxByChannel[cid] || 0,
+      createdAt: Date.now()
+    };
+    pendingSends.push(pending);
+
+    input.value = '';
+    clearRoomStaged();
+    input.focus();
+    refreshMessages();
 
     var csrf = getCsrf();
     var url = '/rooms/' + roomId() + '/channels/' + cid + '/send';
+    var baseParams = 'client_msg_id=' + encodeURIComponent(clientMsgId);
+
+    var fail = function(message) {
+      pending.status = 'failed';
+      pending.error = message || 'Failed to send';
+      refreshMessages();
+      alert('Send error: ' + pending.error);
+      input.focus();
+    };
+
     var doPost = function(params) {
       fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf },
-        body: params
+        body: baseParams + '&' + params
       }).then(function(r) {
         if (r.status === 426) {
           alert('Extrovert has upgraded to modern MLS encryption (RFC 9420). Please refresh your browser tab to continue messaging.');
@@ -114,36 +154,30 @@ document.addEventListener('DOMContentLoaded', function() {
         return r.json();
       }).then(function(d) {
         if (d.error) {
-          alert('Send error: ' + (d.message || d.error));
-          input.disabled = false;
+          fail(d.message || d.error);
           return;
         }
-        if (d.id && window.ExtrovertMLS && window.ExtrovertMLS.rememberPlaintext) {
-          window.ExtrovertMLS.rememberPlaintext(window.ExtrovertMLS.roomCacheKey(d.id, sentCiphertext), sentPlaintext);
-        }
-        input.value = '';
-        clearRoomStaged();
-        input.disabled = false;
-        input.focus();
+        if (d.id) markPendingSent(pending, d.id, pending.ciphertext);
+        refreshMessages();
         loadMessages(cid);
-      }).catch(function() { input.disabled = false; });
+      }).catch(function() {
+        fail('Network error — the message was not sent.');
+      });
     };
 
-    var sentCiphertext = null;
     var e2ee = window.ExtrovertRoomE2EE;
     if (e2ee) {
-      var prep = (roomStagedFile && window.ExtrovertFiles)
-        ? sealAndUploadRoomFile(roomStagedFile, body)
+      var prep = (staged && window.ExtrovertFiles)
+        ? sealAndUploadRoomFile(staged, body)
         : Promise.resolve(body);
       prep.then(function (payload) {
-        sentPlaintext = payload;
+        pending.plaintext = payload;
         return e2ee.encryptMessage(payload);
       }).then(function(r) {
-        sentCiphertext = r.ciphertext;
+        pending.ciphertext = r.ciphertext;
         doPost('proto=mls&ciphertext=' + encodeURIComponent(r.ciphertext));
       }).catch(function(err) {
-        alert('Could not encrypt message: ' + ((err && err.message) || 'MLS not ready yet — try again.'));
-        input.disabled = false;
+        fail('Could not encrypt message: ' + ((err && err.message) || 'MLS not ready yet — try again.'));
       });
       return;
     }
@@ -301,83 +335,167 @@ document.addEventListener('DOMContentLoaded', function() {
     fetch('/rooms/' + roomId() + '/channels/' + cid + '/messages')
       .then(function(r) { return r.json(); })
       .then(function(data) {
-        renderMessages(data.messages || [], data.roleMap || {}, data.canDelete);
+        if (String(sendForm.dataset.channelId) !== String(cid)) return;
+        renderMessages(cid, data.messages || [], data.roleMap || {}, data.canDelete);
       });
   }
 
-  function renderMessages(messages, roleMap, canDelete) {
-    if (!messages || !messages.length) {
-      msgArea.innerHTML = '<div class="room-msg"><div class="room-msg-body"><div class="room-msg-body-inner"><span class="muted">No messages yet</span></div></div></div>';
+  function refreshMessages() {
+    var cid = sendForm.dataset.channelId;
+    if (!cid) return;
+    if (lastRender && String(lastRender.cid) === String(cid)) {
+      renderMessages(lastRender.cid, lastRender.messages, lastRender.roleMap, lastRender.canDelete);
+    } else {
+      loadMessages(cid);
+    }
+  }
+
+  function renderMessages(cid, messages, roleMap, canDelete) {
+    var all = messages || [];
+    var maxId = 0;
+    all.forEach(function(m) {
+      var id = Number(m.id) || 0;
+      if (id > maxId) maxId = id;
+    });
+    lastMaxByChannel[cid] = Math.max(lastMaxByChannel[cid] || 0, maxId);
+
+    var pendings = pendingSends.filter(function(p) { return String(p.channelId) === String(cid); });
+    var hasSending = pendings.some(function(p) { return p.status === 'sending'; });
+
+    // Once nothing is in flight, swap confirmed optimistic bubbles for the
+    // stored messages as soon as the server list contains them.
+    if (!hasSending) {
+      pendingSends = pendingSends.filter(function(p) {
+        if (String(p.channelId) !== String(cid) || p.status !== 'sent') return true;
+        return !all.some(function(m) { return String(m.id) === String(p.msgId); });
+      });
+      pendings = pendingSends.filter(function(p) { return String(p.channelId) === String(cid); });
+    }
+
+    var baseline = -1;
+    pendings.forEach(function(p) {
+      if (p.status === 'sending' && (baseline < 0 || p.baselineId < baseline)) baseline = p.baselineId;
+    });
+    var visible = baseline < 0 ? all : all.filter(function(m) {
+      return !(m.user_id === currentUserId && (Number(m.id) || 0) > baseline);
+    });
+
+    lastRender = { cid: cid, messages: all, roleMap: roleMap, canDelete: canDelete };
+
+    if (!visible.length && !pendings.length) {
+      msgArea.innerHTML = '<div class="room-msg"><div class="room-msg-body"><div class="room-msg-body-inner"><span class="muted">No messages to show</span></div></div></div>';
       return;
     }
-      msgArea.innerHTML = '';
-    messages.forEach(function(m) {
-      var div = document.createElement('div');
-      div.className = 'room-msg' + (m.user_id === currentUserId ? ' self' : '');
-      div.setAttribute('data-msg-id', m.id);
-      var bodyDiv = document.createElement('div');
-      bodyDiv.className = 'room-msg-body';
-      var headerDiv = document.createElement('div');
-      headerDiv.className = 'room-msg-header';
-      var color = roleMap[m.user_id] || '#ccc';
-      if (!/^#[0-9a-fA-F]{6}$/.test(color)) color = '#ccc';
-      var author = document.createElement('span');
-      author.className = 'room-msg-author';
-      author.style.color = color;
-      author.textContent = m.display_name || m.username;
-      var time = document.createElement('span');
-      time.className = 'room-msg-time';
-      time.textContent = relTime(m.created_at);
-      headerDiv.appendChild(author);
-      headerDiv.appendChild(time);
-      bodyDiv.appendChild(headerDiv);
-      var rowDiv = document.createElement('div');
-      rowDiv.className = 'room-msg-row';
-      var wrap = document.createElement('div');
-      wrap.className = 'room-msg-avatar-wrap';
-      if (m.avatar) {
-        var img = document.createElement('img');
-        img.className = 'room-msg-avatar';
-        img.src = m.avatar;
-        img.alt = '';
-        img.addEventListener('error', function() { this.style.display = 'none'; });
-        wrap.appendChild(img);
-      } else {
-        var letter = document.createElement('span');
-        letter.className = 'room-msg-avatar room-msg-avatar-letter';
-        letter.textContent = (m.display_name || m.username)[0].toUpperCase();
-        wrap.appendChild(letter);
-      }
-      rowDiv.appendChild(wrap);
-      var innerDiv = document.createElement('div');
-      innerDiv.className = 'room-msg-body-inner';
-      innerDiv.appendChild(headerDiv);
-      var textSpan = document.createElement('span');
-      textSpan.className = 'room-msg-text';
-      if (m.proto === 'megolm') {
-        div.setAttribute('data-proto', 'megolm');
-        div.setAttribute('data-sender-id', m.user_id);
-        div.setAttribute('data-ciphertext', m.ciphertext || '');
-        div.setAttribute('data-group-session-id', m.group_session_id || '');
-        textSpan.textContent = '';
-      } else if (m.proto === 'mls') {
-        div.setAttribute('data-proto', 'mls');
-        div.setAttribute('data-sender-id', m.user_id);
-        div.setAttribute('data-ciphertext', m.ciphertext || '');
-        textSpan.textContent = '';
-      } else {
-        textSpan.textContent = m.body;
-      }
-      innerDiv.appendChild(textSpan);
-      if (m.edited_at) {
-        var editedSpan = document.createElement('span');
-        editedSpan.className = 'edited-indicator';
-        editedSpan.textContent = '(edited)';
-        editedSpan.title = new Date(m.edited_at).toLocaleString();
-        innerDiv.appendChild(editedSpan);
-      }
-      rowDiv.appendChild(innerDiv);
-      bodyDiv.appendChild(rowDiv);
+
+    msgArea.innerHTML = '';
+    visible.forEach(function(m) {
+      msgArea.appendChild(buildMessageEl(m, roleMap, canDelete));
+    });
+    pendings.forEach(function(p) {
+      msgArea.appendChild(buildMessageEl(pendingMessage(p), roleMap, canDelete));
+    });
+    msgArea.scrollTop = msgArea.scrollHeight;
+  }
+
+  function pendingMessage(p) {
+    return {
+      tempId: p.clientMsgId,
+      user_id: currentUserId,
+      username: selfUsername,
+      display_name: selfName,
+      avatar: selfAvatar,
+      body: p.body,
+      proto: 'plain',
+      created_at: p.createdAt,
+      pendingStatus: p.status,
+      pendingError: p.error,
+      attachmentName: p.fileName
+    };
+  }
+
+  function buildMessageEl(m, roleMap, canDelete) {
+    var isSelf = m.user_id === currentUserId;
+    var isPending = !!m.pendingStatus;
+    var div = document.createElement('div');
+    div.className = 'room-msg' + (isSelf ? ' self' : '') + (isPending ? ' room-msg-pending' : '');
+    if (isPending) div.setAttribute('data-pending-id', m.tempId);
+    else div.setAttribute('data-msg-id', m.id);
+
+    var bodyDiv = document.createElement('div');
+    bodyDiv.className = 'room-msg-body';
+
+    var rowDiv = document.createElement('div');
+    rowDiv.className = 'room-msg-row';
+    var wrap = document.createElement('div');
+    wrap.className = 'room-msg-avatar-wrap';
+    if (m.avatar) {
+      var img = document.createElement('img');
+      img.className = 'room-msg-avatar';
+      img.src = m.avatar;
+      img.alt = '';
+      img.addEventListener('error', function() { this.style.display = 'none'; });
+      wrap.appendChild(img);
+    } else {
+      var letter = document.createElement('span');
+      letter.className = 'room-msg-avatar room-msg-avatar-letter';
+      letter.textContent = String(m.display_name || m.username || '?')[0].toUpperCase();
+      wrap.appendChild(letter);
+    }
+    rowDiv.appendChild(wrap);
+
+    var innerDiv = document.createElement('div');
+    innerDiv.className = 'room-msg-body-inner';
+
+    var headerDiv = document.createElement('div');
+    headerDiv.className = 'room-msg-header';
+    var color = roleMap[m.user_id] || '#ccc';
+    if (!/^#[0-9a-fA-F]{6}$/.test(color)) color = '#ccc';
+    var author = document.createElement('span');
+    author.className = 'room-msg-author';
+    author.style.color = color;
+    author.textContent = m.display_name || m.username;
+    var time = document.createElement('span');
+    time.className = 'room-msg-time';
+    time.textContent = relTime(m.created_at);
+    headerDiv.appendChild(author);
+    headerDiv.appendChild(time);
+    if (isSelf) headerDiv.appendChild(messageStatus(m.pendingStatus || 'sent', m.pendingError));
+    innerDiv.appendChild(headerDiv);
+
+    var textSpan = document.createElement('span');
+    textSpan.className = 'room-msg-text';
+    if (m.proto === 'megolm') {
+      div.setAttribute('data-proto', 'megolm');
+      div.setAttribute('data-sender-id', m.user_id);
+      div.setAttribute('data-ciphertext', m.ciphertext || '');
+      div.setAttribute('data-group-session-id', m.group_session_id || '');
+      textSpan.textContent = '';
+    } else if (m.proto === 'mls') {
+      div.setAttribute('data-proto', 'mls');
+      div.setAttribute('data-sender-id', m.user_id);
+      div.setAttribute('data-ciphertext', m.ciphertext || '');
+      textSpan.textContent = '';
+    } else {
+      textSpan.textContent = m.body;
+    }
+    innerDiv.appendChild(textSpan);
+    if (isPending && m.attachmentName) {
+      var att = document.createElement('span');
+      att.className = 'room-msg-attachment';
+      att.textContent = m.attachmentName;
+      innerDiv.appendChild(att);
+    }
+    if (m.edited_at) {
+      var editedSpan = document.createElement('span');
+      editedSpan.className = 'edited-indicator';
+      editedSpan.textContent = '(edited)';
+      editedSpan.title = new Date(m.edited_at).toLocaleString();
+      innerDiv.appendChild(editedSpan);
+    }
+    rowDiv.appendChild(innerDiv);
+    bodyDiv.appendChild(rowDiv);
+
+    if (!isPending) {
       var actionsDiv = document.createElement('div');
       actionsDiv.className = 'room-msg-actions';
       var menuWrap = document.createElement('span');
@@ -416,10 +534,45 @@ document.addEventListener('DOMContentLoaded', function() {
       menuWrap.appendChild(menu);
       actionsDiv.appendChild(menuWrap);
       bodyDiv.appendChild(actionsDiv);
-      div.appendChild(bodyDiv);
-      msgArea.appendChild(div);
-    });
-    msgArea.scrollTop = msgArea.scrollHeight;
+    }
+
+    div.appendChild(bodyDiv);
+    return div;
+  }
+
+  function messageStatus(state, error) {
+    var span = document.createElement('span');
+    span.className = 'room-msg-status ' + state;
+    var label = state === 'sending' ? 'Sending…' : state === 'failed' ? (error || 'Failed to send') : 'Sent';
+    span.title = label;
+    span.setAttribute('role', 'img');
+    span.setAttribute('aria-label', label);
+    if (window.DSHIcons) {
+      var name = state === 'sending' ? 'clock' : state === 'failed' ? 'alert' : 'checkDouble';
+      span.appendChild(window.DSHIcons.icon(name, 13));
+    }
+    return span;
+  }
+
+  function findPending(clientMsgId) {
+    for (var i = 0; i < pendingSends.length; i++) {
+      if (pendingSends[i].clientMsgId === clientMsgId) return pendingSends[i];
+    }
+    return null;
+  }
+
+  function markPendingSent(pending, msgId, ciphertext) {
+    if (!pending) return;
+    pending.status = 'sent';
+    pending.msgId = String(msgId);
+    if (pending.plaintext && ciphertext && window.ExtrovertMLS && window.ExtrovertMLS.rememberPlaintext) {
+      window.ExtrovertMLS.rememberPlaintext(window.ExtrovertMLS.roomCacheKey(msgId, ciphertext), pending.plaintext);
+    }
+  }
+
+  function metaContent(name) {
+    var el = document.querySelector('meta[name="' + name + '"]');
+    return el ? el.getAttribute('content') : '';
   }
 
   function cancelEditRoomMsg(msgDiv, btn, originalText) {
