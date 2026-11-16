@@ -1,13 +1,15 @@
-<%- include('partials/header') %>
-  <div style="max-width:780px;margin:0 auto">
-    <h2>Bots</h2>
-    <p class="muted" style="margin-top:-4px">
-      Discord-style bots, self-hosted: anyone can create one. A bot is an account its
-      owner drives over the plain REST API — post, reply, follow, read mentions — with a
-      long-lived token. See the <a href="/docs">bot guide</a> and the example bots in
-      <code>examples/</code>.
-    </p>
+<%- include('partials/header', { wrapClass: 'wrap-settings' }) %>
+<div class="admin-shell">
+  <%- include('partials/settings-sidebar', { active: 'bots' }) %>
+  <div class="admin-main">
+    <header class="admin-page-head">
+      <div>
+        <h1>Bots</h1>
+        <p>Discord-style bots, self-hosted: anyone can create one. A bot is an account its owner drives over the plain REST API — post, reply, follow, read mentions — with a long-lived token. See the <a href="/docs">bot guide</a> and the example bots in <code>examples/</code>.</p>
+      </div>
+    </header>
 
+    <div style="max-width:900px">
     <% if (error) { %><div class="flash err"><span><%= error %></span></div><% } %>
 
     <% if (createdToken) { %>
@@ -94,5 +96,7 @@
         </form>
       </div>
     <% }) %>
+    </div>
   </div>
+</div>
 <%- include('partials/footer') %>

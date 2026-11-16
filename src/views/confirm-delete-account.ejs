@@ -1,5 +1,15 @@
-<%- include('partials/header') %>
-  <div class="card" style="max-width:520px;margin:40px auto;text-align:center">
+<%- include('partials/header', { wrapClass: 'wrap-settings' }) %>
+<div class="admin-shell">
+  <%- include('partials/settings-sidebar', { active: 'danger' }) %>
+  <div class="admin-main">
+    <header class="admin-page-head">
+      <div>
+        <h1>Danger zone</h1>
+        <p>Irreversible actions for your account.</p>
+      </div>
+    </header>
+
+  <div class="card admin-panel" style="max-width:560px;text-align:center">
     <div style="display:flex;justify-content:center;margin-bottom:8px"><%- include('partials/icon', { name: 'alert', size: 32, cls: 'flash-ico' }) %></div>
     <h2 style="margin-top:0">Delete your account?</h2>
     <p class="muted" style="margin-bottom:20px">This removes your account, all your posts, comments, likes, messages, and every other trace. <strong style="color:var(--danger)">This cannot be undone.</strong></p>
@@ -16,4 +26,6 @@
     </form>
     <a class="btn ghost" href="/settings" style="margin-left:8px">Keep my account</a>
   </div>
+  </div>
+</div>
 <%- include('partials/footer') %>

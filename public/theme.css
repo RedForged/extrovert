@@ -1744,6 +1744,7 @@ hr { border: none; border-top: 1px solid var(--border-soft); margin: 24px 0; }
 .admin-attention-item:hover { border-color: var(--border-strong); }
 .admin-attention-icon { display: inline-flex; color: var(--danger); flex: none; }
 .admin-attention-item.ok .admin-attention-icon { color: var(--success); }
+.admin-attention-item.info .admin-attention-icon { color: var(--text-muted); }
 .admin-attention-item.ok { color: var(--text-secondary); }
 .admin-attention-count { margin-left: auto; font-weight: 700; font-variant-numeric: tabular-nums; }
 
@@ -1845,6 +1846,24 @@ hr { border: none; border-top: 1px solid var(--border-soft); margin: 24px 0; }
     border: none; box-shadow: none; background: transparent;
   }
   .admin-menu-pop a, .admin-menu-pop button { padding: 9px 0; }
+}
+
+/* ── Settings dashboard (reuses the admin shell) ───────────────────── */
+
+.wrap.wrap-settings { max-width: 1240px; }
+.admin-nav-link.danger { color: var(--danger); }
+.admin-nav-link.danger:hover { background: var(--danger-soft); color: var(--danger); }
+.admin-nav-link.danger.active { background: var(--danger-soft); color: var(--danger); }
+.settings-stat-text { font-size: var(--fs-xl); }
+.admin-avatar.settings-avatar { width: 44px; height: 44px; font-size: var(--fs-md); }
+.settings-sidebar-foot { display: flex; flex-direction: column; gap: 2px; }
+.settings-sidebar .admin-sidebar-foot a { padding: 5px 9px; }
+@media (max-width: 860px) {
+  .settings-sidebar .admin-sidebar-foot {
+    display: flex; flex-direction: row; flex-wrap: wrap; gap: 4px 14px;
+    padding-top: 8px;
+  }
+  .settings-sidebar .admin-sidebar-foot a { padding: 4px 0; }
 }
 
 /* ── The signature: concentric rings ───────────────────────────────── */

@@ -1,7 +1,15 @@
-<%- include('partials/header') %>
-<div style="max-width:600px;margin:0 auto">
-  <h2>Developer Applications</h2>
+<%- include('partials/header', { wrapClass: 'wrap-settings' }) %>
+<div class="admin-shell">
+  <%- include('partials/settings-sidebar', { active: 'developers' }) %>
+  <div class="admin-main">
+    <header class="admin-page-head">
+      <div>
+        <h1>Developer applications</h1>
+        <p>Register OAuth apps and manage the apps you've authorized.</p>
+      </div>
+    </header>
 
+<div style="max-width:860px">
   <% if (locals.error) { %><div class="flash err"><%= error %></div><% } %>
   <% if (typeof freshSecret !== 'undefined' && freshSecret) { %>
     <div class="flash" style="border-color:var(--brand);background:var(--surface-2)">
@@ -84,5 +92,7 @@
   <% } else { %>
     <div class="empty-state" style="padding:24px"><p>No authorized applications.</p></div>
   <% } %>
+</div>
+  </div>
 </div>
 <%- include('partials/footer') %>

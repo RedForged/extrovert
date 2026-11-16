@@ -1,20 +1,19 @@
-<%- include('partials/header') %>
-  <div class="card" style="max-width:560px;margin:0 auto">
-    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap">
-      <h2 style="margin:0">Drive storage</h2>
-      <a class="btn ghost small" href="/drive"><%- include('partials/icon', { name: 'arrowLeft', size: 13 }) %> Open Drive</a>
-    </div>
-    <p class="muted" style="font-size:var(--fs-sm);margin:6px 0 0">
-      By default your files are stored on this server and count against a size limit.
-      Connect your own Nextcloud and new Drive uploads go there instead — the files are
-      yours, and the Drive size limit stops applying.
-    </p>
-  </div>
+<%- include('partials/header', { wrapClass: 'wrap-settings' }) %>
+<div class="admin-shell">
+  <%- include('partials/settings-sidebar', { active: 'storage' }) %>
+  <div class="admin-main">
+    <header class="admin-page-head">
+      <div>
+        <h1>Storage</h1>
+        <p>Files are stored on this server by default. Connect your own Nextcloud to store new Drive uploads there instead — the files are yours, and the Drive size limit stops applying.</p>
+      </div>
+      <a class="btn ghost small" href="/drive"><%- include('partials/icon', { name: 'image', size: 14 }) %> Open Drive</a>
+    </header>
 
-  <% if (notice) { %><div class="flash ok" style="max-width:560px;margin:12px auto"><span><%= notice %></span></div><% } %>
-  <% if (error) { %><div class="flash err" style="max-width:560px;margin:12px auto"><span class="flash-ico"><%- include('partials/icon', { name: 'alert', size: 18 }) %></span><span><%= error %></span></div><% } %>
+    <% if (notice) { %><div class="flash ok" style="max-width:760px"><span><%= notice %></span></div><% } %>
+    <% if (error) { %><div class="flash err" style="max-width:760px"><span class="flash-ico"><%- include('partials/icon', { name: 'alert', size: 18 }) %></span><span><%= error %></span></div><% } %>
 
-  <div class="card" style="max-width:560px;margin:16px auto">
+    <div class="card admin-panel" style="max-width:760px">
     <% if (connection) { %>
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <h4 style="margin:0"><%= connection.enabled ? 'Connected' : 'Paused' %></h4>
@@ -72,4 +71,6 @@
       Nextcloud on demand.
     </p>
   </div>
+  </div>
+</div>
 <%- include('partials/footer') %>

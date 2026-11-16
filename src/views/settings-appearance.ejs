@@ -1,0 +1,31 @@
+<%- include('partials/header', { wrapClass: 'wrap-settings' }) %>
+<div class="admin-shell">
+  <%- include('partials/settings-sidebar', { active: 'appearance' }) %>
+  <div class="admin-main">
+    <header class="admin-page-head">
+      <div>
+        <h1>Appearance</h1>
+        <p>Choose the theme and whether developer links appear in the navigation.</p>
+      </div>
+    </header>
+
+    <section class="card admin-panel" style="max-width:720px">
+      <% if (locals.saved) { %><div class="flash ok"><span class="flash-ico"><%- include('partials/icon', { name: 'check', size: 18 }) %></span><span>Saved — your settings apply immediately.</span></div><% } %>
+      <form method="post" action="/settings">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <label for="settings-theme">Theme</label>
+        <select name="theme" id="settings-theme">
+          <option value="dark" <%= theme === 'dark' ? 'selected' : '' %>>Dark · Ink</option>
+          <option value="light" <%= theme === 'light' ? 'selected' : '' %>>Light · Lavender</option>
+          <option value="october" <%= theme === 'october' ? 'selected' : '' %>>October · Ember</option>
+        </select>
+        <label style="display:flex;align-items:center;gap:8px;margin-top:16px;cursor:pointer">
+          <input type="checkbox" name="developer_mode" value="1" <%= developerMode ? 'checked' : '' %>>
+          Developer settings — show security &amp; developer links in the navigation
+        </label>
+        <button class="btn" style="margin-top:20px"><%- include('partials/icon', { name: 'check', size: 15 }) %> Save appearance</button>
+      </form>
+    </section>
+  </div>
+</div>
+<%- include('partials/footer') %>

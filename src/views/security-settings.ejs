@@ -1,8 +1,15 @@
-<%- include('partials/header', { pageTitle: 'Settings' }) %>
+<%- include('partials/header', { pageTitle: 'Settings', wrapClass: 'wrap-settings' }) %>
+<div class="admin-shell">
+  <%- include('partials/settings-sidebar', { active: 'security' }) %>
+  <div class="admin-main">
+    <header class="admin-page-head">
+      <div>
+        <h1>Security</h1>
+        <p>Two-factor authentication, passkeys and remembered devices.</p>
+      </div>
+    </header>
 
-<div style="max-width:640px;margin:0 auto">
-  <h2>Security</h2>
-
+  <div style="max-width:800px">
   <% if (locals.error) { %>
     <div class="flash err"><span class="flash-ico"><%- include('partials/icon', { name: 'alert', size: 18 }) %></span><span><%= error %></span></div>
   <% } %>
@@ -102,9 +109,10 @@
     <% } %>
   </div>
 
-  <div style="display:flex;gap:8px;flex-wrap:wrap">
-    <a href="/security" class="btn ghost full" style="flex:1 1 220px"><%- include('partials/icon', { name: 'shield', size: 15 }) %> Security &amp; responsible disclosure</a>
-    <a href="/settings" class="btn ghost full" style="flex:1 1 220px">Back to settings</a>
+  <div style="margin-top:16px">
+    <a href="/security" class="btn ghost"><%- include('partials/icon', { name: 'shield', size: 15 }) %> Security &amp; responsible disclosure</a>
+  </div>
+  </div>
   </div>
 </div>
 

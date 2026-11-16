@@ -1,0 +1,32 @@
+<%
+  const _active = (typeof active !== 'undefined' && active) ? active : '';
+  const _link = function (key) { return 'admin-nav-link' + (_active === key ? ' active' : ''); };
+%>
+<aside class="admin-sidebar settings-sidebar">
+  <div class="admin-sidebar-head">
+    <span class="admin-sidebar-icon"><%- include('icon', { name: 'settings', size: 19 }) %></span>
+    <div>
+      <strong>Settings</strong>
+      <small>@<%= locals.currentUser.username %></small>
+    </div>
+  </div>
+  <nav class="admin-nav" aria-label="Settings sections">
+    <a class="<%= _link('overview') %>" href="/settings"><%- include('icon', { name: 'settings', size: 17 }) %> Overview</a>
+    <a class="<%= _link('account') %>" href="/settings/account"><%- include('icon', { name: 'at', size: 17 }) %> Account &amp; email</a>
+    <a class="<%= _link('appearance') %>" href="/settings/appearance"><%- include('icon', { name: 'image', size: 17 }) %> Appearance</a>
+    <a class="<%= _link('notifications') %>" href="/settings/notifications"><%- include('icon', { name: 'bell', size: 17 }) %> Notifications</a>
+    <a class="<%= _link('security') %>" href="/settings/security"><%- include('icon', { name: 'lock', size: 17 }) %> Security</a>
+    <a class="<%= _link('devices') %>" href="/settings/devices"><%- include('icon', { name: 'key', size: 17 }) %> Devices</a>
+    <a class="<%= _link('storage') %>" href="/settings/drive"><%- include('icon', { name: 'cloud', size: 17 }) %> Storage</a>
+    <a class="<%= _link('bots') %>" href="/settings/bots"><%- include('icon', { name: 'bot', size: 17 }) %> Bots</a>
+    <a class="<%= _link('developers') %>" href="/settings/developers"><%- include('icon', { name: 'code', size: 17 }) %> Developer apps</a>
+    <a class="<%= _link('danger') %> danger" href="/settings/delete"><%- include('icon', { name: 'trash', size: 17 }) %> Delete account</a>
+  </nav>
+  <div class="admin-sidebar-foot settings-sidebar-foot">
+    <a href="/docs"><%- include('icon', { name: 'doc', size: 15 }) %> Documentation</a>
+    <a href="/docs/terms"><%- include('icon', { name: 'shield', size: 15 }) %> Terms &amp; rules</a>
+    <a href="/developers/docs"><%- include('icon', { name: 'code', size: 15 }) %> API reference</a>
+    <a href="/security"><%- include('icon', { name: 'flag', size: 15 }) %> Security</a>
+    <a href="/"><%- include('icon', { name: 'arrowLeft', size: 15 }) %> Back to site</a>
+  </div>
+</aside>

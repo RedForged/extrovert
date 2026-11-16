@@ -25,9 +25,10 @@ function emailStatusFor(user) {
   };
 }
 
-function renderSettings(res, user, { mailError = null, mailSent = false, mailNotice = null } = {}) {
+function settingsData(user) {
   const usage = drive.quotaState(user.id);
-  res.render('settings', {
+  const nextcloud = db.getUserNextcloud(user.id);
+  return {
     theme: getUserTheme(user.id),
     developerMode: getUserDeveloperMode(user.id),
     devices: db.getUserDevices(user.id),
@@ -36,10 +37,23 @@ function renderSettings(res, user, { mailError = null, mailSent = false, mailNot
     usage,
     usedPercent: usage.unlimited || !usage.quota ? 0 : Math.min(100, Math.round((usage.localUsed / usage.quota) * 100)),
     fmt: drive.fmt,
-    mailError,
-    mailSent,
-    mailNotice,
-  });
+    passkeys: db.getPasskeysByUser(user.id),
+    unusedRecoveryCodes: db.countUnusedRecoveryCodes(user.id),
+    totpEnabled: !!user.totp_enabled,
+    totpKeyConfigured: totpKeyConfigured(),
+    botsCount: db.countBotsByOwner(user.id),
+    appsCount: db.getOAuthAppsByOwner(user.id).length,
+    authorizedCount: db.getAuthorizedAppsForUser(user.id).length,
+    nextcloud: nextcloud ? { enabled: !!nextcloud.enabled, baseUrl: nextcloud.base_url } : null,
+  };
+}
+
+function renderSettings(res, user, extra = {}) {
+  res.render('settings', { ...settingsData(user), ...extra });
+}
+
+function renderAccount(res, user, extra = {}) {
+  res.render('settings-account', { ...settingsData(user), user, ...extra });
 }
 
 // A mailer result of { captured: true } means the message was written to
@@ -85,13 +99,35 @@ router.get('/', (req, res) => {
   renderSettings(res, user);
 });
 
+router.get('/account', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.redirect('/login');
+  renderAccount(res, user);
+});
+
+router.get('/appearance', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.redirect('/login');
+  res.render('settings-appearance', {
+    theme: getUserTheme(user.id),
+    developerMode: getUserDeveloperMode(user.id),
+    saved: req.query.saved === '1',
+  });
+});
+
+router.get('/notifications', (req, res) => {
+  const user = res.locals.currentUser;
+  if (!user) return res.redirect('/login');
+  res.render('settings-notifications', {});
+});
+
 router.post('/', (req, res) => {
   const user = res.locals.currentUser;
   if (!user) return res.redirect('/login');
   const theme = ['dark', 'light', 'october'].includes(req.body.theme) ? req.body.theme : 'october';
   setUserTheme(user.id, theme);
   setUserDeveloperMode(user.id, req.body.developer_mode === '1');
-  res.redirect('/settings');
+  res.redirect('/settings/appearance?saved=1');
 });
 
 // Devices page & pairing
@@ -139,16 +175,16 @@ router.post('/email', (req, res) => {
   // claim and a phishing target): require the current password.
   const password = String(req.body.password || '');
   if (!password || !bcrypt.compareSync(password, user.password_hash)) {
-    return renderSettings(res, user, { mailError: 'Enter your current password to change your email address.' });
+    return renderAccount(res, user, { mailError: 'Enter your current password to change your email address.' });
   }
 
   const email = String(req.body.email || '').trim();
   if (!isValidEmail(email)) {
-    return renderSettings(res, user, { mailError: 'That email address doesn\'t look valid.' });
+    return renderAccount(res, user, { mailError: 'That email address doesn\'t look valid.' });
   }
   const existing = getUserByEmail(email);
   if (existing && existing.id !== user.id) {
-    return renderSettings(res, user, { mailError: 'That email is already registered to another account.' });
+    return renderAccount(res, user, { mailError: 'That email is already registered to another account.' });
   }
   // Remove any previously stored address + verification, then set the new one.
   db.clearUserEmail(user.id);
@@ -156,7 +192,7 @@ router.post('/email', (req, res) => {
   db.deleteEmailVerification(user.id);
   // Answer straight away; delivery happens in the background (it can retry for
   // minutes, and the browser must not sit on a spinner for that long).
-  renderSettings(res, db.getUserById(user.id), {
+  renderAccount(res, db.getUserById(user.id), {
     mailNotice: 'We are sending the verification email now — if it does not arrive in a few minutes, check your spam folder. An admin can see the delivery result at /admin/mail.',
   });
   sendVerificationInBackground(user.id, email, req);
@@ -167,15 +203,15 @@ router.post('/email/resend', (req, res) => {
   const user = res.locals.currentUser;
   if (!user) return res.redirect('/login');
   if (!user.email) {
-    return renderSettings(res, user, { mailError: 'No email address on this account yet.' });
+    return renderAccount(res, user, { mailError: 'No email address on this account yet.' });
   }
   const cooldown = emailVerify.canResend(user.id);
   if (!cooldown.allowed) {
     const waitSec = Math.ceil(cooldown.waitMs / 1000);
-    return renderSettings(res, user, { mailError: `Please wait ${waitSec}s before requesting another email.` });
+    return renderAccount(res, user, { mailError: `Please wait ${waitSec}s before requesting another email.` });
   }
   // Same as above: reply immediately, deliver in the background.
-  renderSettings(res, db.getUserById(user.id), {
+  renderAccount(res, db.getUserById(user.id), {
     mailNotice: 'We are sending the verification email now — if it does not arrive in a few minutes, check your spam folder. An admin can see the delivery result at /admin/mail.',
   });
   sendVerificationInBackground(user.id, user.email, req);

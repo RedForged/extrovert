@@ -1,10 +1,15 @@
-<%- include('partials/header', { pageTitle: 'Devices & Pairing' }) %>
-  <div class="card" style="max-width:540px;margin:0 auto">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
-      <h2 style="margin:0">Devices &amp; Pairing</h2>
-      <a href="/settings" class="btn ghost sm"><%- include('partials/icon', { name: 'arrowLeft', size: 14 }) %> Settings</a>
-    </div>
+<%- include('partials/header', { pageTitle: 'Devices & Pairing', wrapClass: 'wrap-settings' }) %>
+<div class="admin-shell">
+  <%- include('partials/settings-sidebar', { active: 'devices' }) %>
+  <div class="admin-main">
+    <header class="admin-page-head">
+      <div>
+        <h1>Devices &amp; pairing</h1>
+        <p>Pair a new device and manage the keys used for encrypted messaging.</p>
+      </div>
+    </header>
 
+    <div class="card admin-panel" style="max-width:760px">
     <div style="margin-bottom:24px">
       <h4>Pair a new device</h4>
       <p style="font-size:0.85rem;color:var(--text-muted);margin:4px 0 14px">
@@ -60,6 +65,8 @@
       <p class="muted" style="font-size:0.85rem;margin-bottom:16px">No registered devices yet.</p>
     <% } %>
   </div>
+  </div>
+</div>
 
   <meta name="csrf-token" content="<%= csrfToken %>">
   <script src="/static/pairing.js" defer></script>

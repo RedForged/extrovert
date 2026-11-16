@@ -1,0 +1,26 @@
+<%- include('partials/header', { wrapClass: 'wrap-settings' }) %>
+<div class="admin-shell">
+  <%- include('partials/settings-sidebar', { active: 'notifications' }) %>
+  <div class="admin-main">
+    <header class="admin-page-head">
+      <div>
+        <h1>Notifications</h1>
+        <p>Control how this device tells you about incoming calls.</p>
+      </div>
+    </header>
+
+    <section class="card admin-panel" style="max-width:720px">
+      <div class="admin-panel-head">
+        <h2>Call notifications</h2>
+      </div>
+      <p class="admin-panel-note" style="margin-top:0">
+        Wake this device with a ringing notification when someone calls you, even if you've closed the app.
+        Works on desktop and Android Chrome; iOS requires adding Extrovert to your home screen.
+      </p>
+      <button id="push-toggle" class="btn ghost" style="margin:14px 0 8px" disabled>Loading…</button>
+      <div id="push-status" class="admin-panel-note" style="margin:0"></div>
+    </section>
+  </div>
+</div>
+<script src="/static/settings.js?v=1" defer></script>
+<%- include('partials/footer') %>

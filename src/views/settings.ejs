@@ -1,107 +1,204 @@
-<%- include('partials/header') %>
-  <div class="card" style="max-width:420px;margin:0 auto">
-    <h2>Settings</h2>
-    <% if (locals.mailError) { %><div class="flash err"><span class="flash-ico"><%- include('partials/icon', { name: 'alert', size: 18 }) %></span><span><%= mailError %></span></div><% } %>
-    <% if (locals.mailSent) { %><div class="flash ok"><span class="flash-ico"><%- include('partials/icon', { name: 'check', size: 18 }) %></span><span>Verification email sent — check your inbox (and spam folder).</span></div><% } %>
-    <% if (locals.mailNotice) { %><div class="flash"><span class="flash-ico"><%- include('partials/icon', { name: 'alert', size: 18 }) %></span><span><%= mailNotice %></span></div><% } %>
-    <form method="post">
-      <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-      <label for="settings-theme">Theme</label>
-      <select name="theme" id="settings-theme">
-        <option value="dark" <%= theme === 'dark' ? 'selected' : '' %>>Dark · Ink</option>
-        <option value="light" <%= theme === 'light' ? 'selected' : '' %>>Light · Lavender</option>
-        <option value="october" <%= theme === 'october' ? 'selected' : '' %>>October · Ember</option>
-      </select>
-      <label style="display:flex;align-items:center;gap:8px;margin-top:14px;cursor:pointer">
-        <input type="checkbox" name="developer_mode" value="1" <%= developerMode ? 'checked' : '' %>>
-        Developer settings — show security &amp; developer links in the navigation
-      </label>
-      <button class="btn full" style="margin-top:18px">Save</button>
-    </form>
-    <% if (locals.emailStatus && emailStatus.policy !== 'off') { %>
-      <hr>
-      <h4>Email verification</h4>
-      <% if (emailStatus.email) { %>
-        <p style="font-size:0.85rem;margin:-2px 0 8px">
-          <span class="muted">On file:</span> <code><%= emailStatus.email %></code>
-          <% if (emailStatus.verified) { %>
-            <span class="badge" style="color:var(--ok,#3c9);font-weight:600"><span class="ico" style="display:inline-flex;vertical-align:-2px;margin-right:3px"><%- include('partials/icon', { name: 'check', size: 11 }) %></span>verified</span>
-          <% } else { %>
-            <span style="color:var(--danger);font-weight:600">not yet verified</span>
-          <% } %>
-        </p>
-        <% if (!emailStatus.verified) { %>
-          <form method="post" action="/settings/email/resend" style="margin-bottom:8px">
-            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-            <button class="btn ghost full" type="submit">Re-send verification email</button>
-          </form>
-        <% } %>
-      <% } else { %>
-        <p class="muted" style="font-size:0.85rem;margin:-2px 0 8px">No email on file yet. Add one to make your account more secure and to be able to recover it.</p>
-      <% } %>
-      <form method="post" action="/settings/email">
-        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-        <label for="set-email">Email<% if (emailStatus.email) { %> <span class="muted">(change)</span><% } %></label>
-        <input type="email" id="set-email" name="email" placeholder="you@example.com">
-        <label for="set-email-password">Current password <span class="muted">(required)</span></label>
-        <input type="password" id="set-email-password" name="password" autocomplete="current-password" required>
-        <button class="btn full" style="margin-top:10px"><% if (emailStatus.email) { %>Update email &amp; re-verify<% } else { %>Add email &amp; verify<% } %></button>
-      </form>
-      <p class="muted" style="font-size:0.75rem;margin-top:8px">We'll email a confirmation link to that address. It's used only to verify the account.</p>
-    <% } %>
-    <hr>
-    <h4>Call notifications</h4>
-    <p style="font-size:0.85rem;color:var(--text-muted);margin:-4px 0 8px">Wake this device with a ringing notification when someone calls you, even if you've closed the app. Works on desktop and Android Chrome; iOS requires adding Extrovert to your home screen.</p>
-    <button id="push-toggle" class="btn ghost full" style="margin-bottom:8px" disabled>Loading…</button>
-    <div id="push-status" style="font-size:0.8rem;color:var(--text-muted);margin-bottom:16px"></div>
-    <script src="/static/settings.js" defer></script>
-    <hr>
-    <h4>Active devices</h4>
-    <p style="font-size:0.85rem;color:var(--text-muted);margin:-4px 0 10px">Devices registered for end-to-end encrypted messaging.</p>
-    <% if (devices && devices.length) { %>
-      <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px">
-        <% devices.forEach(function(dev) { %>
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;font-size:0.85rem">
-            <div>
-              <div style="font-weight:600;color:var(--text-normal)"><%= dev.device_name || 'Device' %></div>
-              <div style="font-size:0.75rem;color:var(--text-muted);font-family:monospace"><%= dev.device_id.slice(0, 16) %>…</div>
-            </div>
-            <form method="post" action="/settings/devices/<%= encodeURIComponent(dev.device_id) %>/delete" style="margin:0">
-              <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-              <button class="btn ghost danger" style="padding:4px 8px;font-size:0.75rem" onclick="return confirm('Revoke this device? It will no longer receive new messages.')">Revoke</button>
-            </form>
-          </div>
-        <% }); %>
+<%
+  const emailValue = emailStatus.policy === 'off' ? 'Off' : emailStatus.verified ? 'Verified' : emailStatus.email ? 'Unverified' : 'Not set';
+  const emailSub = emailStatus.policy === 'off' ? 'Verification disabled' : emailStatus.email || 'Add an address';
+  const twofaValue = !totpKeyConfigured ? 'N/A' : totpEnabled ? 'On' : 'Off';
+  const twofaSub = !totpKeyConfigured ? 'Not configured on this server' : totpEnabled ? unusedRecoveryCodes + ' recovery codes left' : 'Authenticator app';
+  const storageValue = fmt(usage.unlimited ? usage.used : usage.localUsed);
+  const storageSub = usage.unlimited ? 'Stored in your Nextcloud' : 'of ' + fmt(usage.quota);
+  const connectionLabel = !nextcloud ? 'Not connected' : nextcloud.enabled ? 'Connected' : 'Paused';
+%>
+<%- include('partials/header', { wrapClass: 'wrap-settings' }) %>
+<div class="admin-shell">
+  <%- include('partials/settings-sidebar', { active: 'overview' }) %>
+  <div class="admin-main">
+    <header class="admin-page-head">
+      <div>
+        <h1>Settings</h1>
+        <p>Your account, security and connected services.</p>
       </div>
-    <% } else { %>
-      <p class="muted" style="font-size:0.8rem;margin-bottom:14px">No active devices registered yet.</p>
-    <% } %>
-    <a class="btn ghost full" href="/settings/devices" style="margin-bottom:12px"><%- include('partials/icon', { name: 'phone', size: 15 }) %> Pair a new device &amp; manage keys</a>
-    <hr>
-    <h4>Storage</h4>
-    <p style="font-size:0.85rem;color:var(--text-muted);margin:-4px 0 10px">Everything you upload — chat attachments, post media, stickers and avatars — is kept in your Drive.</p>
-    <% if (!usage.unlimited) { %>
-      <div class="usage-bar" role="progressbar" aria-valuenow="<%= usedPercent %>" aria-valuemin="0" aria-valuemax="100"><span style="width:<%= usedPercent %>%"></span></div>
-      <p class="muted" style="font-size:0.8rem;margin:8px 0 10px">
-        <%= fmt(usage.localUsed) %> of <%= fmt(usage.quota) %> used<%= usage.localUsed > usage.quota ? ' — over quota, delete something to upload again' : '' %>
-      </p>
-    <% } else { %>
-      <p class="muted" style="font-size:0.8rem;margin:8px 0 10px">
-        <%= fmt(usage.used) %> stored — files go to your own Nextcloud, so there is no size limit.
-      </p>
-    <% } %>
-    <a class="btn ghost full" href="/drive" style="margin-bottom:8px"><%- include('partials/icon', { name: 'image', size: 15 }) %> Open your Drive</a>
-    <a class="btn ghost full" href="/settings/drive" style="margin-bottom:12px"><%- include('partials/icon', { name: 'cloud', size: 15 }) %> <%= usage.unlimited ? 'Nextcloud storage' : 'Connect a Nextcloud' %></a>
-    <hr>
-    <a class="btn ghost full" href="/settings/security" style="margin-bottom:8px"><%- include('partials/icon', { name: 'lock', size: 15 }) %> Security — 2FA &amp; passkeys</a>
-    <a class="btn ghost full" href="/settings/bots" style="margin-bottom:8px"><%- include('partials/icon', { name: 'bot', size: 15 }) %> Bots — create &amp; manage your bots</a>
-    <a class="btn ghost full" href="/settings/developers" style="margin-bottom:8px"><%- include('partials/icon', { name: 'key', size: 15 }) %> Developer applications</a>
-    <a class="btn ghost full" href="/docs" style="margin-bottom:8px"><%- include('partials/icon', { name: 'doc', size: 15 }) %> Documentation</a>
-    <a class="btn ghost full" href="/docs/terms" style="margin-bottom:8px"><%- include('partials/icon', { name: 'shield', size: 15 }) %> Terms of Service &amp; rules</a>
-    <a class="btn ghost full" href="/developers/docs" style="margin-bottom:8px"><%- include('partials/icon', { name: 'code', size: 15 }) %> API reference (Swagger UI)</a>
-    <a class="btn ghost danger full" href="/settings/delete"><%- include('partials/icon', { name: 'trash', size: 15 }) %> Delete account</a>
-    <div class="muted" style="text-align:center;font-size:0.75rem;margin-top:16px;padding-top:12px;border-top:1px solid var(--border)">
-      Extrovert &mdash; &ldquo;Embrace&rdquo; v<%= version %>
+      <a class="btn ghost small" href="/u/<%= encodeURIComponent(currentUser.username) %>?edit=1"><%- include('partials/icon', { name: 'edit', size: 14 }) %> Edit profile</a>
+    </header>
+
+    <section class="admin-stats" aria-label="Account summary">
+      <div class="admin-stat">
+        <span class="admin-stat-icon"><%- include('partials/icon', { name: 'at', size: 18 }) %></span>
+        <div>
+          <div class="admin-stat-value settings-stat-text"><%= emailValue %></div>
+          <div class="admin-stat-label">Email</div>
+          <div class="admin-stat-sub"><%= emailSub %></div>
+        </div>
+      </div>
+      <div class="admin-stat">
+        <span class="admin-stat-icon"><%- include('partials/icon', { name: 'lock', size: 18 }) %></span>
+        <div>
+          <div class="admin-stat-value settings-stat-text"><%= twofaValue %></div>
+          <div class="admin-stat-label">Two-factor</div>
+          <div class="admin-stat-sub"><%= twofaSub %></div>
+        </div>
+      </div>
+      <div class="admin-stat">
+        <span class="admin-stat-icon"><%- include('partials/icon', { name: 'key', size: 18 }) %></span>
+        <div>
+          <div class="admin-stat-value"><%= passkeys.length %></div>
+          <div class="admin-stat-label">Passkeys</div>
+          <div class="admin-stat-sub"><%= passkeys.length ? 'Passwordless sign-in' : 'Add one for faster sign-in' %></div>
+        </div>
+      </div>
+      <div class="admin-stat">
+        <span class="admin-stat-icon"><%- include('partials/icon', { name: 'cloud', size: 18 }) %></span>
+        <div>
+          <div class="admin-stat-value settings-stat-text"><%= storageValue %></div>
+          <div class="admin-stat-label">Storage</div>
+          <div class="admin-stat-sub"><%= storageSub %></div>
+        </div>
+      </div>
+    </section>
+
+    <div class="admin-grid">
+      <div class="admin-stack">
+        <section class="card admin-panel">
+          <div class="admin-panel-head">
+            <h2>Account</h2>
+            <a class="admin-panel-link" href="/settings/account">Manage</a>
+          </div>
+          <div class="admin-list">
+            <div class="admin-list-row">
+              <span class="admin-avatar settings-avatar">
+                <% if (currentUser.avatar) { %><img src="<%= currentUser.avatar %>" alt=""><% } else { %><%= String(currentUser.display_name || currentUser.username || '?').slice(0, 1).toUpperCase() %><% } %>
+              </span>
+              <div class="admin-list-main">
+                <strong><%= currentUser.display_name || currentUser.username %></strong>
+                <small>@<%= currentUser.username %> · joined <%= locals.relTime(currentUser.created_at) %></small>
+              </div>
+            </div>
+            <div class="admin-list-row">
+              <span class="admin-list-icon"><%- include('partials/icon', { name: 'at', size: 14 }) %></span>
+              <div class="admin-list-main">
+                <strong><%= emailValue %></strong>
+                <small><%= emailStatus.email || 'No email address on file' %></small>
+              </div>
+              <a class="admin-panel-link" href="/settings/account">Manage</a>
+            </div>
+            <div class="admin-list-row">
+              <span class="admin-list-icon"><%- include('partials/icon', { name: 'key', size: 14 }) %></span>
+              <div class="admin-list-main">
+                <strong><%= devices.length %> active device<%= devices.length === 1 ? '' : 's' %></strong>
+                <small>Devices registered for encrypted messaging</small>
+              </div>
+              <a class="admin-panel-link" href="/settings/devices">Manage</a>
+            </div>
+          </div>
+        </section>
+
+        <section class="card admin-panel">
+          <div class="admin-panel-head">
+            <h2>Security checkup</h2>
+            <a class="admin-panel-link" href="/settings/security">Open security</a>
+          </div>
+          <div class="admin-attention">
+            <% if (emailStatus.policy === 'off') { %>
+              <div class="admin-attention-item info"><span class="admin-attention-icon"><%- include('partials/icon', { name: 'at', size: 16 }) %></span><span>Email verification is disabled on this server.</span></div>
+            <% } else if (emailStatus.verified) { %>
+              <div class="admin-attention-item ok"><span class="admin-attention-icon"><%- include('partials/icon', { name: 'check', size: 16 }) %></span><span>Email address verified.</span></div>
+            <% } else { %>
+              <a class="admin-attention-item" href="/settings/account"><span class="admin-attention-icon"><%- include('partials/icon', { name: 'alert', size: 16 }) %></span><span><%= emailStatus.email ? 'Verify your email address' : 'Add and verify an email address' %></span><span class="admin-attention-count">Action</span></a>
+            <% } %>
+
+            <% if (!totpKeyConfigured) { %>
+              <div class="admin-attention-item info"><span class="admin-attention-icon"><%- include('partials/icon', { name: 'lock', size: 16 }) %></span><span>Two-factor authentication is not configured on this server.</span></div>
+            <% } else if (totpEnabled) { %>
+              <div class="admin-attention-item ok"><span class="admin-attention-icon"><%- include('partials/icon', { name: 'check', size: 16 }) %></span><span>Two-factor authentication is on · <%= unusedRecoveryCodes %> recovery codes left.</span></div>
+            <% } else { %>
+              <a class="admin-attention-item" href="/settings/security"><span class="admin-attention-icon"><%- include('partials/icon', { name: 'alert', size: 16 }) %></span><span>Turn on two-factor authentication</span><span class="admin-attention-count">Action</span></a>
+            <% } %>
+
+            <% if (passkeys.length) { %>
+              <div class="admin-attention-item ok"><span class="admin-attention-icon"><%- include('partials/icon', { name: 'check', size: 16 }) %></span><span><%= passkeys.length %> passkey<%= passkeys.length === 1 ? '' : 's' %> registered.</span></div>
+            <% } else { %>
+              <a class="admin-attention-item" href="/settings/security"><span class="admin-attention-icon"><%- include('partials/icon', { name: 'alert', size: 16 }) %></span><span>Add a passkey for passwordless sign-in</span><span class="admin-attention-count">Action</span></a>
+            <% } %>
+          </div>
+        </section>
+      </div>
+
+      <div class="admin-stack">
+        <section class="card admin-panel">
+          <div class="admin-panel-head">
+            <h2>Storage</h2>
+            <a class="admin-panel-link" href="/settings/drive">Manage</a>
+          </div>
+          <div class="admin-storage-total">
+            <strong><%= storageValue %></strong>
+            <span class="muted"><%= usage.unlimited ? 'stored in your Nextcloud' : 'of ' + fmt(usage.quota) + ' on this server' %></span>
+          </div>
+          <% if (!usage.unlimited) { %>
+            <div class="usage-bar" role="progressbar" aria-valuenow="<%= usedPercent %>" aria-valuemin="0" aria-valuemax="100">
+              <span style="width:<%= usedPercent %>%"></span>
+            </div>
+            <p class="admin-panel-note"><%= usedPercent %>% of your Drive quota used.</p>
+          <% } else { %>
+            <p class="admin-panel-note">New uploads go to your Nextcloud, so the local Drive quota does not apply.</p>
+          <% } %>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+            <a class="btn ghost small" href="/drive"><%- include('partials/icon', { name: 'image', size: 14 }) %> Open Drive</a>
+            <a class="btn ghost small" href="/settings/drive"><%- include('partials/icon', { name: 'cloud', size: 14 }) %> Storage settings</a>
+          </div>
+          <p class="admin-panel-note" style="margin-top:12px">Nextcloud: <strong><%= connectionLabel %></strong><%= nextcloud ? ' · ' + nextcloud.baseUrl : '' %></p>
+        </section>
+
+        <section class="card admin-panel">
+          <div class="admin-panel-head">
+            <h2>Connected services</h2>
+          </div>
+          <div class="admin-list">
+            <div class="admin-list-row">
+              <span class="admin-list-icon"><%- include('partials/icon', { name: 'bot', size: 14 }) %></span>
+              <div class="admin-list-main">
+                <strong>Bots</strong>
+                <small><%= botsCount %> bot<%= botsCount === 1 ? '' : 's' %> created</small>
+              </div>
+              <a class="admin-panel-link" href="/settings/bots">Manage</a>
+            </div>
+            <div class="admin-list-row">
+              <span class="admin-list-icon"><%- include('partials/icon', { name: 'code', size: 14 }) %></span>
+              <div class="admin-list-main">
+                <strong>Developer applications</strong>
+                <small><%= appsCount %> registered · <%= authorizedCount %> authorized</small>
+              </div>
+              <a class="admin-panel-link" href="/settings/developers">Manage</a>
+            </div>
+          </div>
+        </section>
+
+        <section class="card admin-panel">
+          <div class="admin-panel-head">
+            <h2>Active devices</h2>
+            <a class="admin-panel-link" href="/settings/devices">Manage</a>
+          </div>
+          <% if (devices.length) { %>
+            <div class="admin-list">
+              <% devices.slice(0, 4).forEach(function(dev) { %>
+                <div class="admin-list-row">
+                  <span class="admin-list-icon"><%- include('partials/icon', { name: 'key', size: 14 }) %></span>
+                  <div class="admin-list-main">
+                    <strong><%= dev.device_name || 'Device' %></strong>
+                    <small><% if (dev.last_seen_at) { %>last active <%= locals.relTime(dev.last_seen_at) %><% } else { %><%= String(dev.device_id || '').slice(0, 16) %>…<% } %></small>
+                  </div>
+                </div>
+              <% }); %>
+            </div>
+            <% if (devices.length > 4) { %><p class="admin-panel-note"><%= devices.length - 4 %> more device<%= devices.length - 4 === 1 ? '' : 's' %>.</p><% } %>
+          <% } else { %>
+            <p class="admin-empty">No active devices yet.</p>
+          <% } %>
+          <div style="margin-top:12px">
+            <a class="btn ghost small" href="/settings/devices"><%- include('partials/icon', { name: 'plus', size: 14 }) %> Pair a device</a>
+          </div>
+        </section>
+
+        <p class="muted" style="font-size:var(--fs-xs);margin:2px 0 0">Extrovert — “Embrace” v<%= version %></p>
+      </div>
     </div>
   </div>
+</div>
 <%- include('partials/footer') %>

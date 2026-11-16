@@ -1,0 +1,102 @@
+<%- include('partials/header', { wrapClass: 'wrap-settings' }) %>
+<div class="admin-shell">
+  <%- include('partials/settings-sidebar', { active: 'account' }) %>
+  <div class="admin-main">
+    <header class="admin-page-head">
+      <div>
+        <h1>Account &amp; email</h1>
+        <p>Your profile, email address and registered devices.</p>
+      </div>
+      <a class="btn ghost small" href="/u/<%= encodeURIComponent(user.username) %>?edit=1"><%- include('partials/icon', { name: 'edit', size: 14 }) %> Edit profile</a>
+    </header>
+
+    <section class="card admin-panel" style="max-width:720px">
+      <div class="admin-panel-head">
+        <h2>Profile</h2>
+        <a class="admin-panel-link" href="/u/<%= encodeURIComponent(user.username) %>">View profile</a>
+      </div>
+      <div class="admin-list">
+        <div class="admin-list-row">
+          <span class="admin-avatar settings-avatar">
+            <% if (user.avatar) { %><img src="<%= user.avatar %>" alt=""><% } else { %><%= String(user.display_name || user.username || '?').slice(0, 1).toUpperCase() %><% } %>
+          </span>
+          <div class="admin-list-main">
+            <strong><%= user.display_name || user.username %></strong>
+            <small>@<%= user.username %> · joined <%= locals.relTime(user.created_at) %></small>
+          </div>
+          <a class="btn ghost small" href="/u/<%= encodeURIComponent(user.username) %>?edit=1">Edit</a>
+        </div>
+      </div>
+    </section>
+
+    <% if (emailStatus.policy !== 'off') { %>
+      <section class="card admin-panel" style="max-width:720px">
+        <div class="admin-panel-head">
+          <h2>Email verification</h2>
+        </div>
+        <% if (locals.mailError) { %><div class="flash err"><span class="flash-ico"><%- include('partials/icon', { name: 'alert', size: 18 }) %></span><span><%= mailError %></span></div><% } %>
+        <% if (locals.mailSent) { %><div class="flash ok"><span class="flash-ico"><%- include('partials/icon', { name: 'check', size: 18 }) %></span><span>Verification email sent — check your inbox (and spam folder).</span></div><% } %>
+        <% if (locals.mailNotice) { %><div class="flash"><span class="flash-ico"><%- include('partials/icon', { name: 'alert', size: 18 }) %></span><span><%= mailNotice %></span></div><% } %>
+
+        <% if (emailStatus.email) { %>
+          <p style="font-size:0.9rem;margin:0 0 10px">
+            <span class="muted">On file:</span> <code><%= emailStatus.email %></code>
+            <% if (emailStatus.verified) { %>
+              <span class="badge" style="color:var(--ok,#3c9);font-weight:600"><span class="ico" style="display:inline-flex;vertical-align:-2px;margin-right:3px"><%- include('partials/icon', { name: 'check', size: 11 }) %></span>verified</span>
+            <% } else { %>
+              <span style="color:var(--danger);font-weight:600">not yet verified</span>
+            <% } %>
+          </p>
+          <% if (!emailStatus.verified) { %>
+            <form method="post" action="/settings/email/resend" style="margin-bottom:16px">
+              <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+              <button class="btn ghost" type="submit">Re-send verification email</button>
+            </form>
+          <% } %>
+        <% } else { %>
+          <p class="muted" style="font-size:0.9rem;margin:0 0 12px">No email on file yet. Add one to make your account more secure and to be able to recover it.</p>
+        <% } %>
+
+        <form method="post" action="/settings/email">
+          <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+          <label for="set-email">Email<% if (emailStatus.email) { %> <span class="muted">(change)</span><% } %></label>
+          <input type="email" id="set-email" name="email" placeholder="you@example.com">
+          <label for="set-email-password">Current password <span class="muted">(required)</span></label>
+          <input type="password" id="set-email-password" name="password" autocomplete="current-password" required>
+          <button class="btn" style="margin-top:12px"><% if (emailStatus.email) { %>Update email &amp; re-verify<% } else { %>Add email &amp; verify<% } %></button>
+        </form>
+        <p class="muted" style="font-size:var(--fs-xs);margin-top:10px">We'll email a confirmation link to that address. It's used only to verify the account.</p>
+      </section>
+    <% } else { %>
+      <section class="card admin-panel" style="max-width:720px">
+        <div class="admin-panel-head"><h2>Email verification</h2></div>
+        <p class="admin-empty">Email verification is disabled on this server.</p>
+      </section>
+    <% } %>
+
+    <section class="card admin-panel" style="max-width:720px">
+      <div class="admin-panel-head">
+        <h2>Active devices</h2>
+        <a class="admin-panel-link" href="/settings/devices">Manage devices</a>
+      </div>
+      <p class="admin-panel-note" style="margin-top:0"><%= devices.length %> device<%= devices.length === 1 ? '' : 's' %> registered for end-to-end encrypted messaging.</p>
+      <% if (devices.length) { %>
+        <div class="admin-list" style="margin-top:10px">
+          <% devices.slice(0, 5).forEach(function(dev) { %>
+            <div class="admin-list-row">
+              <span class="admin-list-icon"><%- include('partials/icon', { name: 'key', size: 14 }) %></span>
+              <div class="admin-list-main">
+                <strong><%= dev.device_name || 'Device' %></strong>
+                <small><% if (dev.last_seen_at) { %>last active <%= locals.relTime(dev.last_seen_at) %><% } else { %><%= String(dev.device_id || '').slice(0, 16) %>…<% } %></small>
+              </div>
+            </div>
+          <% }); %>
+        </div>
+      <% } %>
+      <div style="margin-top:12px">
+        <a class="btn ghost small" href="/settings/devices"><%- include('partials/icon', { name: 'plus', size: 14 }) %> Pair a new device</a>
+      </div>
+    </section>
+  </div>
+</div>
+<%- include('partials/footer') %>
