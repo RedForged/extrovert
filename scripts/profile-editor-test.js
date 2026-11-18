@@ -30,6 +30,8 @@ async function main() {
   const base = 'http://localhost:' + process.env.PORT;
   const aliceId = db.createUser({ username: 'alice', passwordHash: bcrypt.hashSync('pw1', 10), displayName: 'Alice' });
   const bobId = db.createUser({ username: 'bob', passwordHash: bcrypt.hashSync('pw2', 10), displayName: 'Bob' });
+  db.setUserTheme(aliceId, 'october');
+  db.setUserTheme(bobId, 'light');
   db.follow(aliceId, bobId); db.follow(bobId, aliceId);
   db.createPost({ userId: aliceId, type: 'text', body: 'hello from alice', createdAt: Date.now() });
   // Legacy (template_version 0) profile content for bob.
@@ -72,6 +74,7 @@ async function main() {
   ok(own.text.includes('/static/profile-editor.js'), 'editor script loaded for the owner');
   ok(own.text.includes('id="ev-edit-toggle"'), 'Edit styles toggle rendered for the owner');
   ok(own.text.includes('id="ev-fields"'), 'left-panel profile fields rendered for the owner');
+  ok(own.text.includes('id="ev-theme-pinned"') && own.text.includes('id="ev-profile-theme"'), 'owner can pin and choose a fixed profile theme');
   ok(own.text.includes('id="ev-html-box"'), 'collapsible HTML box rendered for the owner');
   ok(own.text.includes('id="ev-reset"'), 'reset button rendered for the owner');
 
@@ -83,6 +86,28 @@ async function main() {
   ok(!other.text.includes('id="ev-fields"'), 'no profile fields block for non-owner');
   ok(other.text.includes('data-ev-slot="follow"') && /action="\/unfollow\/alice"/.test(other.text),
     'viewer-relative follow slot filled (Following form)');
+
+  console.log('\nProfile theme pinning:');
+  ok(/<html[^>]*data-theme="october"/.test(other.text), 'pinned profile uses the owner theme');
+  const unpin = await alice.post('/u/alice/edit/profile', {
+    headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-Token': alice.csrf },
+    body: JSON.stringify({ displayName: 'Alice', bio: '', pronoun: [], themePinned: '0', profileTheme: 'october' }),
+  });
+  ok(unpin.status === 200, 'owner can unpin the profile theme');
+  const bobUnpinned = await bob.get('/u/alice');
+  ok(/<html[^>]*data-theme="light"/.test(bobUnpinned.text), 'unpinned profile follows the visitor theme');
+  const repin = await alice.post('/u/alice/edit/profile', {
+    headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-Token': alice.csrf },
+    body: JSON.stringify({ displayName: 'Alice', bio: '', pronoun: [], themePinned: '1', profileTheme: 'october' }),
+  });
+  ok(repin.status === 200, 'owner can pin the profile theme again');
+  const bobPinned = await bob.get('/u/alice');
+  ok(/<html[^>]*data-theme="october"/.test(bobPinned.text), 'profile is pinned again');
+  db.setUserTheme(aliceId, 'dark');
+  const bobAfterOwnerTheme = await bob.get('/u/alice');
+  ok(/<html[^>]*data-theme="october"/.test(bobAfterOwnerTheme.text),
+    'pinned profile keeps its stored theme when the owner changes their site theme');
+  db.setUserTheme(aliceId, 'october');
 
   console.log('\nLegacy (v0) profile render (bob):');
   const legacy = await bob.get('/u/bob');

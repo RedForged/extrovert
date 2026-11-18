@@ -7,8 +7,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const {
-  getUserByUsername, getCustomization, setCustomization, setCustomizationEffect, updateUserProfile,
-  getDisplayPost, getUserById, postsByUser, hasLiked, hasShared,
+  getUserByUsername, getCustomization, setCustomization, setCustomizationEffect, setCustomizationThemePinned, setCustomizationProfileTheme, updateUserProfile,
+  getUserTheme, getDisplayPost, getUserById, postsByUser, hasLiked, hasShared,
   commentsForPost, isFollowing, countFollowers, countFollowing,
   getFollowers, getFollowing, areMutualFollowers,
   setReferralCode, getReferralCode, getReferralCount,
@@ -268,6 +268,14 @@ router.get('/:username', async (req, res, next) => {
     const custom = getCustomization(profileUser.id);
     const template = buildTemplate(custom);
     const font = fontInfoFor(profileUser);
+    // The profile page is the owner's space: by default it uses a fixed profile
+    // theme, so neither the visitor's nor the owner's site-theme changes alter
+    // it. The owner can opt out and follow the visitor's theme instead.
+    const pinTheme = custom.pin_theme !== 0;
+    const ownerTheme = getUserTheme(profileUser.id);
+    const profileTheme = ['dark', 'light', 'october'].includes(custom.profile_theme)
+      ? custom.profile_theme
+      : ownerTheme;
     const fragments = await buildProfileFragments(res, {
       viewer, profileUser, isOwn, canSeePosts, mutual, following,
       pronouns: parsePronouns(profileUser.pronouns),
@@ -283,7 +291,7 @@ router.get('/:username', async (req, res, next) => {
         + "/font?v=" + font.id + "'); font-display: swap; }"
       : '';
 
-    res.render('profile', {
+    const locals = {
       pageHtml,
       css: sanitizeCSS(rawCss),
       fontCss,
@@ -297,8 +305,12 @@ router.get('/:username', async (req, res, next) => {
         pronounLengthMax: PRONOUN_LENGTH_MAX,
         customFont: font,
         templateHtml: template,
+        themePinned: pinTheme,
+        profileTheme,
       } : null,
-    });
+    };
+    if (pinTheme) locals.theme = profileTheme;
+    res.render('profile', locals);
   } catch (err) {
     next(err);
   }
@@ -337,10 +349,21 @@ router.post('/:username/edit/profile', (req, res) => {
     const rawEffect = String(req.body.effect || '').trim();
     effect = PROFILE_EFFECTS.includes(rawEffect) ? rawEffect : '';
   }
+  let themePinned;
+  if (req.body.themePinned !== undefined) {
+    themePinned = String(req.body.themePinned) === '1';
+  }
+  let profileTheme;
+  if (req.body.profileTheme !== undefined) {
+    const rawTheme = String(req.body.profileTheme || '').trim();
+    if (['dark', 'light', 'october'].includes(rawTheme)) profileTheme = rawTheme;
+  }
 
   updateUserProfile(viewer.id, { displayName, bio, pronouns });
   if (effect !== undefined) setCustomizationEffect(viewer.id, effect);
-  if (wantsJson) return res.json({ ok: true, displayName, bio });
+  if (themePinned !== undefined) setCustomizationThemePinned(viewer.id, themePinned);
+  if (profileTheme !== undefined) setCustomizationProfileTheme(viewer.id, profileTheme);
+  if (wantsJson) return res.json({ ok: true, displayName, bio, themePinned, profileTheme });
   res.redirect(profilePath(profileUser) + '?edit=1');
 });
 

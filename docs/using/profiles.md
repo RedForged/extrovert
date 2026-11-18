@@ -59,6 +59,10 @@ when you exit**, so a later refresh just shows the page.
 - **Left panel — Profile.** Avatar (upload / remove), display name, bio, pronouns, profile effect,
   custom font, and a collapsible **HTML** box for structure (add or move blocks, links, images). These
   auto-save too; avatar/font uploads reload the page.
+- **Colors stay yours.** *Keep my profile colors on every site theme* is on by default: your profile
+  page renders in the **profile theme** you choose below it for every visitor. Turning your site
+  theme or a visitor's theme to a different value does not change the profile. Turn the option off
+  to let each visitor's own theme apply.
 - **Right panel — Styles.** Hover the page: the editor outlines what you're about to change and names
   it ("Post text", "Bio", "Follower stats", …). Click to select it, or choose any part from the **Part**
   menu (Header, Posts, Comments, Page).
@@ -205,6 +209,12 @@ your whole page — to visitors too.
 ## Theme
 
 `/settings` offers **Light**, **Dark**, or **October** (default October; the `default` theme maps to October). The choice is per-account and applied via `public/theme.css`.
+
+Profile pages have their own **profile theme** — Dark, Light, or October — selected in the profile
+editor. It defaults to the theme that was active when the profile first got customized, is stored
+with the profile, and is used for every visitor. Changing your site theme or a visitor's theme does
+not change the profile's colors. The page owner can turn off *Keep my profile colors on every site
+theme* to let each visitor see the profile in their own site theme instead.
 
 ## Referrals
 

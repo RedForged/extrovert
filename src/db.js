@@ -88,7 +88,9 @@ function init() {
     CREATE TABLE IF NOT EXISTS profile_customization (
       user_id INTEGER PRIMARY KEY REFERENCES users(id),
       html    TEXT NOT NULL DEFAULT '',
-      css     TEXT NOT NULL DEFAULT ''
+      css     TEXT NOT NULL DEFAULT '',
+      pin_theme INTEGER NOT NULL DEFAULT 1,
+      profile_theme TEXT
     );
 
     CREATE TABLE IF NOT EXISTS notifications (
@@ -368,6 +370,21 @@ try { db.exec(`ALTER TABLE users ADD COLUMN bio TEXT NOT NULL DEFAULT ''`); } ca
 try { db.exec(`ALTER TABLE profile_customization ADD COLUMN effect TEXT NOT NULL DEFAULT ''`); } catch {}
 // 0 = legacy content-only HTML, 1 = full-page template with data-ev-slot placeholders.
 try { db.exec(`ALTER TABLE profile_customization ADD COLUMN template_version INTEGER NOT NULL DEFAULT 0`); } catch {}
+// 1 = profile page uses a fixed profile theme; 0 = follows the visitor's theme.
+try { db.exec(`ALTER TABLE profile_customization ADD COLUMN pin_theme INTEGER NOT NULL DEFAULT 1`); } catch {}
+try { db.exec(`ALTER TABLE profile_customization ADD COLUMN profile_theme TEXT`); } catch {}
+// Freeze existing profiles to the theme their owner was using when this
+// setting was introduced. New rows are filled when the profile editor saves.
+try {
+  db.prepare(`
+    UPDATE profile_customization SET profile_theme = (
+      SELECT CASE WHEN u.theme IN ('dark','light','october') THEN u.theme ELSE 'october' END
+      FROM users u WHERE u.id = profile_customization.user_id
+    ) WHERE profile_theme IS NULL
+  `).run();
+} catch (e) {
+  console.error('[profile] could not backfill profile_theme:', e);
+}
 try { db.exec(`ALTER TABLE users ADD COLUMN pronouns TEXT NOT NULL DEFAULT ''`); } catch {}
 try { db.exec(`ALTER TABLE users ADD COLUMN custom_font TEXT NOT NULL DEFAULT ''`); } catch {}
 try { db.exec(`ALTER TABLE users ADD COLUMN totp_last_step INTEGER`); } catch {}
@@ -1290,7 +1307,7 @@ function hasReposted(userId, originalId) {
 function getCustomization(userId) {
   return db.prepare(
     `SELECT * FROM profile_customization WHERE user_id = ?`
-  ).get(userId) || { user_id: userId, html: '', css: '', effect: '', template_version: 0 };
+  ).get(userId) || { user_id: userId, html: '', css: '', effect: '', template_version: 0, pin_theme: 1, profile_theme: null };
 }
 
 // `effect` / `templateVersion` left undefined are not touched. Passing them
@@ -1313,6 +1330,22 @@ function setCustomizationEffect(userId, effect) {
     `INSERT INTO profile_customization (user_id, effect) VALUES (?,?)
      ON CONFLICT(user_id) DO UPDATE SET effect = excluded.effect`
   ).run(userId, effect || '');
+}
+
+// Keep the profile page on a fixed palette (1) or let visitors' themes apply (0).
+function setCustomizationThemePinned(userId, pinned) {
+  db.prepare(
+    `INSERT INTO profile_customization (user_id, pin_theme) VALUES (?,?)
+     ON CONFLICT(user_id) DO UPDATE SET pin_theme = excluded.pin_theme`
+  ).run(userId, pinned ? 1 : 0);
+}
+
+// The fixed palette used while pin_theme is on (dark / light / october).
+function setCustomizationProfileTheme(userId, theme) {
+  db.prepare(
+    `INSERT INTO profile_customization (user_id, profile_theme) VALUES (?,?)
+     ON CONFLICT(user_id) DO UPDATE SET profile_theme = excluded.profile_theme`
+  ).run(userId, theme || null);
 }
 
 // ---------- notifications ----------
@@ -3969,7 +4002,7 @@ module.exports = {
   // shares
   sharePost, hasShared, hasReposted,
   // customization
-  getCustomization, setCustomization, setCustomizationEffect,
+  getCustomization, setCustomization, setCustomizationEffect, setCustomizationThemePinned, setCustomizationProfileTheme,
   // notifications
   createNotification, notifyMentions, getNotifications, countUnreadNotifications, markNotificationsRead,
   // bots (planned.md F5)

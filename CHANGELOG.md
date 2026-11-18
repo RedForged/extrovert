@@ -15,6 +15,10 @@ release: the codebase carries its version in `package.json`, and the sections
   unsuffixed bot handles are migrated on startup, with numeric infixes (`echo_1_bot`) on collisions.
 
 ### Fixes
+- **Profiles keep their colors across themes**: profile pages now use a stored **profile theme**
+  (Dark/Light/October, chosen in the profile editor) instead of the visitor's or owner's live site
+  theme. Changing a site theme no longer changes theme variables inside profile CSS. The page owner
+  can turn this off with *Keep my profile colors on every site theme* in the profile editor.
 - **Editing the HTML box no longer blanks the page**: changing the raw HTML used to replace the live
   document with the bare template, so the header, posts and every other live part vanished until a
   reload (and the style panel had nothing to select). The template swap now carries each slot's

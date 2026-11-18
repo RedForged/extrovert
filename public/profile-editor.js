@@ -232,11 +232,14 @@
   function collectProfile() {
     var q = function (sel) { var el = document.querySelector(sel); return el ? el.value : ''; };
     var pronouns = Array.prototype.slice.call(document.querySelectorAll('#pronounRows input')).map(function (i) { return i.value; });
+    var pinned = document.getElementById('ev-theme-pinned');
     return {
       displayName: q('#ev-displayName'),
       bio: q('#ev-bio'),
       effect: q('#ev-effect'),
       pronoun: pronouns,
+      themePinned: pinned && pinned.checked ? '1' : '0',
+      profileTheme: q('#ev-profile-theme'),
     };
   }
 
@@ -269,6 +272,10 @@
     // Delegated, so dynamically added pronoun rows are covered too.
     function onFieldChange(e) {
       if (e.target && e.target.id === 'ev-html-box') return; // handled below
+      if (e.target && e.target.id === 'ev-profile-theme') {
+        var pinned = document.getElementById('ev-theme-pinned');
+        if (pinned && pinned.checked) document.documentElement.setAttribute('data-theme', e.target.value);
+      }
       queueSave(state);
     }
     fields.addEventListener('input', onFieldChange);
