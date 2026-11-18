@@ -8,6 +8,14 @@ release: the codebase carries its version in `package.json`, and the sections
 ## [Unreleased]
 
 ### Fixes
+- **Editing the HTML box no longer blanks the page**: changing the raw HTML used to replace the live
+  document with the bare template, so the header, posts and every other live part vanished until a
+  reload (and the style panel had nothing to select). The template swap now carries each slot's
+  rendered content across to the matching slot, including duplicated and moved slots.
+- **A plain background colour now replaces a gradient**: the Background control reads and writes the
+  whole `background` instead of only the `background-image` / `background-color` longhands. It used
+  to look empty on the default banner (which paints its gradient with the `background` shorthand) and
+  setting a colour only added a longhand underneath the gradient, so the gradient kept showing.
 - **Profile CSS no longer gets corrupted by a pasted rule**: the per-part *Raw CSS* box expects
   declarations, but pasting a whole `.selector { … }` block left a nested block that the browser
   parsed as CSS nesting — after which further rules for that selector landed inside it and silently

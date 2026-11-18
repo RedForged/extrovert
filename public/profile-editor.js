@@ -278,7 +278,7 @@
     if (htmlBox) {
       htmlBox.addEventListener('change', function () {
         // Apply to the live DOM so styling and the HTML box stay one document.
-        state.root.innerHTML = htmlBox.value;
+        applyTemplate(state, htmlBox.value);
         select(state, null);
         queueSave(state);
       });
@@ -702,13 +702,17 @@
     return box;
   }
 
-  // Background needs to tell colour from image: gradients are invalid on
-  // background-color, so they must go to background-image (or the element ends
-  // up with no background at all).
+  // A background can be authored as the `background` shorthand (the default
+  // banner paints its gradient that way) or as longhands. Reading only the
+  // longhands made the control look empty, and writing one left the shorthand's
+  // image painting over the result — so read and write the whole background.
   function backgroundControl(state) {
     var box = document.createElement('div');
     var wrap = row('Background');
-    var current = ruleDecl(state, 'background-image') || ruleDecl(state, 'background-color') || '';
+    var current = ruleDecl(state, 'background')
+      || ruleDecl(state, 'background-image')
+      || ruleDecl(state, 'background-color')
+      || '';
     var text = document.createElement('input');
     text.type = 'text'; text.value = current; text.placeholder = 'none';
     var pick = document.createElement('input');
@@ -717,19 +721,12 @@
 
     function write(raw) {
       var v = String(raw || '').trim();
-      if (!v || v === 'none') {
-        clearVal(state, 'background-image');
-        clearVal(state, 'background-color');
-        return;
-      }
-      if (/gradient\(|url\(/i.test(v)) {
-        setVal(state, 'background-image', v);
-        // clean up a gradient that an earlier version wrote to background-color
-        if (/gradient\(|url\(/i.test(ruleDecl(state, 'background-color'))) clearVal(state, 'background-color');
-      } else {
-        setVal(state, 'background-color', v);
-        clearVal(state, 'background-image');
-      }
+      // One property for the whole background, on the element itself too, so an
+      // inline edit can override a stylesheet shorthand.
+      clearVal(state, 'background');
+      clearVal(state, 'background-image');
+      clearVal(state, 'background-color');
+      if (v && v !== 'none') setVal(state, 'background', v);
     }
     text.addEventListener('change', function () { write(text.value); });
     pick.addEventListener('input', function () { text.value = pick.value; write(pick.value); });
@@ -900,6 +897,38 @@
   }
 
   // ---------- serialization ----------
+
+  // The HTML box edits the *template*; the live page holds the server-rendered
+  // slot content (header, posts, stats, …). Replacing the document outright
+  // would throw that content away and leave the page blank until a reload, so
+  // carry each slot's live children over to the matching slot in the new markup.
+  function applyTemplate(state, source) {
+    state.hoverTarget = null;
+    var staging = document.createElement('div');
+    staging.innerHTML = source;
+
+    var live = {};
+    Array.prototype.forEach.call(state.root.querySelectorAll('[data-ev-slot]'), function (el) {
+      var name = el.getAttribute('data-ev-slot');
+      (live[name] = live[name] || []).push(Array.prototype.slice.call(el.childNodes));
+    });
+
+    var seen = {};
+    Array.prototype.forEach.call(staging.querySelectorAll('[data-ev-slot]'), function (el) {
+      var name = el.getAttribute('data-ev-slot');
+      var index = seen[name] || 0;
+      seen[name] = index + 1;
+      // Slots are server-owned: never keep markup typed inside one.
+      while (el.firstChild) el.removeChild(el.firstChild);
+      var nodes = live[name] && live[name][index];
+      // A duplicated slot gets a copy, matching what the server injects.
+      if (!nodes && live[name]) nodes = live[name][0].map(function (node) { return node.cloneNode(true); });
+      if (nodes) nodes.forEach(function (node) { el.appendChild(node); });
+    });
+
+    while (state.root.firstChild) state.root.removeChild(state.root.firstChild);
+    while (staging.firstChild) state.root.appendChild(staging.firstChild);
+  }
 
   function serialize(state) {
     var out = '';
