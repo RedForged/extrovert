@@ -198,6 +198,20 @@ async function main() {
     ok(resp.status === 200, 'multibyte answer over HTTP returns 200 (server still alive)');
   }
 
+  // 4d: the _bot suffix is reserved for bots.
+  {
+    const jar = makeJar();
+    const pre = await req('/register', jar);
+    const csrf = extractCsrf(await pre.text());
+    const { answer } = await solveCaptcha(jar);
+    const resp = await req('/register', jar, {
+      method: 'POST',
+      form: { username: 'human_bot', password: 'longenough123', _csrf: csrf, captcha: answer },
+    });
+    ok(resp.status === 200 && /reserved for bots/.test(await resp.text()), 'human registration rejects the reserved _bot suffix');
+    ok(!db.getUserByUsername('human_bot'), 'no human account created with a _bot name');
+  }
+
   // 4c: replayed answer (from a consumed challenge) against a fresh challenge.
   {
     const jar = makeJar();

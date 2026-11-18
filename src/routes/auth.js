@@ -180,6 +180,10 @@ router.post('/register', async (req, res) => {
     captcha.generate(req);
     return res.render('register', { error: 'Username must be 3-20 letters, numbers, or underscores.', ref, emailRequired, enteredEmail: email });
   }
+  if (db.isReservedBotUsername(username)) {
+    captcha.generate(req);
+    return res.render('register', { error: 'Usernames ending in _bot are reserved for bots.', ref, emailRequired, enteredEmail: email });
+  }
   // Policy: at least 12 characters; at most 72 BYTES (bcrypt truncates at 72
   // bytes, so longer input would silently collide with its own prefix — a
   // byte limit prevents that while keeping full Unicode/emoji support).

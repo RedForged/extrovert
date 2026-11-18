@@ -7,6 +7,13 @@ release: the codebase carries its version in `package.json`, and the sections
 
 ## [Unreleased]
 
+### Breaking changes
+- **Bot handles end in `_bot`**: bots use Telegram-style handles. Create a bot with the base name
+  `echo` and its handle is `@echo_bot`; the suffix is reserved for bots, so human usernames cannot
+  end in `_bot`. A human `alice` and a bot created as `alice` coexist as `@alice` and `@alice_bot`.
+  Bot profiles live at `/b/<username>`; old `/u/<bot>` links redirect to `/b`. Legacy `%` and
+  unsuffixed bot handles are migrated on startup, with numeric infixes (`echo_1_bot`) on collisions.
+
 ### Fixes
 - **Editing the HTML box no longer blanks the page**: changing the raw HTML used to replace the live
   document with the bare template, so the header, posts and every other live part vanished until a

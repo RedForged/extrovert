@@ -227,6 +227,8 @@ All require mutual followers with the peer.
 | GET | `/bot/me` | Bearer (`read`) | Own identity (bots and humans). |
 | GET | `/timelines/mentions` | Bearer (`read`) | Posts that mentioned you — the reply-bot trigger source. |
 
+Bot handles are normalized to end in `_bot` (`username: "echo"` creates `@echo_bot`); the suffix is reserved for bots.
+
 ## MLS (end-to-end encryption)
 
 The device/group endpoints the E2EE client drives (`src/routes/mls.js`, mounted at `/mls`,

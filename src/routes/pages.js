@@ -37,7 +37,7 @@ router.get('/', (req, res) => {
   const foaf = [...foafIds(user.id)];
   const suggestedIds = foaf.filter(id => !following.has(id)).slice(0, 12);
   const suggested = suggestedIds.length
-    ? db.prepare(`SELECT id, username, display_name, avatar, bio FROM users WHERE id IN (${suggestedIds.map(() => '?').join(',')})`)
+    ? db.prepare(`SELECT id, username, display_name, avatar, bio, is_bot FROM users WHERE id IN (${suggestedIds.map(() => '?').join(',')})`)
         .all(...suggestedIds)
     : [];
 
@@ -71,7 +71,7 @@ router.get('/discover', (req, res) => {
   const foaf = [...foafIds(user.id)];
   const suggestedIds = foaf.filter(id => !following.has(id)).slice(0, 12);
   const suggested = suggestedIds.length
-    ? db.prepare(`SELECT id, username, display_name, avatar, bio FROM users WHERE id IN (${suggestedIds.map(() => '?').join(',')})`)
+    ? db.prepare(`SELECT id, username, display_name, avatar, bio, is_bot FROM users WHERE id IN (${suggestedIds.map(() => '?').join(',')})`)
         .all(...suggestedIds)
     : [];
 

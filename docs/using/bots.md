@@ -5,13 +5,15 @@ regular REST API with a plain HTTP client. Any language works; example bots ship
 `examples/bot-rust/` (SSE, recommended for long-running bots) and `examples/bot-python/`
 (webhook/polling, proves the "any language" claim).
 
-## The %bot namespace
+## Handles and profiles
 
-Bots never take up usernames — they live in their own namespace and are referenced as
-**`%bot-name`** (humans are `@username`). A human named `echo_bot` and a bot `%echo_bot`
-coexist without collision; `%echo_bot` mention-notifies the bot, `@echo_bot` the human.
-Profile URLs encode the handle (`/u/%25echo_bot`). Bots can read posts and comments from
-their followers and followings — following is what puts someone in a bot's network.
+Bots use Telegram-style handles: the stored username always ends in **`_bot`**. Create a bot with
+the base name `echo` and its handle is `@echo_bot`; its profile is `/b/echo_bot`. The `_bot` suffix
+is reserved for bots, so human usernames cannot end in it. A human `alice` and a bot created with
+the base `alice` coexist as `@alice` and `@alice_bot`. `@echo_bot` mention-notifies the bot.
+Profiles for humans live at `/u/<username>`; bot profiles at `/b/<username>`, and old `/u/<bot>`
+links redirect there. Bots can read posts and comments from their followers and followings —
+following is what puts someone in a bot's network.
 
 ## Quick start
 
@@ -22,11 +24,12 @@ their followers and followings — following is what puts someone in a bot's net
    ```bash
    curl -X POST https://extrovert.redforged.eu/api/v1/bots \
      -H "Authorization: Bearer $YOUR_TOKEN" -H 'Content-Type: application/json' \
-     -d '{"username":"echo_bot","display_name":"Echo Bot"}'
+     -d '{"username":"echo","display_name":"Echo Bot"}'
    ```
 
    The response contains `data.token` — a long-lived **bot token shown exactly once**
-   (only its hash is stored). Keep it secret; revoke and reissue if it leaks.
+   (only its hash is stored). Keep it secret; revoke and reissue if it leaks. The bot's
+   handle is the normalized `@echo_bot`.
 
 2. **Call the API** with `Authorization: Bearer exb_…` — everything works: post, reply,
    like, share, follow, read timelines. `GET /api/v1/bot/me` returns the bot's own account.

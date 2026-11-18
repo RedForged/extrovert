@@ -20,6 +20,29 @@ const { sanitizeProfileHTML, sanitizeCSS, parsePronouns, sanitizePronouns, PRONO
 
 const router = express.Router();
 
+// Humans live under /u/<username>, bots under /b/<username>. The same profile
+// implementation serves both mounts; this guard keeps the namespaces separate
+// and sends legacy /u/bot links to the canonical bot URL.
+router.param('username', (req, res, next, username) => {
+  const profileUser = getUserByUsername(username);
+  req.profileUser = profileUser || null;
+  if (req.baseUrl === '/b') {
+    if (!profileUser || !profileUser.is_bot) return res.status(404).render('404', { thing: 'user' });
+    return next();
+  }
+  if (req.baseUrl === '/u' && profileUser && profileUser.is_bot) {
+    if (req.method === 'GET') {
+      return res.redirect(302, req.originalUrl.replace(/^\/u\//, '/b/'));
+    }
+    return res.status(404).render('404', { thing: 'user' });
+  }
+  next();
+});
+
+function profilePath(user) {
+  return (user && user.is_bot ? '/b/' : '/u/') + encodeURIComponent(user.username);
+}
+
 const AVATAR_DIR = path.join(__dirname, '..', '..', 'uploads', 'avatars');
 fs.mkdirSync(AVATAR_DIR, { recursive: true });
 
@@ -108,7 +131,9 @@ function esc(s) {
 
 function renderView(res, view, locals) {
   return new Promise((resolve, reject) => {
-    res.app.render(view, locals, (err, html) => (err ? reject(err) : resolve(html || '')));
+    // Partials rendered outside res.render (the profile slot fragments) still
+    // need the per-request helpers, e.g. profileHref for bot profile links.
+    res.app.render(view, Object.assign({}, res.locals, locals), (err, html) => (err ? reject(err) : resolve(html || '')));
   });
 }
 
@@ -142,8 +167,9 @@ async function buildProfileFragments(res, ctx) {
   const followerCount = countFollowers(profileUser.id);
   const followingCount = countFollowing(profileUser.id);
   const referralCount = getReferralCount(profileUser.id);
-  let stats = `<a href="/u/${esc(username)}/followers" title="Followers"><span class="stat-dot dot-friends"></span>${followerCount} follower${followerCount === 1 ? '' : 's'}</a>`;
-  stats += `<a href="/u/${esc(username)}/following" title="Following"><span class="stat-dot dot-fof"></span>${followingCount} following</a>`;
+  const profileBase = profileUser.is_bot ? '/b/' : '/u/';
+  let stats = `<a href="${profileBase}${esc(username)}/followers" title="Followers"><span class="stat-dot dot-friends"></span>${followerCount} follower${followerCount === 1 ? '' : 's'}</a>`;
+  stats += `<a href="${profileBase}${esc(username)}/following" title="Following"><span class="stat-dot dot-fof"></span>${followingCount} following</a>`;
   if (referralCount > 0) {
     stats += `<span class="stat-pip" title="${referralCount} person${referralCount === 1 ? '' : 's'} referred">${await renderView(res, 'partials/icon', { name: 'starFilled', size: 13 })} ${referralCount}</span>`;
   }
@@ -203,6 +229,7 @@ function hydrateProfilePosts(userId, viewerId) {
       authorUsername: author.username,
       authorName: author.display_name,
       authorAvatar: author.avatar,
+      authorIsBot: !!author.is_bot,
       likeCount: countLikes(content.id),
       shareCount: countShares(content.id),
       commentCount: comments.length,
@@ -229,7 +256,7 @@ function countFollowBoost(postId) {
 
 router.get('/:username', async (req, res, next) => {
   try {
-    const profileUser = getUserByUsername(req.params.username);
+    const profileUser = req.profileUser || getUserByUsername(req.params.username);
     if (!profileUser) return res.status(404).render('404', { thing: 'user' });
 
     const viewer = res.locals.currentUser;
@@ -252,8 +279,8 @@ router.get('/:username', async (req, res, next) => {
     // so it is usable by name everywhere (the editor's Font menu included) and
     // never ends up inside the user's editable stylesheet.
     const fontCss = font
-      ? "@font-face { font-family: '" + font.family + "'; src: url('/u/"
-        + encodeURIComponent(profileUser.username) + "/font?v=" + font.id + "'); font-display: swap; }"
+      ? "@font-face { font-family: '" + font.family + "'; src: url('" + profilePath(profileUser)
+        + "/font?v=" + font.id + "'); font-display: swap; }"
       : '';
 
     res.render('profile', {
@@ -286,7 +313,7 @@ router.get('/:username/edit', (req, res) => {
   if (!profileUser || profileUser.id !== viewer.id) {
     return res.status(403).send('You can only edit your own profile.');
   }
-  res.redirect('/u/' + profileUser.username + '?edit=1');
+  res.redirect(profilePath(profileUser) + '?edit=1');
 });
 
 // Profile fields (name/bio/pronouns/effect) — auto-saved from the left panel.
@@ -314,7 +341,7 @@ router.post('/:username/edit/profile', (req, res) => {
   updateUserProfile(viewer.id, { displayName, bio, pronouns });
   if (effect !== undefined) setCustomizationEffect(viewer.id, effect);
   if (wantsJson) return res.json({ ok: true, displayName, bio });
-  res.redirect('/u/' + profileUser.username + '?edit=1');
+  res.redirect(profilePath(profileUser) + '?edit=1');
 });
 
 // Reset the profile *customization* (HTML, CSS, effect) back to the defaults.
@@ -332,7 +359,7 @@ router.post('/:username/edit/reset', (req, res) => {
   }
   setCustomization(viewer.id, '', '', '', 0);
   if (wantsJson) return res.json({ ok: true });
-  res.redirect('/u/' + profileUser.username + '?edit=1');
+  res.redirect(profilePath(profileUser) + '?edit=1');
 });
 
 // Easy Editing save: only touches HTML/CSS/effect (never displayName/bio/
@@ -358,7 +385,7 @@ router.post('/:username/edit/visual', (req, res) => {
 
   setCustomization(viewer.id, html, css, effect, 1);
   if (wantsJson) return res.json({ ok: true });
-  res.redirect('/u/' + profileUser.username + '?edit=1');
+  res.redirect(profilePath(profileUser) + '?edit=1');
 });
 
 function requireProfileOwner(req, res, next) {
@@ -394,7 +421,7 @@ router.post('/:username/avatar', requireProfileOwner, drive.quotaGuard({ maxByte
   }
   if (!req.file) {
     drive.releaseUploadReservation(req);
-    return res.redirect('/u/' + profileUser.username + '/edit');
+    return res.redirect(profilePath(profileUser) + '/edit');
   }
 
   const inputPath = req.file.path;
@@ -446,7 +473,7 @@ router.post('/:username/avatar', requireProfileOwner, drive.quotaGuard({ maxByte
     return res.status(400).send('Failed to process image');
   }
 
-  res.redirect('/u/' + profileUser.username + '/edit');
+  res.redirect(profilePath(profileUser) + '/edit');
 });
 
 // Remove avatar.
@@ -463,7 +490,7 @@ router.post('/:username/avatar/remove', (req, res) => {
     const prev = splitStoredPath(existing);
     if (prev) removeStoredFile(prev.root, prev.path);
   }
-  res.redirect('/u/' + profileUser.username + '/edit');
+  res.redirect(profilePath(profileUser) + '/edit');
 });
 
 // ---------- Custom profile font ----------
@@ -510,7 +537,7 @@ router.post('/:username/font', requireProfileOwner, drive.quotaGuard({ localOnly
     drive.discardUpload(req);
     return res.status(403).send('CSRF validation failed');
   }
-  if (!req.file) return res.redirect('/u/' + profileUser.username + '/edit');
+  if (!req.file) return res.redirect(profilePath(profileUser) + '/edit');
 
   const ext = path.extname(req.file.originalname || '').toLowerCase();
   if (!drive.FONT_EXTENSIONS.has(ext)) {
@@ -549,7 +576,7 @@ router.post('/:username/font', requireProfileOwner, drive.quotaGuard({ localOnly
   const stored = await drive.acceptUpload(req, res, { kind: 'font', userId: viewer.id });
   if (!stored.ok) {
     if (stored.exceeded) return drive.rejectFull(req, res, stored.state);
-    return res.redirect('/u/' + profileUser.username + '/edit');
+    return res.redirect(profilePath(profileUser) + '/edit');
   }
 
   const previous = viewer.custom_font;
@@ -565,7 +592,7 @@ router.post('/:username/font', requireProfileOwner, drive.quotaGuard({ localOnly
     const prev = splitStoredPath(previous);
     if (prev) removeStoredFile(prev.root, prev.path);
   }
-  res.redirect('/u/' + profileUser.username + '/edit');
+  res.redirect(profilePath(profileUser) + '/edit');
 });
 
 router.post('/:username/font/remove', (req, res) => {
@@ -581,7 +608,7 @@ router.post('/:username/font/remove', (req, res) => {
     const prev = splitStoredPath(previous);
     if (prev) removeStoredFile(prev.root, prev.path);
   }
-  res.redirect('/u/' + profileUser.username + '/edit');
+  res.redirect(profilePath(profileUser) + '/edit');
 });
 
 // Followers list.

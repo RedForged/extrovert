@@ -176,8 +176,8 @@
                     <% if (u.avatar) { %><img src="<%= u.avatar %>" alt=""><% } else { %><%= String(u.display_name || u.username || '?').slice(0, 1).toUpperCase() %><% } %>
                   </span>
                   <div class="admin-list-main">
-                    <strong><a href="/u/<%= encodeURIComponent(u.username) %>"><%= u.display_name || u.username %></a></strong>
-                    <small>@<%= u.username %><% if (u.is_admin) { %> · admin<% } else if (u.banned) { %> · banned<% } %></small>
+                    <strong><a href="<%= profileHref(u.username, u.is_bot) %>"><%= u.display_name || u.username %></a></strong>
+                    <small>@<%= u.username %><% if (u.is_admin) { %> · admin<% } else if (u.banned) { %> · banned<% } else if (u.is_bot) { %> · bot<% } %></small>
                   </div>
                   <span class="admin-list-time"><%= locals.relTime(u.created_at) %></span>
                 </div>

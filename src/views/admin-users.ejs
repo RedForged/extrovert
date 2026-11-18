@@ -45,7 +45,7 @@
                         <% if (u.avatar) { %><img src="<%= u.avatar %>" alt=""><% } else { %><%= String(u.display_name || u.username || '?').slice(0, 1).toUpperCase() %><% } %>
                       </span>
                       <span>
-                        <a href="/u/<%= encodeURIComponent(u.username) %>"><%= u.display_name || u.username %></a>
+                        <a href="<%= profileHref(u.username, u.is_bot) %>"><%= u.display_name || u.username %></a>
                         <small class="muted">@<%= u.username %></small>
                       </span>
                     </span>
@@ -58,18 +58,21 @@
                   <td>
                     <% if (u.banned) { %><span class="admin-status banned">Banned</span>
                     <% } else if (u.is_admin) { %><span class="admin-status admin">Admin</span>
+                    <% } else if (u.is_bot) { %><span class="admin-status">Bot</span>
                     <% } else { %><span class="admin-status">Active</span><% } %>
                   </td>
                   <td class="actions">
                     <details class="admin-menu">
                       <summary class="btn ghost small" aria-label="Manage @<%= u.username %>"><%- include('partials/icon', { name: 'more', size: 14 }) %> Manage</summary>
                       <div class="admin-menu-pop">
-                        <a href="/u/<%= encodeURIComponent(u.username) %>"><%- include('partials/icon', { name: 'user', size: 14 }) %> View profile</a>
+                        <a href="<%= profileHref(u.username, u.is_bot) %>"><%- include('partials/icon', { name: 'user', size: 14 }) %> View profile</a>
                         <% if (!u.is_admin) { %>
-                          <form method="post" action="/admin/make-admin/<%= u.id %>">
-                            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-                            <button type="submit"><%- include('partials/icon', { name: 'shield', size: 14 }) %> Make admin</button>
-                          </form>
+                          <% if (!u.is_bot) { %>
+                            <form method="post" action="/admin/make-admin/<%= u.id %>">
+                              <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                              <button type="submit"><%- include('partials/icon', { name: 'shield', size: 14 }) %> Make admin</button>
+                            </form>
+                          <% } %>
                           <form method="post" action="/admin/<%= u.banned ? 'unban' : 'ban' %>/<%= u.id %>">
                             <input type="hidden" name="_csrf" value="<%= csrfToken %>">
                             <button type="submit"><%- include('partials/icon', { name: u.banned ? 'check' : 'lock', size: 14 }) %> <%= u.banned ? 'Unban' : 'Ban' %></button>

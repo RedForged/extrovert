@@ -33,7 +33,8 @@
       <form method="post" action="/settings/bots">
         <input type="hidden" name="_csrf" value="<%= csrfToken %>">
         <label for="bot-username">Username</label>
-        <input type="text" id="bot-username" name="username" required pattern="[A-Za-z0-9_]{3,20}" placeholder="echo_bot">
+        <input type="text" id="bot-username" name="username" required pattern="[A-Za-z0-9_]{1,20}" maxlength="20" placeholder="echo">
+        <p class="muted" style="font-size:var(--fs-xs);margin:-2px 0 0">Handles end in <code>_bot</code> automatically — <code>echo</code> becomes <code>echo_bot</code>.</p>
         <label for="bot-display">Display name</label>
         <input type="text" id="bot-display" name="display_name" placeholder="Echo Bot">
         <button class="btn" type="submit" style="margin-top:14px">Create bot</button>
@@ -51,7 +52,7 @@
           <h3 style="margin:0"><%= b.display_name %></h3>
           <span class="badge" title="Automated account">bot</span>
           <span class="muted">@<%= b.username %></span>
-          <a class="btn ghost small" href="/u/<%= encodeURIComponent(b.username) %>" style="margin-left:auto">View profile</a>
+          <a class="btn ghost small" href="<%= profileHref(b.username, b.is_bot) %>" style="margin-left:auto">View profile</a>
         </div>
 
         <h4 style="margin:14px 0 6px;font-size:var(--fs-sm)">Tokens</h4>

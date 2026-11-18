@@ -22,7 +22,7 @@
           <div class="admin-report-title">
             <strong><%= r.target_type.replace('_', ' ').replace(/^./, function(c) { return c.toUpperCase(); }) %></strong><%= r.target_id ? ' #' + r.target_id : '' %>
             <% if (r.context) { %> <span class="muted"><%= r.context %></span><% } %>
-            <% if (r.reported_username) { %> · <strong>Reported:</strong> <a href="/u/<%= encodeURIComponent(r.reported_username) %>"><%= r.reported_name || r.reported_username %></a> @<%= r.reported_username %><% } %>
+            <% if (r.reported_username) { %> · <strong>Reported:</strong> <a href="<%= profileHref(r.reported_username, r.reported_is_bot) %>"><%= r.reported_name || r.reported_username %></a> @<%= r.reported_username %><% } %>
             · <strong>By:</strong> <%= r.reporter_name %> @<%= r.reporter_username %>
           </div>
           <small class="muted"><%= new Date(r.created_at).toLocaleString() %></small>

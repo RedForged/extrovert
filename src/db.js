@@ -482,6 +482,7 @@ function getPendingContentReports() {
     SELECT c.*,
            u.username      AS reported_username,
            u.display_name  AS reported_name,
+           u.is_bot        AS reported_is_bot,
            rp.username     AS reporter_username,
            rp.display_name AS reporter_name
     FROM content_reports c
@@ -890,12 +891,58 @@ try { db.exec(`CREATE INDEX IF NOT EXISTS idx_pat_user ON personal_access_tokens
 // ---------- Bots (planned.md F5) ----------
 try { db.exec(`ALTER TABLE users ADD COLUMN is_bot INTEGER NOT NULL DEFAULT 0`); } catch {}
 try { db.exec(`ALTER TABLE users ADD COLUMN bot_owner_id INTEGER`); } catch {}
-// Bot namespace migration: bots live in their own %handle namespace and never
-// consume @usernames — the '%' sigil is stored as part of users.username, so
-// the existing UNIQUE constraint keeps both namespaces collision-free.
+const BOT_SUFFIX = '_bot';
+
+// Bot handles are Telegram-style: the stored username always ends in _bot.
+// The suffix is reserved for bots, so humans can use the base name but not the
+// suffixed handle. normalizeBotUsername is idempotent and also strips a legacy
+// "%" prefix from pre-suffix bot rows.
+function normalizeBotUsername(username) {
+  let name = String(username || '').trim().replace(/^%/, '');
+  if (!name) return name;
+  if (name.toLowerCase().endsWith(BOT_SUFFIX)) {
+    name = name.slice(0, -BOT_SUFFIX.length) + BOT_SUFFIX;
+  } else {
+    name += BOT_SUFFIX;
+  }
+  return name;
+}
+
+function isReservedBotUsername(username) {
+  return String(username || '').toLowerCase().endsWith(BOT_SUFFIX);
+}
+
+// Migrate every bot to the plain _bot namespace. Bots may arrive with a "%"
+// prefix (the old namespace) or without a suffix. If the normalized handle
+// collides with another account, keep the suffix and add a numeric infix
+// (echo_1_bot) so the UNIQUE username constraint holds.
 try {
-  db.prepare(`UPDATE users SET username = '%' || username WHERE is_bot = 1 AND username NOT LIKE '\\%%' ESCAPE '\\'`).run();
-} catch (e) {}
+  const bots = db.prepare(`SELECT id, username FROM users WHERE is_bot = 1`).all();
+  if (bots.length) {
+    const taken = new Set(db.prepare(`SELECT username FROM users`).all().map((r) => r.username.toLowerCase()));
+    for (const bot of bots) {
+      let candidate = normalizeBotUsername(bot.username);
+      if (!candidate || candidate === bot.username) continue;
+      taken.delete(bot.username.toLowerCase());
+      if (candidate.length > 20) {
+        candidate = candidate.slice(0, -BOT_SUFFIX.length).slice(0, 16) + BOT_SUFFIX;
+      }
+      if (taken.has(candidate.toLowerCase())) {
+        const stem = candidate.slice(0, -BOT_SUFFIX.length).slice(0, 13) || 'bot';
+        let n = 1;
+        do {
+          candidate = stem + '_' + n + BOT_SUFFIX;
+          n += 1;
+        } while (taken.has(candidate.toLowerCase()));
+        console.warn(`[bots] renamed legacy bot ${bot.username} -> ${candidate} to keep usernames unique`);
+      }
+      db.prepare(`UPDATE users SET username = ? WHERE id = ?`).run(candidate, bot.id);
+      taken.add(candidate.toLowerCase());
+    }
+  }
+} catch (e) {
+  console.error('[bots] legacy username migration failed:', e);
+}
 try {
   db.exec(`CREATE TABLE IF NOT EXISTS bot_tokens (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1271,15 +1318,15 @@ function setCustomizationEffect(userId, effect) {
 // ---------- notifications ----------
 const { notify } = require('./notif-broadcaster');
 
-// Notify users @mentioned or %mentioned (bots) in a post or comment body.
-// The sigil is the namespace: @alice -> user "alice", %echo_bot -> bot
-// "%echo_bot". Case-insensitive; the author never notifies themselves.
+// Notify users @mentioned in a post or comment body. Humans and bots share the
+// same plain @handle namespace; a bot's profile lives under /b, not /u.
+// Case-insensitive; the author never notifies themselves.
 function notifyMentions(body, actorId, postId = null) {
   const { parseMentions } = require('./markdown');
   const { canView } = require('./network');
   const parent = postId ? db.prepare(`SELECT user_id FROM posts WHERE id = ?`).get(postId) : null;
   for (const handle of parseMentions(body)) {
-    const lookup = handle.charAt(0) === '%' ? handle : handle.slice(1);
+    const lookup = handle.replace(/^@/, '');
     const u = db.prepare(`SELECT id FROM users WHERE username = ? COLLATE NOCASE`).get(lookup);
     if (!u || u.id === actorId) continue;
     // A mention is not authorization to reveal the parent post. Do not store
@@ -1305,7 +1352,7 @@ function getNotifications(userId, limit = 50, cursor) {
   if (cursor) {
     sql = `
       SELECT n.*, p.user_id AS post_user_id,
-             u.username AS actor_username, u.display_name AS actor_name, u.avatar AS actor_avatar, u.bio AS actor_bio, u.created_at AS actor_created_at
+             u.username AS actor_username, u.display_name AS actor_name, u.avatar AS actor_avatar, u.bio AS actor_bio, u.is_bot AS actor_is_bot, u.created_at AS actor_created_at
       FROM notifications n
       JOIN users u ON u.id = n.actor_id
       LEFT JOIN posts p ON p.id = n.post_id
@@ -1317,7 +1364,7 @@ function getNotifications(userId, limit = 50, cursor) {
   } else {
     sql = `
       SELECT n.*, p.user_id AS post_user_id,
-             u.username AS actor_username, u.display_name AS actor_name, u.avatar AS actor_avatar, u.bio AS actor_bio, u.created_at AS actor_created_at
+             u.username AS actor_username, u.display_name AS actor_name, u.avatar AS actor_avatar, u.bio AS actor_bio, u.is_bot AS actor_is_bot, u.created_at AS actor_created_at
       FROM notifications n
       JOIN users u ON u.id = n.actor_id
       LEFT JOIN posts p ON p.id = n.post_id
@@ -1373,7 +1420,7 @@ function deletePushSubscriptionsByEndpoint(endpoint) {
 // ---------- user lists ----------
 function getFollowers(userId) {
   return db.prepare(`
-    SELECT u.id, u.username, u.display_name, u.avatar, u.bio, f.created_at AS followed_at
+    SELECT u.id, u.username, u.display_name, u.avatar, u.bio, u.is_bot, f.created_at AS followed_at
     FROM follows f
     JOIN users u ON u.id = f.follower_id
     WHERE f.followee_id = ?
@@ -1383,7 +1430,7 @@ function getFollowers(userId) {
 
 function getFollowing(userId) {
   return db.prepare(`
-    SELECT u.id, u.username, u.display_name, u.avatar, u.bio, f.created_at AS followed_at
+    SELECT u.id, u.username, u.display_name, u.avatar, u.bio, u.is_bot, f.created_at AS followed_at
     FROM follows f
     JOIN users u ON u.id = f.followee_id
     WHERE f.follower_id = ?
@@ -2677,7 +2724,7 @@ function unbanUser(userId) {
 }
 
 function getAllUsers() {
-  return db.prepare(`SELECT id, username, display_name, avatar, referral_code, created_at, is_admin, banned, (SELECT COUNT(*) FROM users WHERE referred_by = users.id) AS referral_count FROM users ORDER BY created_at ASC`).all();
+  return db.prepare(`SELECT id, username, display_name, avatar, is_bot, referral_code, created_at, is_admin, banned, (SELECT COUNT(*) FROM users WHERE referred_by = users.id) AS referral_count FROM users ORDER BY created_at ASC`).all();
 }
 
 function promoteUser(userId) {
@@ -2803,7 +2850,7 @@ function getRoomMember(roomId, userId) {
   return db.prepare(`SELECT room_id, user_id, role_id, joined_at FROM room_members WHERE room_id = ? AND user_id = ?`).get(roomId, userId) || null;
 }
 function getRoomMembers(roomId) {
-  return db.prepare(`SELECT u.id AS user_id, u.username, u.display_name, u.avatar, m.role_id, m.joined_at FROM room_members m INNER JOIN users u ON u.id = m.user_id WHERE m.room_id = ? ORDER BY m.joined_at`).all(roomId);
+  return db.prepare(`SELECT u.id AS user_id, u.username, u.display_name, u.avatar, u.is_bot, m.role_id, m.joined_at FROM room_members m INNER JOIN users u ON u.id = m.user_id WHERE m.room_id = ? ORDER BY m.joined_at`).all(roomId);
 }
 function getUserRoomRole(roomId, userId) {
   return db.prepare(`SELECT r.* FROM room_roles r INNER JOIN room_members m ON m.role_id = r.id WHERE m.room_id = ? AND m.user_id = ?`).get(roomId, userId);
@@ -2999,7 +3046,7 @@ function dashLimit(limit, fallback) {
   return Number.isFinite(n) && n > 0 ? Math.min(50, Math.floor(n)) : fallback;
 }
 function getRecentUsers(limit = 5) {
-  return db.prepare(`SELECT id, username, display_name, avatar, created_at, is_admin, banned FROM users ORDER BY created_at DESC LIMIT ?`).all(dashLimit(limit, 5));
+  return db.prepare(`SELECT id, username, display_name, avatar, is_bot, created_at, is_admin, banned FROM users ORDER BY created_at DESC LIMIT ?`).all(dashLimit(limit, 5));
 }
 function getRecentRooms(limit = 5) {
   return db.prepare(`SELECT r.*, (SELECT COUNT(*) FROM room_members WHERE room_id = r.id) AS member_count, u.username AS creator_username FROM rooms r LEFT JOIN users u ON u.id = r.creator_id ORDER BY r.created_at DESC LIMIT ?`).all(dashLimit(limit, 5));
@@ -3159,13 +3206,13 @@ function generateBotTokenValue() {
 
 // Bots are users with no usable password: the random hash never verifies and
 // login additionally rejects is_bot outright. Bots authenticate only with
-// long-lived bot tokens. Every bot is owned by the user who created it, and
-// lives in the %handle namespace ("%echo_bot") so it never takes a username.
+// long-lived bot tokens. Every bot is owned by the user who created it and uses
+// a plain handle ending in _bot; the /b profile route serves it.
 function createBotUser({ username, displayName, ownerId }) {
-  const handle = '%' + String(username).replace(/^%/, '');
+  const handle = normalizeBotUsername(username);
   const res = db.prepare(
     `INSERT INTO users (username, password_hash, display_name, created_at, is_bot, bot_owner_id) VALUES (?,?,?,?,1,?)`
-  ).run(handle, '!' + crypto.randomBytes(24).toString('hex'), displayName || username, Date.now(), ownerId || null);
+  ).run(handle, '!' + crypto.randomBytes(24).toString('hex'), displayName || handle, Date.now(), ownerId || null);
   return res.lastInsertRowid;
 }
 
@@ -3370,7 +3417,7 @@ function getSuggestedFoafUsers(userId, limit = 20) {
   if (!suggestedIds.length) return [];
   const placeholders = suggestedIds.map(() => '?').join(',');
   return db.prepare(`
-    SELECT id, username, display_name, avatar, bio, created_at
+    SELECT id, username, display_name, avatar, bio, is_bot, created_at
     FROM users
     WHERE id IN (${placeholders}) AND banned = 0
   `).all(...suggestedIds);
@@ -3633,7 +3680,7 @@ function searchUsers(query, opts = {}) {
   const like = `%${query}%`;
   const maxNameLen = Math.floor(query.length / 0.15);
   return db.prepare(`
-    SELECT id, username, display_name, avatar, bio, created_at
+    SELECT id, username, display_name, avatar, bio, is_bot, created_at
     FROM users
     WHERE (
       (username LIKE ? AND LENGTH(username) <= ?)
@@ -3927,6 +3974,7 @@ module.exports = {
   createNotification, notifyMentions, getNotifications, countUnreadNotifications, markNotificationsRead,
   // bots (planned.md F5)
   createBotUser, getAllBots, getBotsByOwner, countBotsByOwner, createBotToken, getBotTokenByHash, listBotTokens, revokeBotToken,
+  BOT_SUFFIX, normalizeBotUsername, isReservedBotUsername,
   generateBotTokenValue, setBotWebhook, getBotWebhook, generateBotWebhookSecret, rotateBotWebhookSecret,
   getMentionsFeed,
   // push subscriptions

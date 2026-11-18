@@ -257,23 +257,33 @@ function run() {
   assert(renderMarkdown('') === '', 'empty string returns empty');
   assert(renderMarkdown(null) === '', 'null returns empty');
 
-  console.log('\nTEST 11: @mention & %bot parsing & linkification');
+  console.log('\nTEST 11: @mention parsing & linkification');
   const { parseMentions } = require('../src/markdown');
-  const m1 = parseMentions('hi @alice and %echo_bot');
-  assert(m1.length === 2 && m1[0] === '@alice' && m1[1] === '%echo_bot', 'parses human and bot handles with sigils');
+  const m1 = parseMentions('hi @alice and @echo_bot');
+  assert(m1.length === 2 && m1[0] === '@alice' && m1[1] === '@echo_bot', 'parses human and bot handles with the same @ sigil');
   const m2 = parseMentions('@Alice and @alice');
   assert(m2.length === 1 && m2[0] === '@Alice', 'dedupes mentions case-insensitively');
-  const m3 = parseMentions('@echo_bot and %echo_bot');
-  assert(m3.length === 2, 'the @ and % namespaces are distinct handles');
+  const m3 = parseMentions('%echo_bot and @echo_bot');
+  assert(m3.length === 1 && m3[0] === '@echo_bot', 'the legacy % sigil is no longer a mention');
   assert(parseMentions('mail me at foo@bar.com').length === 0, 'ignores email addresses');
   assert(parseMentions('path /@name and single @x').length === 0, 'ignores path refs and short names');
   assert(parseMentions('100% pure').length === 0, 'ignores bare percentages');
 
+  console.log('\nTEST 11b: bot handle normalization');
+  assert.strictEqual(db.normalizeBotUsername('echo'), 'echo_bot', 'a base name gets the _bot suffix');
+  assert.strictEqual(db.normalizeBotUsername('echo_bot'), 'echo_bot', 'an existing suffix is not duplicated');
+  assert.strictEqual(db.normalizeBotUsername('%echo'), 'echo_bot', 'a legacy % prefix is stripped');
+  assert.strictEqual(db.normalizeBotUsername('Echo'), 'Echo_bot', 'case is preserved');
+  assert.strictEqual(db.normalizeBotUsername('Echo_BOT'), 'Echo_bot', 'the suffix is normalized to lowercase');
+  assert(db.isReservedBotUsername('echo_bot'), 'the _bot suffix is reserved');
+  assert(db.isReservedBotUsername('Echo_BOT'), 'the reservation is case-insensitive');
+  assert(!db.isReservedBotUsername('echo'), 'plain human names are not reserved');
+
   const mentionHtml = renderMarkdown('hey @alice and @bob_1!');
   assert(/<a href="\/u\/alice"[^>]*>@alice<\/a>/.test(mentionHtml), 'human mention links to the profile');
   assert(/<a href="\/u\/bob_1"[^>]*>@bob_1<\/a>/.test(mentionHtml), 'mention with underscore links');
-  const botHtml = renderMarkdown('ping %echo_bot now');
-  assert(/<a href="\/u\/%25echo_bot"[^>]*>%echo_bot<\/a>/.test(botHtml), 'bot mention links to its %handle profile');
+  const botHtml = renderMarkdown('ping @echo_bot now');
+  assert(/<a href="\/u\/echo_bot"[^>]*>@echo_bot<\/a>/.test(botHtml), 'bot mention uses the plain handle (<\/u> redirects to <\/b>)');
   assert(!/target="_blank"/.test(mentionHtml), 'mention links stay in the same tab');
   const mixed = renderMarkdown('mail foo@bar.com or read `@alice`');
   assert(!/href="\/u\/(bar|alice)"/.test(mixed), 'emails and code spans never linkify');

@@ -466,6 +466,7 @@ const PAGE_TITLE_PATTERNS = [
   [/^\/developers/, 'Developer docs'],
   [/^\/stickers/, 'Stickers'],
   [/^\/u\//, 'Profile'],
+  [/^\/b\//, 'Profile'],
   [/^\/login/, 'Log in'],
   [/^\/register/, 'Join Extrovert'],
   [/^\/security/, 'Security'],
@@ -481,6 +482,7 @@ function pageTitleFor(pathname) {
 app.use((req, res, next) => {
   res.locals.currentPath = req.path;
   res.locals.pageTitle = pageTitleFor(req.path);
+  res.locals.profileHref = (username, isBot) => (isBot ? '/b/' : '/u/') + encodeURIComponent(String(username || ''));
   next();
 });
 
@@ -488,7 +490,8 @@ app.use((req, res, next) => {
 app.use('/', require('./routes/auth'));
 app.use('/', require('./routes/pages'));      // /, /compose, /discover
 app.use('/posts', require('./routes/posts')); // post creation + interactions
-app.use('/u', require('./routes/profile'));   // profile view + edit
+app.use('/u', require('./routes/profile'));   // human profiles + edit
+app.use('/b', require('./routes/profile'));   // bot profiles (same router, bot-only)
 app.use('/', require('./routes/social'));     // follow/unfollow
 app.use('/inbox', require('./routes/notifications'));
 app.use('/chats', require('./routes/chats'));

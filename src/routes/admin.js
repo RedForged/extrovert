@@ -327,7 +327,7 @@ router.post('/mail', requireAdmin, (req, res) => {
 function renderStoragePanel(req, res, { error = null, saved = false } = {}) {
   const consumers = getAllUserFileUsage().slice(0, 10).map((row) => {
     const u = getUserById(row.user_id);
-    return { id: row.user_id, username: u ? u.username : '#' + row.user_id, bytes: row.bytes, files: row.files };
+    return { id: row.user_id, username: u ? u.username : '#' + row.user_id, is_bot: u ? !!u.is_bot : false, bytes: row.bytes, files: row.files };
   });
   res.render('admin-storage', {
     quota: getDriveQuotaBytes(),

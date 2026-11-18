@@ -2,7 +2,7 @@
   <div class="card" style="display:flex;justify-content:space-between;align-items:center">
     <div>
       <h2 style="margin:0"><%= title %></h2>
-      <small class="muted"><a href="/u/<%= targetUser.username %>">@<%= targetUser.username %></a></small>
+      <small class="muted"><a href="<%= profileHref(targetUser.username, targetUser.is_bot) %>">@<%= targetUser.username %></a></small>
     </div>
   </div>
 
@@ -18,7 +18,7 @@
         <% if (u.avatar) { %><img src="<%= u.avatar %>" alt="" class="avatar-img"><% } else { %><div class="avatar"><%= (u.display_name || '?').slice(0,1).toUpperCase() %></div><% } %>
         <div class="info">
           <div style="display:flex;align-items:center;gap:6px">
-            <a href="/u/<%= u.username %>" class="post-name"><%= u.display_name %></a>
+            <a href="<%= profileHref(u.username, u.is_bot) %>" class="post-name"><%= u.display_name %></a>
             <% if (locals.currentUser && u.id !== currentUser.id) { %>
               <% if (u.mutual) { %>
                 <a href="/chats/<%= u.username %>" class="chat-icon" title="Send a message"><%- include('partials/icon', { name: 'chat', size: 15 }) %></a>

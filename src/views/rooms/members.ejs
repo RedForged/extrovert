@@ -43,7 +43,7 @@
           <% var mRole = roles.find(function(r) { return r.id === m.role_id; }); %>
           <% if (m.avatar) { %><img src="<%= m.avatar %>" alt="" class="avatar-img"><% } else { %><div class="avatar"><%= (m.display_name || '?').slice(0,1).toUpperCase() %></div><% } %>
           <div>
-            <a href="/u/<%= m.username %>"><%= m.display_name %></a>
+            <a href="<%= profileHref(m.username, m.is_bot) %>"><%= m.display_name %></a>
             <span style="color:<%= mRole ? mRole.color : '#ccc' %>;font-size:12px"><%= mRole ? mRole.name : '' %></span>
             <small class="muted" style="display:block">@<%= m.username %></small>
           </div>

@@ -192,7 +192,7 @@ router.get('/:id', (req, res) => {
     editedAt: content.edited_at,
     isRepost: post.type === 'repost',
     reposterName: reposter?.display_name, reposterUsername: reposter?.username,
-    authorId: author.id, authorUsername: author.username, authorName: author.display_name,
+    authorId: author.id, authorUsername: author.username, authorName: author.display_name, authorIsBot: !!author.is_bot,
     likeCount: +db.prepare(`SELECT COUNT(*) FROM likes WHERE post_id = ?`).get(interactId)['COUNT(*)'],
     shareCount: +db.prepare(`SELECT COUNT(*) FROM shares WHERE post_id = ?`).get(interactId)['COUNT(*)'],
     commentCount: commentsForPost(interactId).length,

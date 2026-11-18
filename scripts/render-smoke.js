@@ -63,6 +63,8 @@ async function main() {
   db.setOlmIdentity(aliceId, 'a-curve', 'a-ed', null);
 
   const roomId = db.createRoom('Test Room', 'desc', aliceId, 1);
+  const botId = db.createBotUser({ username: 'echo', displayName: 'Echo Bot', ownerId: aliceId });
+  const botUser = db.getUserById(botId);
 
   const pages = [
     ['/', 'feed'],
@@ -83,6 +85,8 @@ async function main() {
     ['/settings/drive', 'settings drive storage'],
     ['/drive', 'drive'],
     ['/u/alice', 'own profile'],
+    ['/b/' + botUser.username, 'bot profile'],
+    ['/u/' + botUser.username, 'legacy bot profile URL'],
     ['/u/alice/edit', 'profile edit'],
     ['/u/alice/followers', 'followers list'],
     ['/u/alice/following', 'following list'],

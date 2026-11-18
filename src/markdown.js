@@ -3,10 +3,11 @@
 const MarkdownIt = require('markdown-it');
 const sanitizeHtml = require('sanitize-html');
 
-// Mentions: @username (human) or %botname (bot namespace) — 3-20 [a-zA-Z0-9_],
-// at a boundary never preceded by a word character, @, % or / — so emails
-// (foo@bar.com) and paths never match. The sigil is part of the handle.
-const MENTION_RE = /(^|[^\w@\/%])([@%])([a-zA-Z0-9_]{3,20})\b/g;
+// Mentions: @handle — 3-20 [a-zA-Z0-9_], at a boundary never preceded by a word
+// character, @, % or / — so emails (foo@bar.com) and paths never match. Bots
+// use the same plain @handle namespace as humans; their profile canonicalises
+// to /b, and the /u link below is redirected there by the profile router.
+const MENTION_RE = /(^|[^\w@\/%])(@)([a-zA-Z0-9_]{3,20})\b/g;
 
 const md = new MarkdownIt({
   html: false,        // Escape HTML tags in source
@@ -40,7 +41,7 @@ md.core.ruler.after('linkify', 'mentions', function (state) {
     if (block.type !== 'inline' || !block.children) continue;
     const out = [];
     for (const child of block.children) {
-      if (child.type !== 'text' || !/[@%]/.test(child.content)) {
+      if (child.type !== 'text' || !/@/.test(child.content)) {
         out.push(child);
         continue;
       }
@@ -56,8 +57,7 @@ md.core.ruler.after('linkify', 'mentions', function (state) {
           out.push(before);
         }
         const handle = m[2] + m[3];
-        // Humans link to their bare username; bots live at their %handle.
-        const lookupName = m[2] === '%' ? handle : m[3];
+        const lookupName = m[3];
         const open = new state.Token('link_open', 'a', 1);
         open.attrs = [['href', '/u/' + encodeURIComponent(lookupName)], ['class', 'mention']];
         out.push(open);
@@ -118,11 +118,11 @@ function renderMarkdown(content) {
 }
 
 /**
- * Extract unique mentions from raw text as full handles ("@alice", "%echo_bot"
- * — the sigil is the namespace), case-insensitive dedupe, first spelling kept.
+ * Extract unique mentions from raw text as full handles ("@alice", "@echo_bot"),
+ * case-insensitive dedupe, first spelling kept. Bots share the @handle namespace.
  *
  * @param {string} content
- * @returns {string[]} mentioned handles with sigil
+ * @returns {string[]} mentioned handles with the @ sigil
  */
 function parseMentions(content) {
   if (!content || typeof content !== 'string') return [];

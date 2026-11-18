@@ -400,7 +400,7 @@ describe('Extrovert REST API', () => {
     it('admin creates a bot and receives a one-time token', async () => {
       const resp = await fetchJson('/api/v1/bots', {
         method: 'POST', token: aliceToken,
-        body: { username: 'echo_bot', display_name: 'Echo Bot' },
+        body: { username: 'echo', display_name: 'Echo Bot' },
       });
       assert.strictEqual(resp.status, 201);
       const d = (await resp.json()).data;
@@ -409,18 +409,44 @@ describe('Extrovert REST API', () => {
       botTokenId = d.token_id;
       assert.ok(botToken && botToken.startsWith('exb_'), 'token is returned raw, once');
       assert.strictEqual(d.account.is_bot, true);
-      assert.strictEqual(d.account.username, '%echo_bot', 'bots live in the %handle namespace');
+      assert.strictEqual(d.account.username, 'echo_bot', 'bot handles get the _bot suffix');
     });
 
     it('any user can create and own bots', async () => {
-      db.createUser({ username: 'helper_bot', passwordHash: 'hash', displayName: 'Human Helper' });
       const resp = await fetchJson('/api/v1/bots', {
         method: 'POST', token: bobToken,
-        body: { username: 'helper_bot', display_name: 'Helper' },
+        body: { username: 'bob', display_name: 'Bob Bot' },
       });
-      assert.strictEqual(resp.status, 201, 'bot names never take up usernames');
+      assert.strictEqual(resp.status, 201, 'any user can create a bot');
       const d = (await resp.json()).data;
       assert.strictEqual(d.account.is_bot, true);
+      assert.strictEqual(d.account.username, 'bob_bot', 'a bot can use a human base name');
+    });
+
+    it('bot handles are unique', async () => {
+      const duplicate = await fetchJson('/api/v1/bots', {
+        method: 'POST', token: bobToken,
+        body: { username: 'echo', display_name: 'Duplicate' },
+      });
+      assert.strictEqual(duplicate.status, 409, 'a bot cannot take an existing bot handle');
+
+      const humanBase = await fetchJson('/api/v1/bots', {
+        method: 'POST', token: bobToken,
+        body: { username: 'alice', display_name: 'Alice Bot' },
+      });
+      assert.strictEqual(humanBase.status, 201, 'a bot can use an existing human base name');
+      const d = (await humanBase.json()).data;
+      assert.strictEqual(d.account.username, 'alice_bot', 'the human base gets the _bot suffix');
+    });
+
+    it('bot profiles live at /b and legacy /u links redirect', async () => {
+      const botPage = await fetch(`${baseUrl}/b/echo_bot`);
+      assert.strictEqual(botPage.status, 200, 'bot profile renders at /b');
+      const legacy = await fetch(`${baseUrl}/u/echo_bot`, { redirect: 'manual' });
+      assert.strictEqual(legacy.status, 302, 'legacy /u/bot redirects');
+      assert.strictEqual(legacy.headers.get('location'), '/b/echo_bot');
+      const humanAtBot = await fetch(`${baseUrl}/b/alice`, { redirect: 'manual' });
+      assert.strictEqual(humanAtBot.status, 404, 'human profiles never render under /b');
     });
 
     it('cannot manage another users bot', async () => {
@@ -442,19 +468,19 @@ describe('Extrovert REST API', () => {
       assert.strictEqual(post.status, 201);
     });
 
-    it('mentions timeline delivers the %mention to the bot', async () => {
+    it('mentions timeline delivers the @mention to the bot', async () => {
       // Mentions do not grant post visibility; follow the author so the bot is
       // legitimately in the post's audience before exercising delivery.
       db.follow(botId, bobId);
       const resp = await fetchJson('/api/v1/statuses', {
         method: 'POST', token: bobToken,
-        body: { type: 'text', body: 'hey %echo_bot look at this' },
+        body: { type: 'text', body: 'hey @echo_bot look at this' },
       });
       assert.strictEqual(resp.status, 201);
       const feed = await fetchJson('/api/v1/timelines/mentions', { token: botToken });
       assert.strictEqual(feed.status, 200);
       const d = await feed.json();
-      assert(d.data.some(p => (p.body || '').includes('hey %echo_bot look at this')), 'bot must see the %mention');
+      assert(d.data.some(p => (p.body || '').includes('hey @echo_bot look at this')), 'bot must see the @mention');
     });
 
     it('webhook registration returns an HMAC secret and signs correctly', async () => {

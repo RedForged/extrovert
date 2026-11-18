@@ -47,7 +47,7 @@
       <div style="display:flex;flex-direction:column;gap:8px">
         <% consumers.forEach(function(c) { %>
           <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 10px;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;font-size:0.85rem">
-            <a href="/u/<%= encodeURIComponent(c.username) %>">@<%= c.username %></a>
+            <a href="<%= profileHref(c.username, c.is_bot) %>">@<%= c.username %></a>
             <span class="muted"><%= fmt(c.bytes) %> · <%= c.files %> file<%= c.files === 1 ? '' : 's' %><%= c.bytes > quota ? ' · over quota' : '' %></span>
           </div>
         <% }); %>

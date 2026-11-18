@@ -732,6 +732,9 @@ router.post('/auth/register', enforceHttpsInProduction, express.json(), (req, re
   if (!/^[a-zA-Z0-9_]{3,20}$/.test(cleanUsername)) {
     return errorResponse(res, 400, 'Bad Request', 'Username must be 3-20 letters, numbers, or underscores.');
   }
+  if (db.isReservedBotUsername(cleanUsername)) {
+    return errorResponse(res, 400, 'Bad Request', 'Usernames ending in _bot are reserved for bots.');
+  }
   if (cleanPassword.length < 12 || Buffer.byteLength(cleanPassword, 'utf8') > 72) {
     return errorResponse(res, 400, 'Bad Request', 'Password must be at least 12 characters and at most 72 bytes.');
   }
@@ -2300,15 +2303,19 @@ function botOwnedByCaller(req, bot) {
 // Create a bot account owned by the caller + its first long-lived token. The
 // raw token is returned exactly once — only its hash is stored.
 router.post('/bots', requireApiAuth('write'), (req, res) => {
-  const username = String(req.body.username || '').trim();
-  const displayName = String(req.body.display_name || '').trim() || username;
-  if (!/^[a-zA-Z0-9_]{3,20}$/.test(username)) {
-    return errorResponse(res, 400, 'Bad Request', 'username must be 3-20 letters, numbers, or underscores.');
+  const raw = String(req.body.username || '').trim();
+  const displayName = String(req.body.display_name || '').trim() || raw;
+  if (!/^[a-zA-Z0-9_]{1,20}$/.test(raw)) {
+    return errorResponse(res, 400, 'Bad Request', 'username must be 1-20 letters, numbers, or underscores.');
+  }
+  const username = db.normalizeBotUsername(raw);
+  if (username.length > 20) {
+    return errorResponse(res, 400, 'Bad Request', 'Bot usernames must be 20 characters or fewer, including the _bot suffix.');
   }
   if (db.countBotsByOwner(req.apiUser.id) >= BOT_LIMIT_PER_USER) {
     return errorResponse(res, 403, 'Forbidden', `Bot limit reached (${BOT_LIMIT_PER_USER}).`);
   }
-  if (db.getUserByUsername('%' + username)) return errorResponse(res, 409, 'Conflict', 'That bot name is taken.');
+  if (db.getUserByUsername(username)) return errorResponse(res, 409, 'Conflict', 'That bot name is taken.');
   const botId = db.createBotUser({ username, displayName, ownerId: req.apiUser.id });
   const token = db.generateBotTokenValue();
   const tokenId = db.createBotToken(botId, 'default', token);
